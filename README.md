@@ -1,0 +1,2 @@
+# ratllm
+Free LLM scouting
