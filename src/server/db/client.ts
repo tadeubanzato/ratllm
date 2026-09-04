@@ -7,8 +7,16 @@ const globalDb = globalThis as unknown as { sqlClient?: ReturnType<typeof postgr
 export function getDb() {
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error("DATABASE_URL is not configured");
-  const client = globalDb.sqlClient ?? postgres(url, { max: process.env.NODE_ENV === "production" ? 10 : 2, prepare: false });
-  if (process.env.NODE_ENV !== "production") globalDb.sqlClient = client;
+  // A server process must own one pool. Creating a fresh `postgres()` client
+  // for every request in production exhausts PostgreSQL's connection limit
+  // under normal page/API traffic.
+  const client = globalDb.sqlClient ?? postgres(url, {
+    max: 5,
+    prepare: false,
+    idle_timeout: 20,
+    connect_timeout: 10,
+  });
+  globalDb.sqlClient = client;
   return drizzle(client, { schema });
 }
 

@@ -1,10 +1,11 @@
 import "server-only";
 import { z } from "zod";
 import type { DiscoveredCandidate,DiscoverySource } from "./types";
+import { resolveProvider } from "@/server/providers/catalog";
 
 const OPENROUTER_URL="https://openrouter.ai/api/v1/models";
 const COST_MAP_URL="https://raw.githubusercontent.com/BerriAI/litellm/main/litellm/model_prices_and_context_window_backup.json";
-const COMMUNITY_URLS=["https://raw.githubusercontent.com/cheahjs/free-llm-api-resources/main/README.md","https://raw.githubusercontent.com/zukixa/cool-ai-stuff/main/README.md"] as const;
+const COMMUNITY_URLS=["https://raw.githubusercontent.com/AILookup/free-llm-resources/main/README.md","https://raw.githubusercontent.com/zukixa/cool-ai-stuff/main/README.md"] as const;
 
 async function getJson(url:string){const response=await fetch(url,{headers:{accept:"application/json","user-agent":"okame-model-curator/0.1"},signal:AbortSignal.timeout(30_000),cache:"no-store"});if(!response.ok)throw new Error(`${url} returned ${response.status}`);return response.json() as Promise<unknown>}
 async function getText(url:string){const response=await fetch(url,{headers:{accept:"text/plain","user-agent":"okame-model-curator/0.1"},signal:AbortSignal.timeout(30_000),cache:"no-store"});if(!response.ok)throw new Error(`${url} returned ${response.status}`);return response.text()}
@@ -23,7 +24,7 @@ export class LiteLLMCostMapSource implements DiscoverySource {
 const familyPattern=/(?:[a-z0-9._-]+\/(?:qwen|deepseek|glm|kimi|minimax|mimo|stepfun|hunyuan|doubao|ernie|longcat|baichuan|internlm|yi-)[a-z0-9._:+/-]*|(?:qwen|tongyi|deepseek|glm|zhipu|kimi|minimax|mimo|stepfun|hunyuan|doubao|ernie|longcat|baichuan|internlm|yi-)[a-z0-9._:+/-]*)/gi;
 export class CommunityListsSource implements DiscoverySource {
   readonly id="community-lists" as const;
-  async discover(){const settled=await Promise.allSettled(COMMUNITY_URLS.map(async url=>({url,text:await getText(url)})));const seen=new Set<string>();const out:DiscoveredCandidate[]=[];for(const result of settled){if(result.status!=="fulfilled")continue;const {url,text}=result.value;for(const [index,raw] of text.split("\n").entries()){if(!/(?:free|免费|\$0|no credit card|free tier|free quota|trial credit)/i.test(raw))continue;for(const match of raw.matchAll(familyPattern)){const id=match[0].replace(/^[`'"\[({<]+|[`'"\])}>.,;:|]+$/g,"");if(id.length<4||seen.has(id.toLowerCase()))continue;seen.add(id.toLowerCase());out.push({source:this.id,modelRef:id,displayName:id,freeType:"UNKNOWN",verifiedFree:false,sourceUrl:url,evidence:{line:index+1,excerpt:raw.trim().slice(0,500)}})}}}return out;}
+  async discover(){const settled=await Promise.allSettled(COMMUNITY_URLS.map(async url=>({url,text:await getText(url)})));const seen=new Set<string>();const out:DiscoveredCandidate[]=[];for(const result of settled){if(result.status!=="fulfilled")continue;const {url,text}=result.value;for(const [index,raw] of text.split("\n").entries()){if(!/(?:free|免费|\$0|no credit card|free tier|free quota|trial credit)/i.test(raw))continue;for(const match of raw.matchAll(familyPattern)){const id=match[0].replace(/^[`'"\[({<]+|[`'"\])}>.,;:|]+$/g,"");if(id.length<4||seen.has(id.toLowerCase()))continue;seen.add(id.toLowerCase());const provider=resolveProvider(null,id);out.push({source:this.id,modelRef:id,displayName:id,providerName:provider?.name,freeType:"UNKNOWN",verifiedFree:false,sourceUrl:url,evidence:{line:index+1,excerpt:raw.trim().slice(0,500),providerResolution:provider?{slug:provider.slug,method:"model-family"}:undefined}})}}}return out;}
 }
 
 export const discoverySources:readonly DiscoverySource[]=[new OpenRouterSource(),new LiteLLMCostMapSource(),new CommunityListsSource()];

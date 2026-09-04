@@ -53,6 +53,11 @@ export class HttpLiteLLMAdapter implements LiteLLMAdapter {
     const body=await response.json().catch(()=>({})) as {model_info?:{id?:string};id?:string}; return {id:body.model_info?.id??body.id};
   }
 
+  /** Keeps a deployment's record and routing history while taking it out of service. */
+  async setDeploymentBlocked(id: string, blocked: boolean) {
+    await this.request(`/model/${encodeURIComponent(id)}/update`, { method: "PATCH", body: JSON.stringify({ blocked }) });
+  }
+
   async removeDeployment(id:string){await this.request("/model/delete",{method:"POST",body:JSON.stringify({id})});}
 }
 

@@ -22,6 +22,20 @@
       "when": 1788493618070,
       "tag": "0002_aberrant_wither",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1788531173261,
+      "tag": "0003_smoke_tests_deployment_due",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1788600000000,
+      "tag": "0004_automation_settings",
+      "breakpoints": true
     }
   ]
 }

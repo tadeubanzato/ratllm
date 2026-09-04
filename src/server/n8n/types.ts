@@ -7,6 +7,13 @@ export interface N8nWorkflow {
   settings: Record<string, unknown>;
 }
 
+export interface OkameWorkflowDefinition {
+  name: string;
+  schedule: string;
+  endpoint: string;
+  description: string;
+}
+
 export interface WorkflowInstallResult {
   id: string;
   name: string;

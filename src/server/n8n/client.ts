@@ -1,6 +1,7 @@
 import "server-only";
 import { env } from "@/server/config";
 import type { N8nWorkflow, WorkflowInstallResult } from "./types";
+import { okameWorkflowDefinitions } from "./workflows";
 
 export class N8nApiError extends Error {
   constructor(message: string, readonly status?: number) { super(message); this.name = "N8nApiError"; }
@@ -26,5 +27,5 @@ export class N8nClient {
     return results;
   }
   async activateWorkflow(id:string){await this.request(`/workflows/${id}/activate`,{method:"POST"});}
-  async status(){const workflows=await this.listWorkflows();return {connected:true,workflowCount:workflows.length,okameWorkflows:workflows.filter(item=>item.name.includes("Okame")).map(item=>({id:item.id,name:item.name,active:Boolean(item.active)}))};}
+  async status(){const workflows=await this.listWorkflows();const managedNames=new Set(okameWorkflowDefinitions.map(item=>item.name));return {connected:true,workflowCount:workflows.length,okameWorkflows:workflows.filter(item=>managedNames.has(item.name)).map(item=>({id:item.id,name:item.name,active:Boolean(item.active)}))};}
 }
