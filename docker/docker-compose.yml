@@ -28,6 +28,23 @@ services:
       retries: 5
       start_period: 30s
     restart: unless-stopped
+  curator-worker:
+    container_name: ratllm-worker
+    build: { context: .., dockerfile: docker/Dockerfile }
+    command: ["pnpm", "worker"]
+    env_file: [../.env]
+    environment:
+      NODE_ENV: production
+      DEMO_MODE: "false"
+    depends_on:
+      curator-db: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "ps | grep -q '[w]orker-bootstrap.ts'"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
 volumes:
   # Keep the existing volume name so renaming the Compose project does not
   # create an empty database or discard the current Curator inventory.

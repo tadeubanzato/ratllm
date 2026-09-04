@@ -15,6 +15,8 @@ export const confidence = pgEnum("confidence", ["UNKNOWN", "LOW", "MEDIUM", "HIG
 export const limitSource = pgEnum("limit_source", ["DOCUMENTED", "OBSERVED", "ESTIMATED", "MANUAL", "UNKNOWN"]);
 export const runStatus = pgEnum("run_status", ["PENDING", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED", "ROLLED_BACK"]);
 export const smokeStatus = pgEnum("smoke_status", ["PENDING", "PASSED", "FAILED"]);
+export const automationStatus = pgEnum("automation_status", ["IDLE", "RUNNING", "SUCCEEDED", "FAILED", "DISABLED"]);
+export const sourceType = pgEnum("source_type", ["PROVIDER_API", "OPENAI_COMPATIBLE", "JSON_FEED", "MANUAL", "CUSTOM_ADAPTER"]);
 
 export const providers = pgTable("providers", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -37,6 +39,8 @@ export const providerCredentialReferences = pgTable("provider_credential_referen
   valueHint: text("value_hint"),
   lastValidatedAt: timestamp("last_validated_at", { withTimezone: true }),
   valid: boolean("valid"),
+  disabled: boolean("disabled").notNull().default(false),
+  lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
   ...timestamps,
 }, (table) => [uniqueIndex("credential_provider_env_uidx").on(table.providerId, table.environmentVariable)]);
 
@@ -166,6 +170,18 @@ export const leases = pgTable("leases", {
   key: text("key").primaryKey(), owner: text("owner").notNull(), expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(), updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+export const automationJobs = pgTable("automation_jobs", {
+  id: uuid("id").primaryKey().defaultRandom(), type: text("type").notNull().unique(), enabled: boolean("enabled").notNull().default(true), schedule: text("schedule").notNull(), timezone: text("timezone").notNull().default("UTC"), status: automationStatus("status").notNull().default("IDLE"), lastRunAt: timestamp("last_run_at", { withTimezone: true }), nextRunAt: timestamp("next_run_at", { withTimezone: true }), durationMs: integer("duration_ms"), failureCount: integer("failure_count").notNull().default(0), lastError: text("last_error"), ...timestamps,
+}, (table) => [index("automation_jobs_due_idx").on(table.enabled, table.nextRunAt)]);
+
+export const modelSources = pgTable("model_sources", {
+  id: uuid("id").primaryKey().defaultRandom(), name: text("name").notNull(), type: sourceType("type").notNull(), providerId: uuid("provider_id").references(() => providers.id, { onDelete: "set null" }), url: text("url"), enabled: boolean("enabled").notNull().default(true), priority: integer("priority").notNull().default(100), credentialReference: text("credential_reference"), adapterReference: text("adapter_reference"), lastSyncAt: timestamp("last_sync_at", { withTimezone: true }), status: text("status").notNull().default("UNKNOWN"), discoveredModelCount: integer("discovered_model_count").notNull().default(0), ...timestamps,
+});
+
+export const apiKeys = pgTable("api_keys", {
+  id: uuid("id").primaryKey().defaultRandom(), name: text("name").notNull(), keyHash: text("key_hash").notNull().unique(), prefix: text("prefix").notNull(), fingerprint: text("fingerprint").notNull(), scopes: jsonb("scopes").$type<string[]>().notNull().default([]), expiresAt: timestamp("expires_at", { withTimezone: true }), lastUsedAt: timestamp("last_used_at", { withTimezone: true }), revokedAt: timestamp("revoked_at", { withTimezone: true }), replacedById: uuid("replaced_by_id"), graceUntil: timestamp("grace_until", { withTimezone: true }), ...timestamps,
+}, (table) => [index("api_keys_prefix_idx").on(table.prefix)]);
 
 export const providersRelations = relations(providers, ({ many }) => ({ deployments: many(modelDeployments), credentials: many(providerCredentialReferences) }));
 export const modelsRelations = relations(canonicalModels, ({ many }) => ({ deployments: many(modelDeployments), capabilities: many(modelCapabilities) }));

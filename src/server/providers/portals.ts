@@ -1,3 +1,5 @@
+import "server-only";
+import { providerSlug } from "./catalog";
 export interface ProviderPortal {
   url: string;
   label: "Generate API key" | "Open provider console";
@@ -20,7 +22,12 @@ const providerPortals: Readonly<Record<string, ProviderPortal>> = {
   "cloudflare-workers-ai": { url: "https://dash.cloudflare.com/profile/api-tokens", label: "Generate API key" },
   "alibaba-model-studio": { url: "https://bailian.console.alibabacloud.com/", label: "Open provider console" },
   "ibm-watsonx": { url: "https://cloud.ibm.com/iam/apikeys", label: "Generate API key" },
-  zhipu: { url: "https://open.bigmodel.cn/usercenter/apikeys", label: "Generate API key" },
+  zhipu: { url: "https://z.ai/manage-apikey/apikey-list", label: "Generate API key" },
+  "vertex-ai": { url: "https://console.cloud.google.com/apis/credentials", label: "Open provider console" },
+  "volcengine-ark": { url: "https://console.volcengine.com/ark/region:ark+cn-beijing/apikey", label: "Generate API key" },
+  gigachat: { url: "https://developers.sber.ru/docs/ru/gigachat/individuals-quickstart", label: "Open provider console" },
+  "together-ai": { url: "https://api.together.ai/settings/api-keys", label: "Generate API key" },
+  sarvam: { url: "https://dashboard.sarvam.ai/", label: "Generate API key" },
 };
 
 export function getProviderPortal(slug: string): ProviderPortal | null {
@@ -45,7 +52,6 @@ const providerAliases: Readonly<Record<string,string>> = {
 
 export function getCandidateProviderPortal(source:string,providerName:string|null,modelRef:string):ProviderPortal|null {
   if(source==="openrouter")return getProviderPortal("openrouter");
-  const raw=(providerName??modelRef.split("/",1)[0]??"").trim().toLowerCase().replace(/[ .]+/g,"-");
-  const normalized=providerAliases[raw]??providerAliases[raw.replaceAll("-","_")]??raw;
-  return getProviderPortal(normalized);
+  const slug=providerSlug(providerName,modelRef);
+  return slug?getProviderPortal(slug):null;
 }

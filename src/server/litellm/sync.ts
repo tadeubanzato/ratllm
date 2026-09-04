@@ -1,9 +1,9 @@
 import "server-only";
-import { eq } from "drizzle-orm";
+import { and, eq, isNotNull, notInArray } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { CURATOR_VERSION } from "@/lib/constants";
 import { getDb } from "@/server/db/client";
-import { auditEvents, canonicalModels, modelDeployments, providers, syncRuns } from "@/server/db/schema";
+import { auditEvents, canonicalModels, laneAssignments, lanes, modelDeployments, providers, syncRuns } from "@/server/db/schema";
 import { log } from "@/server/logging";
 import { deploymentIdentity, isManagedDeployment, sanitizedMetadata } from "./classify";
 import { HttpLiteLLMAdapter } from "./client";
@@ -17,13 +17,22 @@ function providerIdentity(item: Awaited<ReturnType<HttpLiteLLMAdapter["listDeplo
 }
 function canonicalSlug(model: string) { return model.split("/").at(-1)!.toLowerCase().replace(/[^a-z0-9._-]+/g, "-"); }
 
-export async function syncLiteLLM(adapter = new HttpLiteLLMAdapter()) {
+export async function syncLiteLLM(options: { dryRun?: boolean } = {}, adapter = new HttpLiteLLMAdapter()) {
   const db = getDb(); const correlationId = randomUUID();
   const [run] = await db.insert(syncRuns).values({ type: "LITELLM_SYNC", status: "RUNNING", correlationId, startedAt: new Date() }).returning();
   try {
     const remote = await adapter.listDeployments(); let managed = 0; let unmanaged = 0;
+    if (options.dryRun) {
+      const existing = await db.select({ id: modelDeployments.litellmDeploymentId }).from(modelDeployments);
+      const current = new Set(existing.map(row => row.id).filter((id): id is string => id !== null));
+      const incoming = remote.map(item => deploymentIdentity(item).deploymentId);
+      const summary = { dryRun: true, before: current.size, after: incoming.length, added: incoming.filter(id => !current.has(id)), removed: [...current].filter(id => !incoming.includes(id)), updated: incoming.filter(id => current.has(id)), laneChanges: [], rateLimitChanges: [] };
+      await db.update(syncRuns).set({ status: "SUCCEEDED", summary, finishedAt: new Date(), updatedAt: new Date() }).where(eq(syncRuns.id, run.id));
+      return { runId: run.id, correlationId, ...summary };
+    }
+    const remoteDeploymentIds: string[] = [];
     for (const item of remote) {
-      const identity = deploymentIdentity(item); const providerIdentityValue=providerIdentity(item,identity.providerModelId); const slug=providerIdentityValue.slug;
+      const identity = deploymentIdentity(item); remoteDeploymentIds.push(identity.deploymentId); const providerIdentityValue=providerIdentity(item,identity.providerModelId); const slug=providerIdentityValue.slug;
       let provider = (await db.select().from(providers).where(eq(providers.slug, slug)).limit(1))[0];
       if (!provider) [provider] = await db.insert(providers).values({ slug, name: providerIdentityValue.name, adapterKey: "manual", adapterCapability: "MANUAL" }).returning();
       const sourceModel=typeof item.model_info.source_model==="string"?item.model_info.source_model:identity.providerModelId;
@@ -38,6 +47,12 @@ export async function syncLiteLLM(adapter = new HttpLiteLLMAdapter()) {
       if (existing) await db.update(modelDeployments).set({ ...values, updatedAt: new Date() }).where(eq(modelDeployments.id, existing.id));
       else await db.insert(modelDeployments).values(values);
     }
+    // Preserve inventory history, but never keep a removed router deployment
+    // eligible through an old HEALTHY result after a successful inventory sync.
+    const missingFromRouter = remoteDeploymentIds.length
+      ? and(isNotNull(modelDeployments.litellmDeploymentId), notInArray(modelDeployments.litellmDeploymentId, remoteDeploymentIds))
+      : isNotNull(modelDeployments.litellmDeploymentId);
+    await db.update(modelDeployments).set({ health: "UNAVAILABLE", updatedAt: new Date() }).where(missingFromRouter);
     const summary = { deployments: remote.length, managed, unmanaged };
     await db.update(syncRuns).set({ status: "SUCCEEDED", summary, finishedAt: new Date(), updatedAt: new Date() }).where(eq(syncRuns.id, run.id));
     await db.insert(auditEvents).values({ actor: "system", action: "litellm.inventory.synced", entityType: "sync_run", entityId: run.id, after: summary, correlationId });

@@ -22,5 +22,6 @@ export interface LiteLLMAdapter {
   getVersion(): Promise<string | null>;
   smokeTest(model: string): Promise<SmokeResult>;
   addDeployment(input: { modelName:string; model:string; apiKey:string; metadata:Record<string,unknown> }): Promise<{ id?:string }>;
+  setDeploymentBlocked(id: string, blocked: boolean): Promise<void>;
   removeDeployment(id:string): Promise<void>;
 }

@@ -15,7 +15,7 @@ The default host port is `9090`; set `CURATOR_PORT` to change it.
 
 ## Required environment
 
-Set `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `DATABASE_URL`, `LITELLM_BASE_URL`, `LITELLM_MASTER_KEY`, `CREDENTIAL_ENCRYPTION_KEY`, `INTERNAL_API_SECRET`, and optionally `N8N_BASE_URL`, `N8N_API_KEY`, and `CURATOR_PUBLIC_URL`.
+Set `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `DATABASE_URL`, `LITELLM_BASE_URL`, `LITELLM_MASTER_KEY`, `CREDENTIAL_ENCRYPTION_KEY`, and `INTERNAL_API_SECRET`. For n8n, set `N8N_BASE_URL`, `N8N_API_KEY`, and `CURATOR_N8N_URL` to the URL the n8n process can reach (for example, `http://curator-web:3000` on a shared Docker network). `CURATOR_PUBLIC_URL` remains a compatibility fallback for public-ingress deployments.
 
 Never commit `.env` or place real provider keys in examples. Provider credentials entered in the UI are encrypted and never returned to the browser.
 
@@ -29,4 +29,4 @@ docker compose -f docker/docker-compose.yml down
 
 The containers are named `ratllm-web` and `ratllm-db`. The Compose project is `ratllm`. PostgreSQL data is persisted in the existing `okame-model-curator_curator-db-data` volume so renaming does not lose inventory. Do not use `down --volumes` unless that data is intentionally being destroyed.
 
-After configuring n8n, open the Curator n8n page and use **Create workflows**. The daily curation workflow is activated by that action; other workflows remain inactive until their endpoints are enabled.
+After configuring n8n, open the Curator n8n page and use **Create workflows**. The installer idempotently creates or updates the implemented autonomous workflows: candidate curation every six hours and model health monitoring every ten minutes. The n8n API key needs workflow list, create, update, and activate scopes.
