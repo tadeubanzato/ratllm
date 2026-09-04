@@ -1,0 +1,3 @@
+"use client";
+import { useState } from "react";import { useRouter } from "next/navigation";
+export function InstallWorkflowsButton({enabled}:{enabled:boolean}){const[state,setState]=useState(enabled?"Create workflows":"API key required");const router=useRouter();async function install(){setState("Building…");const response=await fetch("/api/n8n/install",{method:"POST"});const body=await response.json();if(response.ok){setState(`Installed ${body.installed}`);router.refresh()}else setState(body.error?.message??"Installation failed")}return <button className="button primary" onClick={install} disabled={!enabled||state==="Building…"}>{state}</button>}

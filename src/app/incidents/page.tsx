@@ -1,0 +1,1 @@
+import { NotReady } from "@/components/not-ready";export default function Page(){return <NotReady title="Incidents" description="Health observations will open and resolve incidents once the monitoring workflow is connected."/>}

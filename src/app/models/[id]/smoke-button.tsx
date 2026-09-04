@@ -1,0 +1,3 @@
+"use client";
+import { useState } from "react";
+export function SmokeButton({deploymentId,model}:{deploymentId:string;model:string}) { const [state,setState]=useState<"idle"|"running"|"passed"|"failed">("idle"); async function run(){setState("running");const response=await fetch("/api/litellm/smoke",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({deploymentId,model})});setState(response.ok?"passed":"failed")} return <button className="button primary" onClick={run} disabled={state==="running"}>{state==="running"?"Testing…":state==="passed"?"Smoke test passed":state==="failed"?"Test failed · retry":"Run smoke test"}</button> }

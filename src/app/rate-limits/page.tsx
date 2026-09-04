@@ -1,0 +1,1 @@
+import { NotReady } from "@/components/not-ready";export default function Page(){return <NotReady title="Rate Limits" description="Rate-limit profiles are migrated and queryable; controlled learning and manual override workflows arrive in the next vertical slice."/>}

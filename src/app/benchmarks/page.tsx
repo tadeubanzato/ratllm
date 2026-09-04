@@ -1,0 +1,1 @@
+import { NotReady } from "@/components/not-ready";export default function Page(){return <NotReady title="Benchmarks" description="The existing deterministic probe tasks will be ported behind versioned benchmark suites after inventory and smoke testing are stable."/>}

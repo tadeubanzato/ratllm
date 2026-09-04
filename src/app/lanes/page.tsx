@@ -1,0 +1,6 @@
+import { PageShell } from "@/components/page-shell";
+import { StatusPill } from "@/components/status-pill";
+import { demoLanes } from "@/server/demo-data";
+import { getLanes, withDemo } from "@/server/queries";
+export const dynamic="force-dynamic";
+export default async function LanesPage(){const rows=await withDemo(getLanes,()=>demoLanes);return <PageShell title="Lanes" eyebrow="Stable application aliases"><div className="detail-grid">{rows.map(lane=><section className="panel" key={lane.id}><div className="panel-header"><h3>{lane.slug.toUpperCase()}</h3><StatusPill value={lane.healthy>=lane.minimumHealthy?lane.confidence:"Below target"}/></div><div className="panel-body"><div style={{display:"flex",alignItems:"baseline",gap:8}}><strong style={{fontFamily:"var(--font-mono)",fontSize:25}}>{lane.healthy}</strong><span style={{color:"var(--muted)",fontSize:10}}>healthy deployments · minimum {lane.minimumHealthy}</span></div><div className={`bar ${lane.healthy<lane.minimumHealthy?"warn":""}`} style={{marginTop:12}}><i style={{width:`${Math.min(100,lane.healthy/lane.minimumHealthy*100)}%`}}/></div><p style={{fontSize:10,color:"var(--muted)",marginBottom:0}}>Eligibility is evaluated before lane-specific ranking. Provider diversity applies to the first three positions.</p></div></section>)}</div></PageShell>}

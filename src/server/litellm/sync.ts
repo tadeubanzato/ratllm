@@ -1,0 +1,50 @@
+import "server-only";
+import { eq } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
+import { CURATOR_VERSION } from "@/lib/constants";
+import { getDb } from "@/server/db/client";
+import { auditEvents, canonicalModels, modelDeployments, providers, syncRuns } from "@/server/db/schema";
+import { log } from "@/server/logging";
+import { deploymentIdentity, isManagedDeployment, sanitizedMetadata } from "./classify";
+import { HttpLiteLLMAdapter } from "./client";
+
+function privateApiBase(value: unknown) { return typeof value === "string" && /localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|host\.docker/i.test(value); }
+function providerIdentity(item: Awaited<ReturnType<HttpLiteLLMAdapter["listDeployments"]>>[number], model: string) {
+  const backend=String(item.model_info.backend??"");
+  if(backend.toLowerCase()==="mlx"||privateApiBase(item.litellm_params.api_base))return {slug:"local",name:String(item.model_info.source_provider??"Local / MLX")};
+  const slug=model.includes("/")?model.split("/",1)[0]!.toLowerCase():"litellm";
+  return {slug,name:slug==="litellm"?"LiteLLM / Custom":slug.replace(/^./,c=>c.toUpperCase())};
+}
+function canonicalSlug(model: string) { return model.split("/").at(-1)!.toLowerCase().replace(/[^a-z0-9._-]+/g, "-"); }
+
+export async function syncLiteLLM(adapter = new HttpLiteLLMAdapter()) {
+  const db = getDb(); const correlationId = randomUUID();
+  const [run] = await db.insert(syncRuns).values({ type: "LITELLM_SYNC", status: "RUNNING", correlationId, startedAt: new Date() }).returning();
+  try {
+    const remote = await adapter.listDeployments(); let managed = 0; let unmanaged = 0;
+    for (const item of remote) {
+      const identity = deploymentIdentity(item); const providerIdentityValue=providerIdentity(item,identity.providerModelId); const slug=providerIdentityValue.slug;
+      let provider = (await db.select().from(providers).where(eq(providers.slug, slug)).limit(1))[0];
+      if (!provider) [provider] = await db.insert(providers).values({ slug, name: providerIdentityValue.name, adapterKey: "manual", adapterCapability: "MANUAL" }).returning();
+      const sourceModel=typeof item.model_info.source_model==="string"?item.model_info.source_model:identity.providerModelId;
+      const modelSlug = canonicalSlug(sourceModel);
+      let model = (await db.select().from(canonicalModels).where(eq(canonicalModels.slug, modelSlug)).limit(1))[0];
+      const modelName=typeof item.model_info.source_model==="string"?item.model_info.source_model:modelSlug.replace(/[-_]/g," ").replace(/\b\w/g,c=>c.toUpperCase());
+      if (!model) [model] = await db.insert(canonicalModels).values({ slug: modelSlug, name:modelName, lifecycle: "ACTIVE" }).returning();
+      const managedFlag = isManagedDeployment(item);
+      if (managedFlag) managed += 1; else unmanaged += 1;
+      const existing = (await db.select().from(modelDeployments).where(eq(modelDeployments.litellmDeploymentId, identity.deploymentId)).limit(1))[0];
+      const values = { canonicalModelId: model.id, providerId: provider.id, providerModelId: identity.providerModelId, litellmDeploymentId: identity.deploymentId, litellmModelName: item.model_name, managed: managedFlag, managedBy: managedFlag ? String(item.model_info.managed_by) : null, curatorVersion: managedFlag ? String(item.model_info.curator_version ?? CURATOR_VERSION) : null, apiBase: typeof item.litellm_params.api_base === "string" ? item.litellm_params.api_base : null, rawMetadata: sanitizedMetadata(item), lastSeenAt: new Date() };
+      if (existing) await db.update(modelDeployments).set({ ...values, updatedAt: new Date() }).where(eq(modelDeployments.id, existing.id));
+      else await db.insert(modelDeployments).values(values);
+    }
+    const summary = { deployments: remote.length, managed, unmanaged };
+    await db.update(syncRuns).set({ status: "SUCCEEDED", summary, finishedAt: new Date(), updatedAt: new Date() }).where(eq(syncRuns.id, run.id));
+    await db.insert(auditEvents).values({ actor: "system", action: "litellm.inventory.synced", entityType: "sync_run", entityId: run.id, after: summary, correlationId });
+    return { runId: run.id, correlationId, ...summary };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown sync failure";
+    await db.update(syncRuns).set({ status: "FAILED", error: message, finishedAt: new Date(), updatedAt: new Date() }).where(eq(syncRuns.id, run.id));
+    log("error", "LiteLLM inventory sync failed", { correlationId, error: message }); throw error;
+  }
+}

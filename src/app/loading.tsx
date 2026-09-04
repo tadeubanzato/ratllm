@@ -1,0 +1,1 @@
+export default function Loading() { return <main className="page"><div className="skeleton title-skeleton"/><div className="kpi-grid">{Array.from({length:8},(_,i)=><div className="skeleton kpi-skeleton" key={i}/>)}</div><div className="content-grid"><div className="skeleton panel-skeleton"/><div className="skeleton panel-skeleton"/></div></main>; }

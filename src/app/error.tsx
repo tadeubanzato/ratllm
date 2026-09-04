@@ -1,0 +1,2 @@
+"use client";
+export default function ErrorPage({ reset }: { error: Error & { digest?: string }; reset: () => void }) { return <main className="page center-state"><div><span className="error-glyph">!</span><h2>Unable to load this view</h2><p>The control plane returned an unexpected error. No changes were applied.</p><button className="button primary" onClick={reset}>Try again</button></div></main>; }
