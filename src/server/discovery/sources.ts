@@ -1,7 +1,11 @@
 import "server-only";
+import { eq } from "drizzle-orm";
 import { z } from "zod";
 import type { DiscoveredCandidate, DiscoverySource } from "./types";
+import { getDb } from "@/server/db/client";
+import { providerCredentialReferences, providers } from "@/server/db/schema";
 import { resolveProvider } from "@/server/providers/catalog";
+import { resolveCredentialSecret } from "./verify";
 import { sourceRegistry, type SourceConfig } from "./registry";
 
 async function getJson(url: string, headers: Record<string, string> = {}): Promise<unknown> {
@@ -15,10 +19,20 @@ async function getText(url: string): Promise<string> {
   return response.text();
 }
 const numberValue = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? Math.round(value) : undefined;
-function bearerHeaders(config: SourceConfig): Record<string, string> {
+/** Falls back to a verified credential the user configured in Settings → Providers when the raw env var isn't set — a key added through the UI should actually get used for discovery, not just for candidate testing. */
+async function bearerHeaders(config: SourceConfig): Promise<Record<string, string>> {
   if (!config.authEnv) return {};
-  const key = process.env[config.authEnv];
-  return key ? {authorization: `Bearer ${key}`} : {};
+  const envKey = process.env[config.authEnv];
+  if (envKey) return {authorization: `Bearer ${envKey}`};
+  const provider = resolveProvider(config.id, "");
+  if (!provider) return {};
+  const db = getDb();
+  const providerRow = (await db.select({id: providers.id}).from(providers).where(eq(providers.slug, provider.slug)).limit(1))[0];
+  if (!providerRow) return {};
+  const credential = (await db.select().from(providerCredentialReferences).where(eq(providerCredentialReferences.providerId, providerRow.id)).limit(1))[0];
+  if (!credential || credential.valid !== true) return {};
+  const secret = resolveCredentialSecret(credential);
+  return secret ? {authorization: `Bearer ${secret}`} : {};
 }
 
 /** OpenRouter's public catalog. Free is proven by :free suffix or zero prompt/completion price. */
@@ -26,7 +40,7 @@ class OpenRouterSource implements DiscoverySource {
   constructor(private config: SourceConfig) {}
   get id() { return this.config.id; }
   async discover(): Promise<DiscoveredCandidate[]> {
-    const raw = z.object({data: z.array(z.record(z.string(), z.unknown()))}).parse(await getJson(this.config.url, bearerHeaders(this.config)));
+    const raw = z.object({data: z.array(z.record(z.string(), z.unknown()))}).parse(await getJson(this.config.url, await bearerHeaders(this.config)));
     return raw.data.flatMap((row): DiscoveredCandidate[] => {
       const id = typeof row.id === "string" ? row.id : "";
       const pricing = row.pricing && typeof row.pricing === "object" ? row.pricing as Record<string, unknown> : {};
@@ -63,7 +77,7 @@ class OpenAICompatibleModelsSource implements DiscoverySource {
   constructor(private config: SourceConfig) {}
   get id() { return this.config.id; }
   async discover(): Promise<DiscoveredCandidate[]> {
-    const headers = bearerHeaders(this.config);
+    const headers = await bearerHeaders(this.config);
     if (this.config.authEnv && !this.config.authOptional && !headers.authorization) return [];
     const body = await getJson(this.config.url, headers) as Record<string, unknown>;
     const data = Array.isArray(body.data) ? body.data : Array.isArray(body) ? body : [];
@@ -84,7 +98,7 @@ class HuggingFaceProviderSource implements DiscoverySource {
   constructor(private config: SourceConfig) {}
   get id() { return this.config.id; }
   async discover(): Promise<DiscoveredCandidate[]> {
-    const headers = bearerHeaders(this.config);
+    const headers = await bearerHeaders(this.config);
     const results = await Promise.allSettled((this.config.providers ?? []).map(async provider => {
       const url = `${this.config.url}?inference_provider=${provider}`;
       const data = await getJson(url, headers);

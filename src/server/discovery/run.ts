@@ -1,6 +1,6 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
-import { eq,and,ne } from "drizzle-orm";
+import { eq,and } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
 import { auditEvents,modelCandidates,providers,syncRuns } from "@/server/db/schema";
 import { discoverySources } from "./sources";
@@ -9,10 +9,10 @@ import { resolveProvider } from "@/server/providers/catalog";
 import { bareModelKey } from "./model-key";
 import { consolidateModelCandidates } from "./consolidate";
 
-/** When a second (candidate-only) source reports a model an existing row from another source already covers, merge it in as corroboration instead of creating a near-duplicate row. */
-async function findCrossSourceDuplicate(db:ReturnType<typeof getDb>,providerName:string,source:string,modelRef:string){
+/** When another row (same source under a different spelling, or a different source entirely) already covers this model for this provider, merge it in as corroboration instead of creating a near-duplicate row. Deliberately does not exclude the current source: a single text-scraped page can list the same model twice under slightly different spellings, and the exact (source, modelRef) check above this call only catches an identical spelling. */
+async function findDuplicateCandidate(db:ReturnType<typeof getDb>,providerName:string,modelRef:string){
   const key=bareModelKey(modelRef);
-  const rows=await db.select({id:modelCandidates.id,evidence:modelCandidates.evidence,modelRef:modelCandidates.modelRef}).from(modelCandidates).where(and(eq(modelCandidates.providerName,providerName),ne(modelCandidates.source,source)));
+  const rows=await db.select({id:modelCandidates.id,evidence:modelCandidates.evidence,modelRef:modelCandidates.modelRef}).from(modelCandidates).where(eq(modelCandidates.providerName,providerName));
   return rows.find(row=>bareModelKey(row.modelRef)===key)??null;
 }
 
@@ -34,8 +34,8 @@ export async function runDiscovery(){
       const provider=resolveProvider(item.providerName,item.modelRef);if(provider){await db.insert(providers).values(provider).onConflictDoNothing();item.providerName=provider.name;}
       const existing=(await db.select({id:modelCandidates.id,evidence:modelCandidates.evidence}).from(modelCandidates).where(and(eq(modelCandidates.source,item.source),eq(modelCandidates.modelRef,item.modelRef))).limit(1))[0];
       if(existing){const values={displayName:item.displayName,providerName:item.providerName??null,lifecycle:"DISCOVERED" as const,freeType:item.freeType,verifiedFree:item.verifiedFree,contextWindow:item.contextWindow??null,maxOutputTokens:item.maxOutputTokens??null,supportsVision:item.supportsVision??null,supportsTools:item.supportsTools??null,supportsReasoning:item.supportsReasoning??null,sourceUrl:item.sourceUrl,evidence:{...(existing.evidence??{}),...item.evidence},lastSeenAt:new Date(),updatedAt:new Date()};await db.update(modelCandidates).set(values).where(eq(modelCandidates.id,existing.id));discovered++;continue;}
-      const crossSource=provider?await findCrossSourceDuplicate(db,provider.name,item.source,item.modelRef):null;
-      if(crossSource){const prior=Array.isArray(crossSource.evidence.corroboratingSources)?crossSource.evidence.corroboratingSources as {source:string;sourceUrl:string}[]:[];const corroboratingSources=prior.some(c=>c.source===item.source)?prior:[...prior,{source:item.source,sourceUrl:item.sourceUrl}];await db.update(modelCandidates).set({evidence:{...crossSource.evidence,corroboratingSources},lastSeenAt:new Date(),updatedAt:new Date()}).where(eq(modelCandidates.id,crossSource.id));discovered++;continue;}
+      const duplicate=provider?await findDuplicateCandidate(db,provider.name,item.modelRef):null;
+      if(duplicate){const prior=Array.isArray(duplicate.evidence.corroboratingSources)?duplicate.evidence.corroboratingSources as {source:string;sourceUrl:string}[]:[];const corroboratingSources=prior.some(c=>c.source===item.source)?prior:[...prior,{source:item.source,sourceUrl:item.sourceUrl}];await db.update(modelCandidates).set({evidence:{...duplicate.evidence,corroboratingSources},lastSeenAt:new Date(),updatedAt:new Date()}).where(eq(modelCandidates.id,duplicate.id));discovered++;continue;}
       await db.insert(modelCandidates).values({source:item.source,modelRef:item.modelRef,displayName:item.displayName,providerName:item.providerName??null,lifecycle:"DISCOVERED" as const,freeType:item.freeType,verifiedFree:item.verifiedFree,contextWindow:item.contextWindow??null,maxOutputTokens:item.maxOutputTokens??null,supportsVision:item.supportsVision??null,supportsTools:item.supportsTools??null,supportsReasoning:item.supportsReasoning??null,sourceUrl:item.sourceUrl,evidence:item.evidence,lastSeenAt:new Date(),updatedAt:new Date()});
       discovered++;
     }

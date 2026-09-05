@@ -8,6 +8,7 @@ export interface CandidateVerificationInput { modelRef: string; source: string; 
 
 const knownEndpoints: Readonly<Record<string, string>> = {
   openrouter: "https://openrouter.ai/api/v1/chat/completions", groq: "https://api.groq.com/openai/v1/chat/completions", cerebras: "https://api.cerebras.ai/v1/chat/completions", mistral: "https://api.mistral.ai/v1/chat/completions", sambanova: "https://api.sambanova.ai/v1/chat/completions", "together-ai": "https://api.together.xyz/v1/chat/completions", nvidia: "https://integrate.api.nvidia.com/v1/chat/completions", zhipu: "https://open.bigmodel.cn/api/paas/v4/chat/completions", "alibaba-model-studio": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
+  "google-ai-studio": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", "public-ai": "https://api.publicai.co/v1/chat/completions",
 };
 
 /** The chat-completions URL a candidate's provider is actually reachable at — the same URL LiteLLM would need to call it. */
