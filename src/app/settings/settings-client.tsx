@@ -169,17 +169,38 @@ export function SettingsClient({environment, lanes, initialHistory, smokeHistory
 
     {active === "Automation" && <Card title="Automation jobs" aside={<span>Database-backed scheduler</span>}>
       <p className="settings-help">Each job is claimed with a lease before execution, preventing overlap across worker restarts. Changes take effect when the worker next checks for due jobs.</p>
-      <div className="settings-table-wrap"><table className="data-table settings-table"><thead><tr><th>Job</th><th>Enabled</th><th>Schedule</th><th>Next / last run</th><th>Duration / failures</th><th>History</th><th>Actions</th></tr></thead><tbody>
-        {jobs.map(job => <tr key={job.type}>
-          <td><strong>{job.type.replaceAll("_", " ")}</strong><br/><small>{job.status}{job.lastError ? ` · ${job.lastError}` : ""}</small></td>
-          <td><input aria-label={`${job.type} enabled`} type="checkbox" checked={job.enabled} disabled={busy} onChange={event => void act(() => request(`/api/settings/automation?type=${job.type}`, {method: "PATCH", body: JSON.stringify({enabled: event.target.checked})}))}/></td>
-          <td><ScheduleEditor schedule={job.schedule} jobType={job.type} disabled={busy} onSave={cron => void act(() => request(`/api/settings/automation?type=${job.type}`, {method: "PATCH", body: JSON.stringify({schedule: cron})}))}/></td>
-          <td><small>Next {stamp(job.nextRunAt)}</small><br/><small>Last {stamp(job.lastRunAt)}</small></td>
-          <td>{job.durationMs ?? "—"} ms<br/>{job.failureCount} failures</td>
-          <td><StatusHistoryStrip label={`${job.type} execution history`} items={jobHistory.filter(item => item.label === job.type)}/></td>
-          <td><button className="button" type="button" disabled={busy} onClick={() => void runJobNow(job.type)}>Run now</button> <Link className="button" href={`/runs?type=${job.type}`}>View runs</Link></td>
-        </tr>)}
-      </tbody></table></div>
+      <div className="automation-jobs">
+        {jobs.map(job => <div className="automation-job-card" key={job.type}>
+          <div className="automation-job-header">
+            <div className="automation-job-name">
+              <input aria-label={`${job.type} enabled`} type="checkbox" checked={job.enabled} disabled={busy} onChange={event => void act(() => request(`/api/settings/automation?type=${job.type}`, {method: "PATCH", body: JSON.stringify({enabled: event.target.checked})}))}/>
+              <strong>{job.type.replaceAll("_", " ")}</strong>
+              <StatusPill value={job.status}/>
+            </div>
+            <div className="settings-actions">
+              <button className="button" type="button" disabled={busy} onClick={() => void runJobNow(job.type)}>Run now</button>
+              <Link className="button" href={`/runs?type=${job.type}`}>View runs</Link>
+            </div>
+          </div>
+          <div className="automation-job-body">
+            <div>
+              <label className="settings-job-label">Schedule</label>
+              <ScheduleEditor schedule={job.schedule} jobType={job.type} disabled={busy} onSave={cron => void act(() => request(`/api/settings/automation?type=${job.type}`, {method: "PATCH", body: JSON.stringify({schedule: cron})}))}/>
+            </div>
+            <div className="automation-job-stats">
+              <div><small>Next run</small><strong>{stamp(job.nextRunAt)}</strong></div>
+              <div><small>Last run</small><strong>{stamp(job.lastRunAt)}</strong></div>
+              <div><small>Duration</small><strong>{job.durationMs ?? "—"} ms</strong></div>
+              <div><small>Failures</small><strong>{job.failureCount}</strong></div>
+            </div>
+          </div>
+          {job.lastError && <p className="settings-feedback is-error">{job.lastError}</p>}
+          <div className="automation-job-history">
+            <small>Recent runs</small>
+            <StatusHistoryStrip label={`${job.type} execution history`} items={jobHistory.filter(item => item.label === job.type)}/>
+          </div>
+        </div>)}
+      </div>
     </Card>}
 
     {active === "Model Sources" && <Card title="Model source management" aside={<button className="button primary" type="button" onClick={() => setSourceModal({mode: "add"})}>Add source</button>}>
