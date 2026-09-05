@@ -1,10 +1,11 @@
 import "server-only";
 import { and, eq, isNotNull, notInArray } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
-import { CURATOR_VERSION } from "@/lib/constants";
+import { CURATOR_MANAGED_BY, CURATOR_VERSION } from "@/lib/constants";
 import { getDb } from "@/server/db/client";
 import { auditEvents, canonicalModels, laneAssignments, lanes, modelDeployments, providers, syncRuns } from "@/server/db/schema";
 import { log } from "@/server/logging";
+import { resolveProvider } from "@/server/providers/catalog";
 import { deploymentIdentity, isManagedDeployment, sanitizedMetadata } from "./classify";
 import { HttpLiteLLMAdapter } from "./client";
 
@@ -12,6 +13,11 @@ function privateApiBase(value: unknown) { return typeof value === "string" && /l
 function providerIdentity(item: Awaited<ReturnType<HttpLiteLLMAdapter["listDeployments"]>>[number], model: string) {
   const backend=String(item.model_info.backend??"");
   if(backend.toLowerCase()==="mlx"||privateApiBase(item.litellm_params.api_base))return {slug:"local",name:String(item.model_info.source_provider??"Local / MLX")};
+  // A deployment this app added carries the real provider name (its own model string is wrapped as "openai/<real id>" for the generic OpenAI-compatible route, so re-splitting that wrapper on "/" would misidentify the provider).
+  if (item.model_info.managed_by === CURATOR_MANAGED_BY && typeof item.model_info.source_provider === "string") {
+    const known = resolveProvider(item.model_info.source_provider, "");
+    if (known) return {slug: known.slug, name: known.name};
+  }
   const slug=model.includes("/")?model.split("/",1)[0]!.toLowerCase():"litellm";
   return {slug,name:slug==="litellm"?"LiteLLM / Custom":slug.replace(/^./,c=>c.toUpperCase())};
 }
