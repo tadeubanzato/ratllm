@@ -1,9 +1,8 @@
-import { Activity, AlertTriangle, BarChart3, Boxes, Braces, Cable, ChartNoAxesCombined, ChevronsUpDown, CircleGauge, Database, FileClock, Gauge, GitPullRequestArrow, Layers3, Network, PanelLeft, PlayCircle, Search, ServerCog, Settings, ShieldAlert } from "lucide-react";
+import { Activity, AlertTriangle, BarChart3, Boxes, Braces, Cable, ChartNoAxesCombined, ChevronsUpDown, CircleGauge, Database, FileClock, Gauge, Layers3, Network, PanelLeft, PlayCircle, Search, ServerCog, Settings } from "lucide-react";
 
 export const navItems = [
-  ["Overview", "/", CircleGauge], ["Providers", "/providers", Network], ["Models", "/models", Boxes], ["Lanes", "/lanes", Layers3],
+  ["Overview", "/", CircleGauge], ["Providers", "/providers", Network], ["Discovered Models", "/models", Boxes], ["Lanes", "/lanes", Layers3],
   ["Rate Limits", "/rate-limits", Gauge], ["Benchmarks", "/benchmarks", BarChart3], ["Runs", "/runs", PlayCircle],
-  ["Change Plans", "/change-plans", GitPullRequestArrow], ["Incidents", "/incidents", ShieldAlert],
   ["LiteLLM", "/litellm", ServerCog], ["Settings", "/settings", Settings],
 ] as const;
 

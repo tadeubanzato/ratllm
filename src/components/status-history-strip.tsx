@@ -46,8 +46,6 @@ function timestamp(value: StatusHistoryItem["at"]) {
  */
 export function StatusHistoryStrip({ items, label = "Recent status history", className = "", count = 14 }: { items: StatusHistoryItem[]; label?: string; className?: string; count?: number }) {
   const recent = items.slice(0, count);
-  if (!recent.length) return <span className={`status-history status-history-empty ${className}`} aria-label={`${label}: no observations`}><span className="status-history-square status-history-unknown" aria-hidden="true"/><span className="status-history-empty-label">No observations</span></span>;
-
   const padding = Math.max(0, count - recent.length);
   const ordered: Array<StatusHistoryItem | null> = [...Array(padding).fill(null), ...[...recent].reverse()];
 
@@ -63,13 +61,13 @@ export function StatusHistoryStrip({ items, label = "Recent status history", cla
 }
 
 /** A status strip with a trailing uptime percentage, in the style of a status-page uptime row. `items` must be newest-first. */
-export function UptimeBar({ items, label, count = 30 }: { items: StatusHistoryItem[]; label: string; count?: number }) {
+export function UptimeBar({ items, label, count = 30, compact = false }: { items: StatusHistoryItem[]; label: string; count?: number; compact?: boolean }) {
   const visible = items.slice(0, count);
   const measured = visible.filter(item => stateFor(item.status) !== "unknown" && stateFor(item.status) !== "running");
   const healthy = measured.filter(item => stateFor(item.status) === "success").length;
   const uptime = measured.length ? (healthy / measured.length) * 100 : null;
   return <div className="uptime-bar">
-    <StatusHistoryStrip items={visible} label={label} count={count}/>
+    <StatusHistoryStrip items={visible} label={label} count={count} className={compact ? "status-history-compact" : ""}/>
     <span className="uptime-bar-value">{uptime === null ? "No data" : `${uptime.toFixed(uptime === 100 ? 0 : 1)}%`}</span>
   </div>;
 }

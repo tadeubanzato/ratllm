@@ -7,10 +7,11 @@ import { LiteLLMConnectionForm, request } from "./connection-form";
 import { CredentialForm } from "@/app/providers/[id]/credential-form";
 import { StatusPill } from "@/components/status-pill";
 import { Modal } from "@/components/modal";
+import { cronToSchedule, scheduleToCron, scheduleUnits, type ScheduleUnit } from "@/lib/schedule";
 
 const tabs = ["General", "LiteLLM", "Providers", "Automation", "Model Sources", "API Access", "Safety"] as const;
 type Tab = (typeof tabs)[number];
-type Provider = {id: string; name: string; slug: string; enabled: boolean; credentialState: string; lastValidatedAt: string | null; environmentVariable: string; testSupported: boolean};
+type Provider = {id: string; name: string; slug: string; enabled: boolean; credentialState: string; lastValidatedAt: string | null; environmentVariable: string; testSupported: boolean; portal: {url: string; label: string} | null};
 type Job = {type: string; enabled: boolean; schedule: string; timezone: string; status: string; lastRunAt: string | null; nextRunAt: string | null; durationMs: number | null; failureCount: number; lastError: string | null};
 type Source = {id: string; name: string; type: string; providerId: string | null; url: string | null; enabled: boolean; priority: number; status: string; discoveredModelCount: number; lastSyncAt: string | null};
 type ApiKey = {id: string; name: string; prefix: string; scopes: string[]; createdAt: string; expiresAt: string | null; lastUsedAt: string | null; revokedAt: string | null};
@@ -25,6 +26,36 @@ function History({items, label}: {items: StatusHistoryItem[]; label: string}) {
   return <div className="history-row"><StatusHistoryStrip label={label} items={items.slice(0, 14)}/></div>;
 }
 
+function ScheduleEditor({schedule, jobType, disabled, onSave}: {schedule: string; jobType: string; disabled: boolean; onSave: (cron: string) => void}) {
+  const parsed = cronToSchedule(schedule);
+  const [custom, setCustom] = useState(parsed === null);
+  const [n, setN] = useState(parsed?.n ?? 1);
+  const [unit, setUnit] = useState<ScheduleUnit>(parsed?.unit ?? "DAY");
+  const [trackedSchedule, setTrackedSchedule] = useState(schedule);
+
+  if (schedule !== trackedSchedule) {
+    setTrackedSchedule(schedule);
+    setCustom(parsed === null);
+    if (parsed) { setN(parsed.n); setUnit(parsed.unit); }
+  }
+
+  if (custom) return <div className="schedule-picker">
+    <input aria-label={`${jobType} cron schedule`} className="input compact-input" defaultValue={schedule} disabled={disabled} onBlur={event => onSave(event.target.value)}/>
+    <button type="button" className="button" disabled={disabled} onClick={() => { setCustom(false); setN(1); setUnit("DAY"); onSave(scheduleToCron(1, "DAY")); }}>Use simple schedule</button>
+  </div>;
+
+  return <div className="schedule-picker">
+    <span>Every</span>
+    <select aria-label={`${jobType} interval count`} className="input compact-input" disabled={disabled} value={n} onChange={event => { const next = Number(event.target.value); setN(next); onSave(scheduleToCron(next, unit)); }}>
+      {Array.from({length: 10}, (_, index) => index + 1).map(value => <option key={value} value={value}>{value}</option>)}
+    </select>
+    <select aria-label={`${jobType} interval unit`} className="input compact-input" disabled={disabled} value={unit} onChange={event => { const next = event.target.value as ScheduleUnit; setUnit(next); onSave(scheduleToCron(n, next)); }}>
+      {scheduleUnits.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
+    </select>
+    <button type="button" className="button" disabled={disabled} onClick={() => setCustom(true)}>Custom cron</button>
+  </div>;
+}
+
 export function SettingsClient({environment, lanes, initialHistory, smokeHistory}: {environment: string; lanes: Lane[]; initialHistory: StatusHistoryItem[]; smokeHistory: StatusHistoryItem[]}) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -37,6 +68,7 @@ export function SettingsClient({environment, lanes, initialHistory, smokeHistory
   const [editing, setEditing] = useState<string | null>(null);
   const [sourceModal, setSourceModal] = useState<null | {mode: "add"} | {mode: "edit"; source: Source}>(null);
   const [keyModal, setKeyModal] = useState(false);
+  const [addProviderModal, setAddProviderModal] = useState(false);
   const [revealedKey, setRevealedKey] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -100,8 +132,7 @@ export function SettingsClient({environment, lanes, initialHistory, smokeHistory
 
   return <div className="settings-control-center">
     <nav className="settings-tabs" aria-label="Settings sections">{tabs.map(tab => <button type="button" key={tab} aria-current={active === tab ? "page" : undefined} className={active === tab ? "active" : ""} onClick={() => changeTab(tab)}>{tab}</button>)}</nav>
-    {message && <p className="settings-feedback" role="status">{message}</p>}
-    {loading && <p role="status">Loading settings…</p>}
+    <p className="settings-feedback" role="status" style={loading || message ? undefined : {visibility: "hidden"}}>{loading ? "Loading settings…" : message || " "}</p>
 
     {active === "General" && <div className="settings-grid">
       <Card title="Control plane status"><dl className="definition-list">
@@ -118,7 +149,7 @@ export function SettingsClient({environment, lanes, initialHistory, smokeHistory
 
     {active === "LiteLLM" && <LiteLLMConnectionForm/>}
 
-    {active === "Providers" && <Card title="Provider credentials"><div className="settings-table-wrap"><table className="data-table settings-table"><thead><tr><th>Provider</th><th>Enabled</th><th>Credential</th><th>Last credential test</th><th>Actions</th></tr></thead><tbody>
+    {active === "Providers" && <Card title="Provider credentials" aside={<button className="button primary" type="button" onClick={() => setAddProviderModal(true)}>Add provider</button>}><div className="settings-table-wrap"><table className="data-table settings-table"><thead><tr><th>Provider</th><th>Enabled</th><th>Credential</th><th>Last credential test</th><th>Actions</th></tr></thead><tbody>
       {providers.map(provider => <tr key={provider.id}>
         <td><strong>{provider.name}</strong></td>
         <td><input type="checkbox" aria-label={`Enable ${provider.name}`} checked={provider.enabled} disabled={busy} onChange={event => void act(() => request("/api/settings/providers", {method: "PATCH", body: JSON.stringify({id: provider.id, enabled: event.target.checked})}))}/></td>
@@ -132,6 +163,7 @@ export function SettingsClient({environment, lanes, initialHistory, smokeHistory
     </tbody></table></div>
     </Card>}
     <Modal open={editing !== null} title={`${providers.find(p => p.id === editing)?.name ?? ""} credential`} onClose={() => setEditing(null)}>
+      {editing && providers.find(p => p.id === editing)?.portal && <p className="settings-help"><a href={providers.find(p => p.id === editing)!.portal!.url} target="_blank" rel="noopener noreferrer">{providers.find(p => p.id === editing)!.portal!.label} on {providers.find(p => p.id === editing)?.name} ↗</a></p>}
       {editing && <CredentialForm providerId={editing} defaultEnv={providers.find(p => p.id === editing)!.environmentVariable}/>}
     </Modal>
 
@@ -141,11 +173,11 @@ export function SettingsClient({environment, lanes, initialHistory, smokeHistory
         {jobs.map(job => <tr key={job.type}>
           <td><strong>{job.type.replaceAll("_", " ")}</strong><br/><small>{job.status}{job.lastError ? ` · ${job.lastError}` : ""}</small></td>
           <td><input aria-label={`${job.type} enabled`} type="checkbox" checked={job.enabled} disabled={busy} onChange={event => void act(() => request(`/api/settings/automation?type=${job.type}`, {method: "PATCH", body: JSON.stringify({enabled: event.target.checked})}))}/></td>
-          <td><input aria-label={`${job.type} cron schedule`} className="input compact-input" defaultValue={job.schedule} onBlur={event => void act(() => request(`/api/settings/automation?type=${job.type}`, {method: "PATCH", body: JSON.stringify({schedule: event.target.value})}))}/></td>
+          <td><ScheduleEditor schedule={job.schedule} jobType={job.type} disabled={busy} onSave={cron => void act(() => request(`/api/settings/automation?type=${job.type}`, {method: "PATCH", body: JSON.stringify({schedule: cron})}))}/></td>
           <td><small>Next {stamp(job.nextRunAt)}</small><br/><small>Last {stamp(job.lastRunAt)}</small></td>
           <td>{job.durationMs ?? "—"} ms<br/>{job.failureCount} failures</td>
           <td><StatusHistoryStrip label={`${job.type} execution history`} items={jobHistory.filter(item => item.label === job.type)}/></td>
-          <td><button className="button" type="button" disabled={busy} onClick={() => void runJobNow(job.type)}>Run now</button> <Link className="button" href="/runs">View runs</Link></td>
+          <td><button className="button" type="button" disabled={busy} onClick={() => void runJobNow(job.type)}>Run now</button> <Link className="button" href={`/runs?type=${job.type}`}>View runs</Link></td>
         </tr>)}
       </tbody></table></div>
     </Card>}
@@ -233,6 +265,24 @@ export function SettingsClient({environment, lanes, initialHistory, smokeHistory
       <p className="settings-help">Copy this key now — it will not be shown again.</p>
       <p className="modal-secret">{revealedKey}</p>
       <div className="modal-actions"><button type="button" className="button primary" onClick={() => setRevealedKey(null)}>Done</button></div>
+    </Modal>
+
+    <Modal open={addProviderModal} title="Add provider" onClose={() => setAddProviderModal(false)}>
+      <form onSubmit={event => {
+        event.preventDefault();
+        const fields = new FormData(event.currentTarget);
+        const name = String(fields.get("name") ?? "").trim();
+        const baseUrl = String(fields.get("baseUrl") ?? "").trim();
+        const apiKey = String(fields.get("apiKey") ?? "").trim();
+        if (!name) return;
+        setAddProviderModal(false);
+        void act(() => request("/api/settings/providers", {method: "POST", body: JSON.stringify({name, baseUrl: baseUrl || undefined, apiKey: apiKey || undefined})}));
+      }}>
+        <label>Provider name<input className="input" name="name" required autoFocus placeholder="e.g. My Local vLLM"/></label>
+        <label>API URL<input className="input" name="baseUrl" type="url" placeholder="https://api.example.com/v1 (optional)"/></label>
+        <label>API key<input className="input" name="apiKey" type="password" minLength={8} autoComplete="new-password" placeholder="Stored encrypted"/></label>
+        <div className="modal-actions"><button type="button" className="button" onClick={() => setAddProviderModal(false)}>Cancel</button><button type="submit" className="button primary">Add provider</button></div>
+      </form>
     </Modal>
   </div>;
 }

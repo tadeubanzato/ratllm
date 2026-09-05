@@ -2,13 +2,16 @@ import "server-only";
 import { eq } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
 import { providerCredentialReferences, providers } from "@/server/db/schema";
+import { getProviderPortal } from "@/server/providers/portals";
 import { supportsCredentialTest } from "@/server/providers/verify";
+import { saveProviderCredential } from "@/server/providers/credentials";
 
 export class ProviderNotFoundError extends Error {}
+export class DuplicateProviderError extends Error {}
 
 export interface ProviderSettingsRow {
   id: string; slug: string; name: string; enabled: boolean; credentialState: "MISSING" | "CONFIGURED" | "INVALID" | "UNKNOWN";
-  lastValidatedAt: Date | null; environmentVariable: string; testSupported: boolean;
+  lastValidatedAt: Date | null; environmentVariable: string; testSupported: boolean; portal: {url: string; label: string} | null;
 }
 
 export async function listProviderSettings(): Promise<ProviderSettingsRow[]> {
@@ -25,7 +28,7 @@ export async function listProviderSettings(): Promise<ProviderSettingsRow[]> {
     return {
       id: provider.id, slug: provider.slug, name: provider.name, enabled: provider.enabled, credentialState,
       lastValidatedAt: latest ?? null, environmentVariable: refs[0]?.environmentVariable ?? `${provider.slug.toUpperCase().replaceAll("-", "_")}_API_KEY`,
-      testSupported: supportsCredentialTest(provider.slug),
+      testSupported: supportsCredentialTest(provider.slug), portal: getProviderPortal(provider.slug),
     };
   });
 }
@@ -34,4 +37,25 @@ export async function setProviderEnabled(id: string, enabled: boolean) {
   const [row] = await getDb().update(providers).set({enabled, status: enabled ? "ACTIVE" : "DISABLED", updatedAt: new Date()}).where(eq(providers.id, id)).returning({id: providers.id, enabled: providers.enabled});
   if (!row) throw new ProviderNotFoundError("Provider not found");
   return row;
+}
+
+function slugify(name: string) {
+  return name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+export async function createCustomProvider(input: {name: string; baseUrl?: string; apiKey?: string}, correlationId: string) {
+  const db = getDb();
+  const base = slugify(input.name);
+  if (!base) throw new DuplicateProviderError("Provider name must contain at least one letter or number");
+  let slug = base;
+  for (let suffix = 2; (await db.select({id: providers.id}).from(providers).where(eq(providers.slug, slug)).limit(1)).length; suffix++) slug = `${base}-${suffix}`;
+
+  const [provider] = await db.insert(providers).values({
+    slug, name: input.name.trim(), adapterKey: input.baseUrl ? "openai-compatible" : "manual",
+    adapterCapability: "MANUAL", baseUrl: input.baseUrl?.trim() || null, enabled: true, status: "ACTIVE",
+  }).returning();
+
+  const environmentVariable = `${slug.toUpperCase().replaceAll("-", "_")}_API_KEY`;
+  if (input.apiKey) await saveProviderCredential(provider.id, {apiKey: input.apiKey, environmentVariable}, correlationId);
+  return provider;
 }

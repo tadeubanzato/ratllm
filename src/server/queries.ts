@@ -100,8 +100,9 @@ export async function getLanes(): Promise<LaneSummary[]> {
   });
 }
 
-export async function getRuns(): Promise<RunRow[]> {
-  const rows = await getDb().select().from(syncRuns).orderBy(desc(syncRuns.createdAt)).limit(12);
+export async function getRuns(options: {type?: string; limit?: number} = {}): Promise<RunRow[]> {
+  const query = getDb().select().from(syncRuns);
+  const rows = await (options.type ? query.where(eq(syncRuns.type, options.type)) : query).orderBy(desc(syncRuns.createdAt)).limit(options.limit ?? 12);
   return rows.map(row => ({ id: row.id, type: row.type, status: row.status, createdAt: row.createdAt, durationMs: row.startedAt && row.finishedAt ? row.finishedAt.getTime() - row.startedAt.getTime() : null, summary: row.summary }));
 }
 

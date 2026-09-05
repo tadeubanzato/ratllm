@@ -1,9 +1,7 @@
 "use client";
-import { useEffect } from "react";
 import { PanelLeft, Search } from "./icons";
 
 export function Topbar({ title }: { title?: string }) {
-  useEffect(() => { const stored = localStorage.getItem("theme"); const next = stored ? stored === "dark" : matchMedia("(prefers-color-scheme: dark)").matches; document.documentElement.dataset.theme = next ? "dark" : "light"; }, []);
   function toggle() { const next = document.documentElement.dataset.theme !== "dark"; localStorage.setItem("theme", next ? "dark" : "light"); document.documentElement.dataset.theme = next ? "dark" : "light"; }
   const today = new Intl.DateTimeFormat("en", { weekday:"long", month:"long", day:"numeric" }).format(new Date());
   return <header className="topbar"><button className="mobile-menu" aria-label="Open navigation"><PanelLeft size={18}/></button><div><h1>{title ?? "Operations overview"}</h1><p>{today} · <span>Control plane online</span></p></div><div className="top-actions"><button className="search-button"><Search size={15}/><span>Search models, providers, runs…</span><kbd>⌘K</kbd></button><button className="theme-button" onClick={toggle} aria-label="Toggle color theme">◐</button><div className="avatar">TB</div></div></header>;

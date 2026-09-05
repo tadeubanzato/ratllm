@@ -20,14 +20,15 @@ const providerPortals: Readonly<Record<string, ProviderPortal>> = {
   llm7: { url: "https://token.llm7.io/", label: "Generate API key" },
   "hugging-face": { url: "https://huggingface.co/settings/tokens", label: "Generate API key" },
   "cloudflare-workers-ai": { url: "https://dash.cloudflare.com/profile/api-tokens", label: "Generate API key" },
-  "alibaba-model-studio": { url: "https://bailian.console.alibabacloud.com/", label: "Open provider console" },
+  "alibaba-model-studio": { url: "https://modelstudio.console.alibabacloud.com/", label: "Open provider console" },
   "ibm-watsonx": { url: "https://cloud.ibm.com/iam/apikeys", label: "Generate API key" },
   zhipu: { url: "https://z.ai/manage-apikey/apikey-list", label: "Generate API key" },
   "vertex-ai": { url: "https://console.cloud.google.com/apis/credentials", label: "Open provider console" },
-  "volcengine-ark": { url: "https://console.volcengine.com/ark/region:ark+cn-beijing/apikey", label: "Generate API key" },
+  "volcengine-ark": { url: "https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey", label: "Generate API key" },
   gigachat: { url: "https://developers.sber.ru/docs/ru/gigachat/individuals-quickstart", label: "Open provider console" },
   "together-ai": { url: "https://api.together.ai/settings/api-keys", label: "Generate API key" },
-  sarvam: { url: "https://dashboard.sarvam.ai/", label: "Generate API key" },
+  sarvam: { url: "https://dashboard.sarvam.ai/key-management", label: "Generate API key" },
+  "public-ai": { url: "https://platform.publicai.co/", label: "Open provider console" },
 };
 
 export function getProviderPortal(slug: string): ProviderPortal | null {
