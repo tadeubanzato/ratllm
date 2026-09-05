@@ -25,7 +25,7 @@ export async function getEnabledAdapterIds(): Promise<Set<string>> {
 
 export async function recordSourceSync(adapterReference: string, result: {ok: true; count: number} | {ok: false; error: string}) {
   await getDb().update(modelSources).set({
-    status: result.ok ? "HEALTHY" : "FAILED",
+    status: result.ok ? (result.count > 0 ? "HEALTHY" : "DEGRADED") : "FAILED",
     lastSyncAt: new Date(),
     ...(result.ok ? {discoveredModelCount: result.count} : {}),
     updatedAt: new Date(),

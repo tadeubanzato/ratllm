@@ -235,17 +235,17 @@ export function SettingsClient({environment, lanes, initialHistory, smokeHistory
 
     {active === "Free Model Sources" && <Card title="Free model sources" aside={<button className="button primary" type="button" onClick={() => setSourceModal({mode: "add"})}>Add source</button>}>
       <p className="settings-help">The built-in sources below are what the Model Discovery job actually scouts — disabling one here skips it on the next run. Custom sources you add are tested independently and do not yet feed discovery automatically.</p>
-      <div className="settings-table-wrap"><table className="data-table settings-table"><thead><tr><th>Source</th><th>Type</th><th>Enabled</th><th>Status</th><th>Last sync / models</th><th>History</th></tr></thead><tbody>
+      <div className="settings-table-wrap"><table className="data-table settings-table"><thead><tr><th>Source</th><th>Type</th><th>Enabled</th><th>Status</th><th>Last sync / models</th><th>History</th><th></th></tr></thead><tbody>
         {sources.map(source => <tr key={source.id}>
           <td><button type="button" className="settings-link-button" onClick={() => setSourceModal({mode: "edit", source})}>{source.name}</button>{source.adapterReference && <span className="settings-help" style={{marginLeft: 6}}>Built-in</span>}<br/><small>{source.adapterReference ? builtinSourceDescriptions[source.adapterReference] ?? source.url : source.url ?? "Manual source"}</small></td>
           <td>{source.type.replaceAll("_", " ")}</td>
           <td><input aria-label={`${source.name} enabled`} type="checkbox" checked={source.enabled} disabled={busy} onChange={event => void act(() => request("/api/settings/model-sources", {method: "POST", body: JSON.stringify({...source, enabled: event.target.checked})}))}/></td>
-          <td>{source.status}</td>
+          <td><StatusPill value={source.status}/>{source.status==="DEGRADED"&&<><br/><small>0 models found</small></>}</td>
           <td>{stamp(source.lastSyncAt)}<br/>{source.discoveredModelCount} models</td>
           <td><StatusHistoryStrip label={`${source.name} sync history`} items={sourceHistory(source)}/></td>
+          <td style={{textAlign: "right"}}>{!source.adapterReference && <button className="button small" type="button" disabled={busy} onClick={() => void act(() => request(`/api/settings/model-sources?id=${source.id}`, {method: "DELETE"}))}>Delete</button>}</td>
         </tr>)}
       </tbody></table></div>
-      <div className="manual-model-form"><strong>Manual model entry</strong><input className="input" placeholder="provider/model-id"/><button className="button" type="button" onClick={() => setMessage("Manual model entry is stored through the selected Manual source during discovery")}>Add manual model</button></div>
     </Card>}
 
     {active === "API Access" && <Card title="RATLLM API keys" aside={<button className="button primary" type="button" onClick={() => setKeyModal(true)}>Generate key</button>}>
