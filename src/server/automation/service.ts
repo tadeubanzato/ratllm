@@ -5,6 +5,7 @@ import { getDb } from "@/server/db/client";
 import { automationJobs, leases, syncRuns } from "@/server/db/schema";
 import { runDiscovery } from "@/server/discovery/run";
 import { verifyDueCandidates } from "@/server/discovery/verify-due";
+import { consolidateModelCandidates } from "@/server/discovery/consolidate";
 import { runHealthMonitor } from "@/server/health/monitor";
 import { learnRateLimits } from "@/server/rate-limits/learn";
 import { syncLiteLLM } from "@/server/litellm/sync";
@@ -23,7 +24,7 @@ export function nextCron(schedule:string, from=new Date()):Date {
 export async function ensureAutomationJobs(){const db=getDb();for(const type of JOB_TYPES){const next=nextCron(defaults[type]);await db.insert(automationJobs).values({type,schedule:defaults[type],timezone:"UTC",nextRunAt:next}).onConflictDoNothing();}}
 async function claim(type:string, owner:string){const db=getDb();const until=new Date(Date.now()+10*60_000);const result=await db.execute(sql`insert into leases ("key", "owner", "expires_at") values (${`automation:${type}`}, ${owner}, ${until.toISOString()}::timestamptz) on conflict ("key") do update set "owner" = excluded."owner", "expires_at" = excluded."expires_at", "updated_at" = now() where leases."expires_at" < now() returning "key"`);return result.length>0;}
 async function release(type:string,owner:string){await getDb().delete(leases).where(and(eq(leases.key,`automation:${type}`),eq(leases.owner,owner)));}
-async function execute(type:AutomationType){switch(type){case "MODEL_DISCOVERY": return runDiscovery();case "CANDIDATE_VERIFICATION":return verifyDueCandidates();case "HEALTH_MONITOR":return runHealthMonitor();case "RATE_LIMIT_LEARNING":return learnRateLimits();case "APPLY_APPROVED_PLANS":return syncLiteLLM({dryRun:false});case "DEEP_BENCHMARK":return runHealthMonitor({limit:100});case "MAINTENANCE":return {leasesPruned:await getDb().delete(leases).where(lte(leases.expiresAt,new Date())).returning({key:leases.key})};}}
+async function execute(type:AutomationType){switch(type){case "MODEL_DISCOVERY": return runDiscovery();case "CANDIDATE_VERIFICATION":return verifyDueCandidates();case "HEALTH_MONITOR":return runHealthMonitor();case "RATE_LIMIT_LEARNING":return learnRateLimits();case "APPLY_APPROVED_PLANS":return syncLiteLLM({dryRun:false});case "DEEP_BENCHMARK":return runHealthMonitor({limit:100});case "MAINTENANCE":return {leasesPruned:await getDb().delete(leases).where(lte(leases.expiresAt,new Date())).returning({key:leases.key}),candidates:await consolidateModelCandidates()};}}
 export async function runAutomation(type:AutomationType, trigger="SCHEDULED"){
   await ensureAutomationJobs(); const db=getDb(); const owner=randomUUID(); if(!await claim(type,owner)) return {started:false,reason:"already_running" as const};
   const started=new Date();const correlationId=randomUUID();const [run]=await db.insert(syncRuns).values({type, status:"RUNNING",correlationId,startedAt:started,summary:{trigger,affectedEntities:[]}}).returning();

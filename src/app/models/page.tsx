@@ -3,9 +3,9 @@ import { PageShell } from "@/components/page-shell";
 import { StatusPill } from "@/components/status-pill";
 import { timeAgo } from "@/lib/utils";
 import { getCandidateCheckHistory, getModelCandidates, withDemo, type CandidateCheckPoint } from "@/server/queries";
-import { getCandidateProviderPortal } from "@/server/providers/portals";
 import { sourceRegistry } from "@/server/discovery/registry";
 import { DiscoveryButton } from "./discovery-button";
+import { AddToLiteLLMButton } from "./connect-button";
 
 const DISPLAY_LIMIT = 300;
 const tierRank: Record<string, number> = Object.fromEntries(sourceRegistry.map(source => [source.id, source.tier === "A1" ? 0 : source.tier === "A2" ? 1 : source.tier === "B" ? 2 : 3]));
@@ -21,6 +21,7 @@ export const dynamic="force-dynamic";
 export default async function ModelsPage(){
   const [allCandidates,candidateHistory]=await Promise.all([getModelCandidates(),withDemo(() => getCandidateCheckHistory(20), () => new Map<string, CandidateCheckPoint[]>())]);
   const sorted=[...allCandidates].sort((a,b)=>{
+    if(a.credentialVerified!==b.credentialVerified)return a.credentialVerified?-1:1;
     if(a.verifiedFree!==b.verifiedFree)return a.verifiedFree?-1:1;
     const ta=tierRank[a.source]??4,tb=tierRank[b.source]??4;
     if(ta!==tb)return ta-tb;
@@ -28,10 +29,11 @@ export default async function ModelsPage(){
   });
   const candidates=sorted.slice(0,DISPLAY_LIMIT);
   const truncated=allCandidates.length>DISPLAY_LIMIT;
-  return <PageShell title="Discovered Models" eyebrow={truncated?`Showing top ${DISPLAY_LIMIT} of ${allCandidates.length} discovery observations, highest-trust first · live inventory lives under LiteLLM`:`${allCandidates.length} discovery observations · live inventory lives under LiteLLM`} actions={<DiscoveryButton/>}><section className="panel"><div className="panel-header"><h3>Discovered free-model candidates</h3><span>Availability checks run automatically on schedule (Settings → Automation → Candidate verification)</span></div><div className="table-scroll"><table className="data-table"><thead><tr><th>Candidate</th><th>Provider / credential</th><th>Source</th><th>Free evidence</th><th>Context</th><th>Availability</th><th>Last tested</th></tr></thead><tbody>{candidates.length?candidates.map(row=>{
-    const portal=getCandidateProviderPortal(row.source,row.providerName,row.modelRef);
+  return <PageShell title="Discovered Models" eyebrow={truncated?`Showing top ${DISPLAY_LIMIT} of ${allCandidates.length} discovery observations, models you can already test first · manage credentials under Settings → Providers`:`${allCandidates.length} discovery observations · manage credentials under Settings → Providers`} actions={<DiscoveryButton/>}><section className="panel"><div className="panel-header"><h3>Discovered free-model candidates</h3><span>Availability checks run automatically on schedule (Settings → Automation → Candidate verification)</span></div><div className="table-scroll"><table className="data-table"><thead><tr><th>Candidate</th><th>Provider / credential</th><th>Source</th><th>Free evidence</th><th>Context</th><th>LiteLLM</th><th>Availability</th><th>Last tested</th></tr></thead><tbody>{candidates.length?candidates.map(row=>{
     const availability=availabilityFor(row);
     const points=candidateHistoryItems(candidateHistory.get(row.id)??[]);
-    return <tr key={row.id}><td><strong>{row.displayName}</strong><br/><span className="mono">{row.modelRef}</span></td><td>{row.providerName??"Unresolved"}{portal?<><br/><a href={portal.url} target="_blank" rel="noopener noreferrer">{portal.label} ↗</a><br/><StatusPill value={row.credentialVerified?"Credential verified":row.credentialConfigured?"Credential unverified":"Credential missing"}/></>:<><br/><span style={{color:"var(--faint)",fontSize:10}}>No verified provider portal</span></>}</td><td><a href={row.sourceUrl??"#"} target="_blank" rel="noopener noreferrer">{row.source}</a></td><td><StatusPill value={row.verifiedFree?row.freeType:"UNVERIFIED"}/></td><td className="mono">{row.contextWindow?.toLocaleString()??"—"}</td><td><UptimeBar items={points} label={`${row.displayName} availability checks`} count={20} compact/>{availability.requiredAction&&<div style={{marginTop:4,fontSize:10,color:"var(--muted)"}}>{availability.requiredAction.replaceAll("_"," ")}</div>}{availability.status==="RATE_LIMITED"&&availability.nextCheckAt&&<div style={{marginTop:2,fontSize:10,color:"var(--muted)"}}>Retries {timeAgo(availability.nextCheckAt)}</div>}</td><td>{availability.lastTestedAt?timeAgo(availability.lastTestedAt):availability.status==="QUEUED"?"Awaiting scheduled test":"—"}</td></tr>;
-  }):<tr><td colSpan={7}>No candidates stored. Run discovery to query the live sources.</td></tr>}</tbody></table></div></section></PageShell>;
+    const inLiteLLM=Boolean(row.liteLLMDeploymentId);
+    const canAdd=!inLiteLLM&&row.credentialVerified&&Boolean(row.providerId);
+    return <tr key={row.id}><td><strong>{row.displayName}</strong><br/><span className="mono">{row.modelRef}</span></td><td>{row.providerName??"Unresolved"}<br/><StatusPill value={row.credentialVerified?"Credential verified":row.credentialConfigured?"Credential unverified":"Credential missing"}/></td><td><a href={row.sourceUrl??"#"} target="_blank" rel="noopener noreferrer">{row.source}</a></td><td><StatusPill value={row.verifiedFree?row.freeType:"UNVERIFIED"}/></td><td className="mono">{row.contextWindow?.toLocaleString()??"—"}</td><td>{inLiteLLM?<StatusPill value={row.liteLLMHealth??"ADDED"}/>:<><StatusPill value="Not added"/>{canAdd&&<div style={{marginTop:4}}><AddToLiteLLMButton candidateId={row.id}/></div>}</>}</td><td><UptimeBar items={points} label={`${row.displayName} availability checks`} count={20} compact/>{availability.requiredAction&&<div style={{marginTop:4,fontSize:10,color:"var(--muted)"}}>{availability.requiredAction.replaceAll("_"," ")}</div>}{availability.status==="RATE_LIMITED"&&availability.nextCheckAt&&<div style={{marginTop:2,fontSize:10,color:"var(--muted)"}}>Retries {timeAgo(availability.nextCheckAt)}</div>}</td><td>{availability.lastTestedAt?timeAgo(availability.lastTestedAt):availability.status==="QUEUED"?"Awaiting scheduled test":"—"}</td></tr>;
+  }):<tr><td colSpan={8}>No candidates stored. Run discovery to query the live sources.</td></tr>}</tbody></table></div></section></PageShell>;
 }

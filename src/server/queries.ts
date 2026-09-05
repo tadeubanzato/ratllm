@@ -3,6 +3,7 @@ import { desc, eq, isNotNull, sql } from "drizzle-orm";
 import { getDb } from "./db/client";
 import { candidateChecks, canonicalModels, laneAssignments, lanes, modelCandidates, modelDeployments, providers, providerCredentialReferences, rateLimitProfiles, smokeTests, syncRuns } from "./db/schema";
 import { providerSlug } from "./providers/catalog";
+import { matchDeployment } from "./discovery/model-key";
 import { laneStatus, type LaneStatus } from "./status";
 
 export interface ProviderRow { id: string; slug: string; name: string; status: string; adapterCapability: string; modelCount: number; healthyCount: number; credentialConfigured: boolean; credentialVerified?: boolean; enabled?: boolean; credentialState?: string; lastDiscoveryAt: Date | null }
@@ -60,8 +61,8 @@ export async function getDeployment(id: string) {
 }
 
 export async function getModelCandidates(){
-  const db=getDb();const [rows,providerRows,credentialRows]=await Promise.all([db.select().from(modelCandidates).orderBy(desc(modelCandidates.verifiedFree),modelCandidates.source,modelCandidates.displayName),db.select({id:providers.id,slug:providers.slug,name:providers.name}).from(providers),db.select({providerId:providerCredentialReferences.providerId,valid:providerCredentialReferences.valid}).from(providerCredentialReferences)]);
-  return rows.map(row=>{const slug=row.source==="openrouter"?"openrouter":providerSlug(row.providerName,row.modelRef);const provider=providerRows.find(item=>item.slug===slug||item.name.toLowerCase()===String(row.providerName??"").toLowerCase());const credentials=provider?credentialRows.filter(item=>item.providerId===provider.id):[];return {...row,providerId:provider?.id??null,credentialConfigured:credentials.length>0,credentialVerified:credentials.some(item=>item.valid===true)};});
+  const db=getDb();const [rows,providerRows,credentialRows,deploymentRows]=await Promise.all([db.select().from(modelCandidates).orderBy(desc(modelCandidates.verifiedFree),modelCandidates.source,modelCandidates.displayName),db.select({id:providers.id,slug:providers.slug,name:providers.name}).from(providers),db.select({providerId:providerCredentialReferences.providerId,valid:providerCredentialReferences.valid}).from(providerCredentialReferences),db.select({id:modelDeployments.id,providerId:modelDeployments.providerId,providerModelId:modelDeployments.providerModelId,health:modelDeployments.health,managed:modelDeployments.managed}).from(modelDeployments)]);
+  return rows.map(row=>{const slug=row.source==="openrouter"?"openrouter":providerSlug(row.providerName,row.modelRef);const provider=providerRows.find(item=>item.slug===slug||item.name.toLowerCase()===String(row.providerName??"").toLowerCase());const credentials=provider?credentialRows.filter(item=>item.providerId===provider.id):[];const deployment=provider?matchDeployment(deploymentRows,provider.id,row.modelRef):null;return {...row,providerId:provider?.id??null,credentialConfigured:credentials.length>0,credentialVerified:credentials.some(item=>item.valid===true),liteLLMDeploymentId:deployment?.id??null,liteLLMHealth:deployment?.health??null,liteLLMManaged:deployment?.managed??null};});
 }
 
 export interface CandidateCheckPoint { at: Date; status: string; httpStatus: number | null; error: string | null }

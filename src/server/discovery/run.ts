@@ -6,15 +6,14 @@ import { auditEvents,modelCandidates,providers,syncRuns } from "@/server/db/sche
 import { discoverySources } from "./sources";
 import { ensureModelSources, getEnabledAdapterIds, recordSourceSync } from "./model-sources";
 import { resolveProvider } from "@/server/providers/catalog";
-
-/** Same provider + same model id, spelling and punctuation aside — a real duplicate, not a fuzzy family guess. */
-const normalizeModelKey=(value:string)=>value.trim().toLowerCase().replace(/[^a-z0-9]+/g,"");
+import { bareModelKey } from "./model-key";
+import { consolidateModelCandidates } from "./consolidate";
 
 /** When a second (candidate-only) source reports a model an existing row from another source already covers, merge it in as corroboration instead of creating a near-duplicate row. */
 async function findCrossSourceDuplicate(db:ReturnType<typeof getDb>,providerName:string,source:string,modelRef:string){
-  const key=normalizeModelKey(modelRef);
+  const key=bareModelKey(modelRef);
   const rows=await db.select({id:modelCandidates.id,evidence:modelCandidates.evidence,modelRef:modelCandidates.modelRef}).from(modelCandidates).where(and(eq(modelCandidates.providerName,providerName),ne(modelCandidates.source,source)));
-  return rows.find(row=>normalizeModelKey(row.modelRef)===key)??null;
+  return rows.find(row=>bareModelKey(row.modelRef)===key)??null;
 }
 
 export async function runDiscovery(){
@@ -41,7 +40,8 @@ export async function runDiscovery(){
       discovered++;
     }
   }
-  const failed=sources.filter(s=>s.status==="failed").length;const summary={discovered,sources};
+  const consolidation=await consolidateModelCandidates();
+  const failed=sources.filter(s=>s.status==="failed").length;const summary={discovered,sources,consolidation};
   await db.update(syncRuns).set({status:activeSources.length&&failed===activeSources.length?"FAILED":"SUCCEEDED",summary,finishedAt:new Date(),updatedAt:new Date()}).where(eq(syncRuns.id,run.id));
   await db.insert(auditEvents).values({actor:"system",action:"discovery.completed",entityType:"sync_run",entityId:run.id,after:summary,correlationId});
   return{runId:run.id,correlationId,...summary};

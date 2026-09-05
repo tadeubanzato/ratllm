@@ -116,6 +116,8 @@ const DETAILS_BLOCK_PATTERN = /<details[^>]*>[\s\S]*?<\/details>/gi;
 const looksLikeModelId = (token: string) => /[0-9/-]/.test(token);
 /** Doc links and repo references match the family-word pattern too (e.g. "ai.google.dev/gemini-api/docs", "ggml-org/llama.cpp") — filter those out by their non-model suffix/prefix shape. */
 const DOC_OR_REPO_SHAPE = /(^[a-z0-9.-]+\.(?:com|dev|org|net|io|co|ai)\/)|(\.(?:com|dev|org|net|io|co|ai|cpp|git|md|html?)$)/i;
+/** Same acceptance rule the scraper applies live — exported so a maintenance pass can retroactively prune rows an older, looser version of this parser left behind. */
+export const isPlausibleScrapedModelId = (token: string) => looksLikeModelId(token) && !DOC_OR_REPO_SHAPE.test(token);
 class TextCandidateSource implements DiscoverySource {
   constructor(private config: SourceConfig) {}
   get id() { return this.config.id; }
@@ -135,7 +137,7 @@ class TextCandidateSource implements DiscoverySource {
         if (!focusHit && !freeHit) continue;
         for (const match of line.matchAll(MODEL_TOKEN_PATTERN)) {
           const token = match[0].replace(/^[`'"[({<]+|[`'")\]}>.,;:|]+$/g, "");
-          if (token.length < 4 || seen.has(token.toLowerCase()) || /^https?:/.test(token) || !looksLikeModelId(token) || DOC_OR_REPO_SHAPE.test(token)) continue;
+          if (token.length < 4 || seen.has(token.toLowerCase()) || /^https?:/.test(token) || !isPlausibleScrapedModelId(token)) continue;
           seen.add(token.toLowerCase());
           const lo = Math.max(0, match.index! - 200); const hi = Math.min(visible.length, match.index! + token.length + 200);
           const evidence = visible.slice(lo, hi).replace(/\s+/g, " ").trim().slice(0, 500);
