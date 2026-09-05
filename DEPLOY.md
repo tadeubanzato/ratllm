@@ -1,6 +1,6 @@
 # Production deployment
 
-RATLLM (Okame Model Curator) runs as a Next.js production container with a dedicated PostgreSQL database. LiteLLM and n8n run separately and are configured through `.env`.
+RATLLM (Okame Model Curator) runs as a Next.js production container with a dedicated PostgreSQL database and its own scheduling worker. LiteLLM runs separately and is configured through `.env`.
 
 ## Quick start
 
@@ -42,7 +42,7 @@ You can also use the server app directly at `http://192.168.5.48:9090`.
 
 ## Required environment
 
-Set `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `DATABASE_URL`, `LITELLM_BASE_URL`, `LITELLM_MASTER_KEY`, `CREDENTIAL_ENCRYPTION_KEY`, and `INTERNAL_API_SECRET`. For n8n, set `N8N_BASE_URL`, `N8N_API_KEY`, and `CURATOR_N8N_URL` to the URL the n8n process can reach (for example, `http://curator-web:3000` on a shared Docker network). `CURATOR_PUBLIC_URL` remains a compatibility fallback for public-ingress deployments.
+Set `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `DATABASE_URL`, `LITELLM_BASE_URL`, `LITELLM_MASTER_KEY`, `CREDENTIAL_ENCRYPTION_KEY`, and `INTERNAL_API_SECRET`. `CURATOR_PUBLIC_URL` remains a compatibility fallback for public-ingress deployments.
 
 Never commit `.env` or place real provider keys in examples. Provider credentials entered in the UI are encrypted and never returned to the browser.
 
@@ -56,4 +56,4 @@ docker compose -f docker/docker-compose.yml down
 
 The containers are named `ratllm-web` and `ratllm-db`. The Compose project is `ratllm`. PostgreSQL data is persisted in the existing `okame-model-curator_curator-db-data` volume so renaming does not lose inventory. Do not use `down --volumes` unless that data is intentionally being destroyed.
 
-After configuring n8n, open the Curator n8n page and use **Create workflows**. The installer idempotently creates or updates the implemented autonomous workflows: candidate curation every six hours and model health monitoring every ten minutes. The n8n API key needs workflow list, create, update, and activate scopes.
+Scheduling (model discovery, health monitoring, rate-limit learning, and the rest of automation) runs entirely inside the `curator-worker` container against the Curator database — there is no external orchestrator dependency. Configure schedules from the Automation tab in Settings.

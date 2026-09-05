@@ -1,7 +1,7 @@
 import "server-only";
 import { eq } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
-import { modelCandidates, providerCredentialReferences, providers } from "@/server/db/schema";
+import { candidateChecks, modelCandidates, providerCredentialReferences, providers } from "@/server/db/schema";
 import { getModelCandidates } from "@/server/queries";
 import { resolveProvider } from "@/server/providers/catalog";
 import { verifyCandidateDirectly, type CandidateVerificationStatus } from "./verify";
@@ -18,6 +18,6 @@ export async function verifyDueCandidates(limit=20){
   for(const row of due){const testedAt=new Date().toISOString();const definition=resolveProvider(row.source==="openrouter"?"openrouter":row.providerName,row.modelRef);const providerKey=definition?.slug??null;let result:Awaited<ReturnType<typeof verifyCandidateDirectly>>;
     if(providerKey&&providerBackoff.has(providerKey))result={status:"rate_limited",httpStatus:429,error:"Provider rate limit reached earlier in this run; retry deferred"};else{const provider=providerKey?(await db.select().from(providers).where(eq(providers.slug,providerKey)).limit(1))[0]??null:null;const credential=provider?(await db.select().from(providerCredentialReferences).where(eq(providerCredentialReferences.providerId,provider.id)).limit(1))[0]??null:null;result=await verifyCandidateDirectly({modelRef:row.modelRef,source:row.source,provider:definition,providerBaseUrl:provider?.baseUrl??null,credential});}
     const delay=result.status==="available"?SUCCESS_RECHECK_MS:result.status==="rate_limited"?RATE_LIMIT_RECHECK_MS:FAILURE_RECHECK_MS;const nextCheckAt=new Date(Date.now()+delay).toISOString();if(result.status==="rate_limited"&&providerKey)providerBackoff.set(providerKey,nextCheckAt);const requiredAction=result.status==="credential_missing"?"ADD_CREDENTIAL":result.status==="credential_unverified"?"VERIFY_CREDENTIAL":result.status==="provider_unresolved"?"RESOLVE_PROVIDER":result.status==="provider_not_configured"?"CONFIGURE_VERIFIER":null;
-    await db.update(modelCandidates).set({evidence:{...row.evidence,testedAt,lastStatus:result.status,lastHttpStatus:result.httpStatus,lastError:result.error?.slice(0,500)??null,retryAt:result.status==="rate_limited"?nextCheckAt:null,nextCheckAt,providerSlug:providerKey,requiredAction},updatedAt:new Date()}).where(eq(modelCandidates.id,row.id));results.push({id:row.id,model:row.modelRef,provider:providerKey,status:result.status,httpStatus:result.httpStatus,error:result.error,nextCheckAt});}
+    await db.update(modelCandidates).set({evidence:{...row.evidence,testedAt,lastStatus:result.status,lastHttpStatus:result.httpStatus,lastError:result.error?.slice(0,500)??null,retryAt:result.status==="rate_limited"?nextCheckAt:null,nextCheckAt,providerSlug:providerKey,requiredAction},updatedAt:new Date()}).where(eq(modelCandidates.id,row.id));await db.insert(candidateChecks).values({candidateId:row.id,status:result.status,httpStatus:result.httpStatus,error:result.error?.slice(0,500)??null});results.push({id:row.id,model:row.modelRef,provider:providerKey,status:result.status,httpStatus:result.httpStatus,error:result.error,nextCheckAt});}
   return {processed:results.length,results,nextEligibleAt:results.find(item=>item.status==="rate_limited")?.nextCheckAt??null};
 }

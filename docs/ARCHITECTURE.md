@@ -2,7 +2,7 @@
 
 ## ADR-001: control-plane boundaries
 
-Okame uses Next.js 16.3 App Router for the web/API control plane, PostgreSQL with Drizzle as its source of truth, n8n for orchestration, and LiteLLM solely as the inference deployment target.
+Okame uses Next.js 16.3 App Router for the web/API control plane, PostgreSQL with Drizzle as its source of truth, a database-backed worker for scheduling and orchestration, and LiteLLM solely as the inference deployment target.
 
 Domain rules live in server modules and pure policy functions. Route handlers validate input and translate failures to a consistent envelope. React components render operations data but do not decide ownership, limits, or changes.
 

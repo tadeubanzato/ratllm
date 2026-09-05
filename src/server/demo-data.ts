@@ -26,7 +26,7 @@ export const demoRuns: RunRow[] = [
 ];
 
 export const demoDashboard: DashboardData = {
-  demo: true, systems: { curator: "HEALTHY", database: "HEALTHY", litellm: "HEALTHY", n8n: "DEGRADED" },
+  demo: true, systems: { curator: "HEALTHY", database: "HEALTHY", litellm: "HEALTHY" },
   kpis: { providers: 4, models: 8, active: 6, healthy: 7, quarantined: 1, coverage: 88, errors429: 3, pendingChanges: 2 },
   lanes: demoLanes, providers: demoProviders, runs: demoRuns,
   incidents: [{ severity: "WARNING", title: "smart-speech has no eligible deployment", detail: "Lane is below its redundancy target", at: new Date(now-12*60_000) }, { severity: "INFO", title: "NVIDIA NIM latency elevated", detail: "p95 is 18% above the 7-day baseline", at: new Date(now-62*60_000) }],

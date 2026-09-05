@@ -76,6 +76,13 @@ export const modelCandidates = pgTable("model_candidates", {
   ...timestamps,
 }, (table) => [uniqueIndex("candidate_source_model_uidx").on(table.source, table.modelRef),index("candidate_lifecycle_idx").on(table.lifecycle),index("candidate_free_idx").on(table.freeType,table.verifiedFree)]);
 
+export const candidateChecks = pgTable("candidate_checks", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  candidateId: uuid("candidate_id").notNull().references(() => modelCandidates.id, { onDelete: "cascade" }),
+  status: text("status").notNull(), httpStatus: integer("http_status"), error: text("error"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [index("candidate_checks_candidate_idx").on(table.candidateId, table.createdAt)]);
+
 export const modelDeployments = pgTable("model_deployments", {
   id: uuid("id").primaryKey().defaultRandom(),
   canonicalModelId: uuid("canonical_model_id").notNull().references(() => canonicalModels.id),
@@ -141,6 +148,13 @@ export const laneAssignments = pgTable("lane_assignments", {
   priority: integer("priority").notNull(), score: doublePrecision("score"), pinned: boolean("pinned").notNull().default(false),
   excluded: boolean("excluded").notNull().default(false), explanation: jsonb("explanation").$type<Record<string, unknown>>().notNull().default({}), ...timestamps,
 }, (table) => [uniqueIndex("lane_deployment_uidx").on(table.laneId, table.deploymentId), index("lane_priority_idx").on(table.laneId, table.priority)]);
+
+export const laneStatusSnapshots = pgTable("lane_status_snapshots", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  laneId: uuid("lane_id").notNull().references(() => lanes.id, { onDelete: "cascade" }),
+  status: text("status").notNull(), healthy: integer("healthy").notNull(), total: integer("total").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [index("lane_status_snapshots_lane_idx").on(table.laneId, table.createdAt)]);
 
 export const syncRuns = pgTable("sync_runs", {
   id: uuid("id").primaryKey().defaultRandom(), type: text("type").notNull(), status: runStatus("status").notNull().default("PENDING"),

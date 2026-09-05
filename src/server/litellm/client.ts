@@ -1,5 +1,5 @@
 import "server-only";
-import { env } from "@/server/config";
+import { connectionConfig } from "@/server/settings/connections";
 import { deploymentSchema, type LiteLLMAdapter, type LiteLLMDeployment, type SmokeResult } from "./types";
 
 export class LiteLLMError extends Error {
@@ -7,14 +7,19 @@ export class LiteLLMError extends Error {
 }
 
 export class HttpLiteLLMAdapter implements LiteLLMAdapter {
-  constructor(private readonly baseUrl = env.LITELLM_BASE_URL, private readonly masterKey = env.LITELLM_MASTER_KEY) {}
+  constructor(private baseUrl?: string, private masterKey?: string) {}
+
+  private async configure() {
+    if (this.baseUrl === undefined) { const config = await connectionConfig("litellm"); this.baseUrl = config.baseUrl; this.masterKey = config.key; }
+  }
 
   private headers() {
     return { "content-type": "application/json", ...(this.masterKey ? { authorization: `Bearer ${this.masterKey}` } : {}) };
   }
 
   private async request(path: string, init?: RequestInit) {
-    const response = await fetch(`${this.baseUrl.replace(/\/$/, "")}${path}`, { ...init, headers: { ...this.headers(), ...init?.headers }, signal: AbortSignal.timeout(20_000), cache: "no-store" });
+    await this.configure();
+    const response = await fetch(`${this.baseUrl!.replace(/\/$/, "")}${path}`, { ...init, headers: { ...this.headers(), ...init?.headers }, signal: AbortSignal.timeout(20_000), cache: "no-store" });
     if (!response.ok) throw new LiteLLMError(`LiteLLM ${path} returned ${response.status}`, response.status);
     return response;
   }
@@ -36,7 +41,8 @@ export class HttpLiteLLMAdapter implements LiteLLMAdapter {
   async smokeTest(model: string): Promise<SmokeResult> {
     const start = performance.now();
     try {
-      const response = await fetch(`${this.baseUrl.replace(/\/$/, "")}/v1/chat/completions`, {
+      await this.configure();
+      const response = await fetch(`${this.baseUrl!.replace(/\/$/, "")}/v1/chat/completions`, {
         method: "POST", headers: this.headers(), signal: AbortSignal.timeout(30_000),
         body: JSON.stringify({ model, messages: [{ role: "user", content: "Reply with exactly: OK" }], max_tokens: 12, temperature: 0, stream: false }),
       });

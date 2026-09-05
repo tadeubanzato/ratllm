@@ -1,12 +1,44 @@
 import { NextResponse } from "next/server";
-import { eq } from "drizzle-orm";
 import { z } from "zod";
-import { getDb } from "@/server/db/client";
-import { auditEvents, providerCredentialReferences, providers } from "@/server/db/schema";
-import { credentialHint, encryptCredential } from "@/server/credentials/crypto";
 import { apiError, correlationId } from "@/server/http";
-const input=z.object({apiKey:z.string().min(8).max(10000),environmentVariable:z.string().regex(/^[A-Z][A-Z0-9_]*$/)});
-export async function PUT(request:Request,{params}:{params:Promise<{id:string}>}){const correlation=correlationId(request);const{id}=await params;const parsed=input.safeParse(await request.json().catch(()=>null));if(!parsed.success)return apiError("INVALID_CREDENTIAL","Provide an API key and uppercase environment variable name",400,correlation);const db=getDb();const provider=(await db.select().from(providers).where(eq(providers.id,id)).limit(1))[0];if(!provider)return apiError("PROVIDER_NOT_FOUND","Provider not found",404,correlation);try{const encryptedValue=encryptCredential(parsed.data.apiKey);await db.insert(providerCredentialReferences).values({providerId:id,environmentVariable:parsed.data.environmentVariable,encryptedValue,valueHint:credentialHint(parsed.data.apiKey)}).onConflictDoUpdate({target:[providerCredentialReferences.providerId,providerCredentialReferences.environmentVariable],set:{encryptedValue,valueHint:credentialHint(parsed.data.apiKey),valid:null,updatedAt:new Date()}});await db.insert(auditEvents).values({actor:"admin",action:"provider.credential.updated",entityType:"provider",entityId:id,after:{environmentVariable:parsed.data.environmentVariable,configured:true},correlationId:correlation});return NextResponse.json({configured:true,hint:credentialHint(parsed.data.apiKey),correlationId:correlation})}catch(error){return apiError("CREDENTIAL_ENCRYPTION_UNAVAILABLE",error instanceof Error?error.message:"Unable to encrypt credential",503,correlation)}}
+import { CredentialNotFoundError, deleteProviderCredential, EnvironmentCredentialMissingError, ProviderNotFoundError, saveProviderCredential, setProviderCredentialDisabled } from "@/server/providers/credentials";
 
-export async function PATCH(request:Request,{params}:{params:Promise<{id:string}>}){const correlation=correlationId(request);const {id}=await params;const {environmentVariable,disabled}=await request.json().catch(()=>({}));if(typeof environmentVariable!=="string"||typeof disabled!=="boolean")return apiError("INVALID_CREDENTIAL","Credential reference and disabled state required",400,correlation);const [row]=await getDb().update(providerCredentialReferences).set({disabled,updatedAt:new Date()}).where(eq(providerCredentialReferences.providerId,id)).returning();return row?NextResponse.json({environmentVariable:row.environmentVariable,disabled:row.disabled}):apiError("CREDENTIAL_NOT_FOUND","Credential not found",404,correlation)}
-export async function DELETE(request:Request,{params}:{params:Promise<{id:string}>}){const correlation=correlationId(request);const {id}=await params;const environmentVariable=new URL(request.url).searchParams.get("environmentVariable");if(!environmentVariable)return apiError("INVALID_CREDENTIAL","Credential reference required",400,correlation);await getDb().delete(providerCredentialReferences).where(eq(providerCredentialReferences.providerId,id));return new NextResponse(null,{status:204})}
+const input = z.object({apiKey: z.string().min(8).max(10000).optional(), environmentVariable: z.string().regex(/^[A-Z][A-Z0-9_]*$/)});
+
+export async function PUT(request: Request, {params}: {params: Promise<{id: string}>}) {
+  const correlation = correlationId(request);
+  const {id} = await params;
+  const parsed = input.safeParse(await request.json().catch(() => null));
+  if (!parsed.success) return apiError("INVALID_CREDENTIAL", "Provide an API key and uppercase environment variable name", 400, correlation);
+  try {
+    const result = await saveProviderCredential(id, parsed.data, correlation);
+    return NextResponse.json({...result, correlationId: correlation});
+  } catch (error) {
+    if (error instanceof ProviderNotFoundError) return apiError("PROVIDER_NOT_FOUND", "Provider not found", 404, correlation);
+    if (error instanceof EnvironmentCredentialMissingError) return apiError("ENVIRONMENT_CREDENTIAL_MISSING", error.message, 400, correlation);
+    return apiError("CREDENTIAL_ENCRYPTION_UNAVAILABLE", "Unable to save securely. Check the server encryption key and database connection", 503, correlation);
+  }
+}
+
+export async function PATCH(request: Request, {params}: {params: Promise<{id: string}>}) {
+  const correlation = correlationId(request);
+  const {id} = await params;
+  const {environmentVariable, disabled} = await request.json().catch(() => ({}));
+  if (typeof environmentVariable !== "string" || typeof disabled !== "boolean") return apiError("INVALID_CREDENTIAL", "Credential reference and disabled state required", 400, correlation);
+  try {
+    const row = await setProviderCredentialDisabled(id, environmentVariable, disabled);
+    return NextResponse.json(row);
+  } catch (error) {
+    if (error instanceof CredentialNotFoundError) return apiError("CREDENTIAL_NOT_FOUND", "Credential not found", 404, correlation);
+    throw error;
+  }
+}
+
+export async function DELETE(request: Request, {params}: {params: Promise<{id: string}>}) {
+  const correlation = correlationId(request);
+  const {id} = await params;
+  const environmentVariable = new URL(request.url).searchParams.get("environmentVariable");
+  if (!environmentVariable) return apiError("INVALID_CREDENTIAL", "Credential reference required", 400, correlation);
+  await deleteProviderCredential(id, environmentVariable);
+  return new NextResponse(null, {status: 204});
+}

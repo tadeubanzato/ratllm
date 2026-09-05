@@ -56,8 +56,7 @@ Milestone 1 does not mutate LiteLLM deployments. Deployment changes will only be
 | `DATABASE_URL` | Curator-owned PostgreSQL connection |
 | `LITELLM_BASE_URL` | LiteLLM Proxy base URL |
 | `LITELLM_MASTER_KEY` | Server-only LiteLLM administrative key |
-| `N8N_BASE_URL` | Optional n8n URL |
-| `INTERNAL_API_SECRET` | Future n8n-to-Curator authentication secret |
+| `INTERNAL_API_SECRET` | Authenticates internal automation endpoints |
 | `ADMIN_TOKEN` | Optional bearer protection for non-health routes |
 | `DEMO_MODE` | Enables isolated development data |
 
