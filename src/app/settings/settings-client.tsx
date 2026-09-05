@@ -1,6 +1,7 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import { StatusHistoryStrip, type StatusHistoryItem } from "@/components/status-history-strip";
 import { LiteLLMConnectionForm, request } from "./connection-form";
 import { CredentialForm } from "@/app/providers/[id]/credential-form";
@@ -25,7 +26,10 @@ function History({items, label}: {items: StatusHistoryItem[]; label: string}) {
 }
 
 export function SettingsClient({environment, lanes, initialHistory, smokeHistory}: {environment: string; lanes: Lane[]; initialHistory: StatusHistoryItem[]; smokeHistory: StatusHistoryItem[]}) {
-  const [active, setActive] = useState<Tab>("General");
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const tabParam = searchParams.get("tab") as Tab | null;
+  const [active, setActive] = useState<Tab>(tabParam && tabs.includes(tabParam) ? tabParam : "General");
   const [providers, setProviders] = useState<Provider[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [sources, setSources] = useState<Source[]>([]);
@@ -37,7 +41,31 @@ export function SettingsClient({environment, lanes, initialHistory, smokeHistory
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(false);
-  const jobHistory = useMemo(() => initialHistory, [initialHistory]);
+  const [jobHistory, setJobHistory] = useState<StatusHistoryItem[]>(initialHistory);
+
+  function changeTab(tab: Tab) {
+    setActive(tab); setMessage("");
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("tab", tab);
+    router.replace(`?${params.toString()}`, {scroll: false});
+  }
+
+  async function runJobNow(type: string) {
+    setBusy(true); setMessage("");
+    try {
+      const result = await request("/api/settings/automation/run", {method: "POST", body: JSON.stringify({type})});
+      if (result.started) {
+        setJobHistory(current => [{at: new Date().toISOString(), status: "SUCCEEDED", label: type}, ...current]);
+        setMessage("Saved.");
+      } else {
+        setMessage(result.reason === "already_running" ? "That job is already running." : "Saved.");
+      }
+      setJobs(await request("/api/settings/automation"));
+    } catch (error) {
+      setJobHistory(current => [{at: new Date().toISOString(), status: "FAILED", label: type, detail: error instanceof Error ? error.message : undefined}, ...current]);
+      setMessage(error instanceof Error ? error.message : "Request failed");
+    } finally { setBusy(false); }
+  }
 
   useEffect(() => {
     const endpoint = active === "Providers" ? "/api/settings/providers" : active === "Automation" ? "/api/settings/automation" : active === "Model Sources" ? "/api/settings/model-sources" : active === "API Access" ? "/api/settings/api-keys" : null;
@@ -71,7 +99,7 @@ export function SettingsClient({environment, lanes, initialHistory, smokeHistory
   const sourceHistory = (source: Source) => source.lastSyncAt ? [{at: source.lastSyncAt, status: source.status, label: source.name, detail: `${source.discoveredModelCount} discovered models`}] : [];
 
   return <div className="settings-control-center">
-    <nav className="settings-tabs" aria-label="Settings sections">{tabs.map(tab => <button type="button" key={tab} aria-current={active === tab ? "page" : undefined} className={active === tab ? "active" : ""} onClick={() => { setActive(tab); setMessage(""); }}>{tab}</button>)}</nav>
+    <nav className="settings-tabs" aria-label="Settings sections">{tabs.map(tab => <button type="button" key={tab} aria-current={active === tab ? "page" : undefined} className={active === tab ? "active" : ""} onClick={() => changeTab(tab)}>{tab}</button>)}</nav>
     {message && <p className="settings-feedback" role="status">{message}</p>}
     {loading && <p role="status">Loading settings…</p>}
 
@@ -102,8 +130,10 @@ export function SettingsClient({environment, lanes, initialHistory, smokeHistory
         </div></td>
       </tr>)}
     </tbody></table></div>
-      {editing && <div className="settings-credential-editor"><h4>{providers.find(p => p.id === editing)?.name} credential</h4><CredentialForm providerId={editing} defaultEnv={providers.find(p => p.id === editing)!.environmentVariable}/></div>}
     </Card>}
+    <Modal open={editing !== null} title={`${providers.find(p => p.id === editing)?.name ?? ""} credential`} onClose={() => setEditing(null)}>
+      {editing && <CredentialForm providerId={editing} defaultEnv={providers.find(p => p.id === editing)!.environmentVariable}/>}
+    </Modal>
 
     {active === "Automation" && <Card title="Automation jobs" aside={<span>Database-backed scheduler</span>}>
       <p className="settings-help">Each job is claimed with a lease before execution, preventing overlap across worker restarts. Changes take effect when the worker next checks for due jobs.</p>
@@ -115,7 +145,7 @@ export function SettingsClient({environment, lanes, initialHistory, smokeHistory
           <td><small>Next {stamp(job.nextRunAt)}</small><br/><small>Last {stamp(job.lastRunAt)}</small></td>
           <td>{job.durationMs ?? "—"} ms<br/>{job.failureCount} failures</td>
           <td><StatusHistoryStrip label={`${job.type} execution history`} items={jobHistory.filter(item => item.label === job.type)}/></td>
-          <td><button className="button" type="button" disabled={busy} onClick={() => void act(() => request("/api/settings/automation/run", {method: "POST", body: JSON.stringify({type: job.type})}))}>Run now</button> <Link className="button" href="/runs">View runs</Link></td>
+          <td><button className="button" type="button" disabled={busy} onClick={() => void runJobNow(job.type)}>Run now</button> <Link className="button" href="/runs">View runs</Link></td>
         </tr>)}
       </tbody></table></div>
     </Card>}

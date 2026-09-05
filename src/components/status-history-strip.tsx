@@ -42,7 +42,7 @@ function timestamp(value: StatusHistoryItem["at"]) {
  * in this codebase already returns). The strip always fills from the right — the
  * most recent observation is the rightmost bar — and left-pads with grey
  * "not run yet" placeholders when there isn't enough history to fill every slot.
- * Hovering (or focusing) a bar shows its timestamp, status, and detail via title.
+ * Hovering (or focusing) a bar shows a small tooltip with its timestamp, status, and detail.
  */
 export function StatusHistoryStrip({ items, label = "Recent status history", className = "", count = 14 }: { items: StatusHistoryItem[]; label?: string; className?: string; count?: number }) {
   const recent = items.slice(0, count);
@@ -53,11 +53,11 @@ export function StatusHistoryStrip({ items, label = "Recent status history", cla
 
   return <span className={`status-history ${className}`} aria-label={label} role="list">
     {ordered.map((item, index) => {
-      if (!item) return <span key={`empty-${index}`} className="status-history-item" aria-hidden="true"><span className="status-history-square status-history-unknown"/></span>;
+      if (!item) return <span key={`empty-${index}`} className="status-history-item" aria-hidden="true" data-tooltip="Not run yet"><span className="status-history-square status-history-unknown"/></span>;
       const state = stateFor(item.status);
       const text = `${timestamp(item.at)} · ${statusLabel[state]}${item.label ? ` · ${item.label}` : ""}${item.detail ? ` · ${item.detail}` : ""}`;
       const bar = <span className={`status-history-square status-history-${state}`} aria-hidden="true"/>;
-      return item.href ? <Link key={`${item.at?.toString() ?? "unknown"}-${index}`} href={item.href} className="status-history-item" aria-label={text} title={text} role="listitem">{bar}<span className="visually-hidden">{text}</span></Link> : <span key={`${item.at?.toString() ?? "unknown"}-${index}`} className="status-history-item" aria-label={text} title={text} role="listitem">{bar}<span className="visually-hidden">{text}</span></span>;
+      return item.href ? <Link key={`${item.at?.toString() ?? "unknown"}-${index}`} href={item.href} className="status-history-item" aria-label={text} data-tooltip={text} tabIndex={0} role="listitem">{bar}<span className="visually-hidden">{text}</span></Link> : <span key={`${item.at?.toString() ?? "unknown"}-${index}`} className="status-history-item" aria-label={text} data-tooltip={text} tabIndex={0} role="listitem">{bar}<span className="visually-hidden">{text}</span></span>;
     })}
   </span>;
 }
