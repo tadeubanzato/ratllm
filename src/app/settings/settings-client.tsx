@@ -33,7 +33,7 @@ const jobTypeDescriptions: Record<string, string> = {
   DEEP_BENCHMARK: "The same health check as Health Monitor, run against nearly the entire inventory once a day — this is what populates the Benchmarks page.",
   MAINTENANCE: "Cleans up expired leases and stale internal state.",
 };
-type Source = {id: string; name: string; type: string; providerId: string | null; url: string | null; enabled: boolean; priority: number; status: string; discoveredModelCount: number; lastSyncAt: string | null; adapterReference: string | null};
+type Source = {id: string; name: string; type: string; providerId: string | null; url: string | null; enabled: boolean; priority: number; status: string; discoveredModelCount: number; lastSyncAt: string | null; adapterReference: string | null; credentialReference: string | null};
 
 const builtinSourceDescriptions: Record<string, string> = Object.fromEntries(sourceRegistry.map(source => [source.id, `${source.description} (Tier ${source.tier}${source.candidateOnly ? " · candidate-only" : ""})`]));
 type ApiKey = {id: string; name: string; prefix: string; scopes: string[]; createdAt: string; expiresAt: string | null; lastUsedAt: string | null; revokedAt: string | null};
@@ -235,19 +235,14 @@ export function SettingsClient({environment, lanes, initialHistory, smokeHistory
 
     {active === "Free Model Sources" && <Card title="Free model sources" aside={<button className="button primary" type="button" onClick={() => setSourceModal({mode: "add"})}>Add source</button>}>
       <p className="settings-help">The built-in sources below are what the Model Discovery job actually scouts — disabling one here skips it on the next run. Custom sources you add are tested independently and do not yet feed discovery automatically.</p>
-      <div className="settings-table-wrap"><table className="data-table settings-table"><thead><tr><th>Source</th><th>Type</th><th>Enabled</th><th>Status</th><th>Last sync / models</th><th>History</th><th>Actions</th></tr></thead><tbody>
+      <div className="settings-table-wrap"><table className="data-table settings-table"><thead><tr><th>Source</th><th>Type</th><th>Enabled</th><th>Status</th><th>Last sync / models</th><th>History</th></tr></thead><tbody>
         {sources.map(source => <tr key={source.id}>
-          <td><strong>{source.name}</strong>{source.adapterReference && <span className="settings-help" style={{marginLeft: 6}}>Built-in</span>}<br/><small>{source.adapterReference ? builtinSourceDescriptions[source.adapterReference] ?? source.url : source.url ?? "Manual source"}</small></td>
+          <td><button type="button" className="settings-link-button" onClick={() => setSourceModal({mode: "edit", source})}>{source.name}</button>{source.adapterReference && <span className="settings-help" style={{marginLeft: 6}}>Built-in</span>}<br/><small>{source.adapterReference ? builtinSourceDescriptions[source.adapterReference] ?? source.url : source.url ?? "Manual source"}</small></td>
           <td>{source.type.replaceAll("_", " ")}</td>
           <td><input aria-label={`${source.name} enabled`} type="checkbox" checked={source.enabled} disabled={busy} onChange={event => void act(() => request("/api/settings/model-sources", {method: "POST", body: JSON.stringify({...source, enabled: event.target.checked})}))}/></td>
           <td>{source.status}</td>
           <td>{stamp(source.lastSyncAt)}<br/>{source.discoveredModelCount} models</td>
           <td><StatusHistoryStrip label={`${source.name} sync history`} items={sourceHistory(source)}/></td>
-          <td>
-            {source.adapterReference ? <span className="settings-help">Runs via the Model Discovery job</span> : <button className="button" type="button" disabled={busy} onClick={() => void act(() => request("/api/settings/model-sources/action", {method: "POST", body: JSON.stringify({sourceId: source.id, action: "sync"})}))}>Test / sync now</button>}{" "}
-            <button className="button" type="button" disabled={busy} onClick={() => setSourceModal({mode: "edit", source})}>Edit</button>{" "}
-            {!source.adapterReference && <button className="button" type="button" disabled={busy} onClick={() => void act(() => request(`/api/settings/model-sources?id=${source.id}`, {method: "DELETE"}))}>Delete</button>}
-          </td>
         </tr>)}
       </tbody></table></div>
       <div className="manual-model-form"><strong>Manual model entry</strong><input className="input" placeholder="provider/model-id"/><button className="button" type="button" onClick={() => setMessage("Manual model entry is stored through the selected Manual source during discovery")}>Add manual model</button></div>
@@ -279,24 +274,55 @@ export function SettingsClient({environment, lanes, initialHistory, smokeHistory
       </dl></Card>
     </div>}
 
-    <Modal open={sourceModal !== null} title={sourceModal?.mode === "edit" ? "Rename source" : "Add model source"} onClose={() => setSourceModal(null)}>
-      <form onSubmit={event => {
+    <Modal open={sourceModal !== null} title={sourceModal?.mode === "edit" ? sourceModal.source.name : "Add model source"} onClose={() => setSourceModal(null)}>
+      {sourceModal?.mode === "edit" ? (() => {
+        const source = sourceModal.source;
+        const registryEntry = source.adapterReference ? sourceRegistry.find(item => item.id === source.adapterReference) : undefined;
+        return <form onSubmit={event => {
+          event.preventDefault();
+          const fields = new FormData(event.currentTarget);
+          const name = String(fields.get("name") ?? "").trim();
+          if (!name) return;
+          const patch: Partial<Source> = {name, priority: Number(fields.get("priority") ?? source.priority)};
+          if (!registryEntry) { patch.url = String(fields.get("url") ?? "").trim() || null; patch.credentialReference = String(fields.get("credentialReference") ?? "").trim() || null; }
+          void act(() => request("/api/settings/model-sources", {method: "POST", body: JSON.stringify({...source, ...patch})}));
+          setSourceModal(null);
+        }}>
+          {registryEntry && <p className="settings-help">{registryEntry.description}</p>}
+          <label>Name<input className="input" name="name" required autoFocus defaultValue={source.name}/></label>
+          <label>URL<input className="input" name="url" type="url" defaultValue={registryEntry?.url ?? source.url ?? ""} disabled={Boolean(registryEntry)}/>{registryEntry && <small>Reference only — the built-in adapter always queries this exact endpoint.</small>}</label>
+          {!registryEntry && <label>Credential reference<input className="input" name="credentialReference" defaultValue={source.credentialReference ?? ""} placeholder="e.g. an environment variable name, if this feed needs one"/></label>}
+          <label>Priority<input className="input" name="priority" type="number" min={0} max={10000} defaultValue={source.priority}/></label>
+          <dl className="definition-list">
+            <dt>Type</dt><dd>{source.type.replaceAll("_", " ")}{registryEntry && ` · Tier ${registryEntry.tier}${registryEntry.candidateOnly ? " (candidate-only)" : ""}`}</dd>
+            {registryEntry?.authEnv && <><dt>Authentication</dt><dd>{registryEntry.authEnv} environment variable{registryEntry.authOptional ? " (optional — works unauthenticated too)" : " (required)"}</dd></>}
+            {registryEntry?.registrationUrl && <><dt>Get credential</dt><dd><a href={registryEntry.registrationUrl} target="_blank" rel="noopener noreferrer">{registryEntry.registrationUrl} ↗</a></dd></>}
+            <dt>Status</dt><dd>{source.status}</dd>
+            <dt>Last sync</dt><dd>{stamp(source.lastSyncAt)}</dd>
+            <dt>Discovered models</dt><dd>{source.discoveredModelCount}</dd>
+          </dl>
+          <div className="modal-actions">
+            {!registryEntry && <button type="button" className="button" disabled={busy} onClick={() => void act(() => request("/api/settings/model-sources/action", {method: "POST", body: JSON.stringify({sourceId: source.id, action: "sync"})}))}>Test / sync now</button>}
+            {!registryEntry && <button type="button" className="button" disabled={busy} onClick={() => { void act(() => request(`/api/settings/model-sources?id=${source.id}`, {method: "DELETE"})); setSourceModal(null); }}>Delete</button>}
+            <button type="button" className="button" onClick={() => setSourceModal(null)}>Cancel</button>
+            <button type="submit" className="button primary">Save</button>
+          </div>
+        </form>;
+      })() : <form onSubmit={event => {
         event.preventDefault();
         const fields = new FormData(event.currentTarget);
         const name = String(fields.get("name") ?? "").trim();
         if (!name) return;
-        if (sourceModal?.mode === "edit") {
-          void act(() => request("/api/settings/model-sources", {method: "POST", body: JSON.stringify({...sourceModal.source, name})}));
-        } else {
-          const url = String(fields.get("url") ?? "").trim();
-          void act(() => request("/api/settings/model-sources", {method: "POST", body: JSON.stringify({name, type: url ? "JSON_FEED" : "MANUAL", url: url || null, enabled: true, priority: 100})}));
-        }
+        const url = String(fields.get("url") ?? "").trim();
+        const credentialReference = String(fields.get("credentialReference") ?? "").trim();
+        void act(() => request("/api/settings/model-sources", {method: "POST", body: JSON.stringify({name, type: url ? "JSON_FEED" : "MANUAL", url: url || null, credentialReference: credentialReference || null, enabled: true, priority: 100})}));
         setSourceModal(null);
       }}>
-        <label>Source name<input className="input" name="name" required autoFocus defaultValue={sourceModal?.mode === "edit" ? sourceModal.source.name : ""}/></label>
-        {sourceModal?.mode === "add" && <label>Source URL<input className="input" name="url" type="url" placeholder="Leave blank for a Manual source"/></label>}
-        <div className="modal-actions"><button type="button" className="button" onClick={() => setSourceModal(null)}>Cancel</button><button type="submit" className="button primary">{sourceModal?.mode === "edit" ? "Save" : "Add source"}</button></div>
-      </form>
+        <label>Source name<input className="input" name="name" required autoFocus/></label>
+        <label>Source URL<input className="input" name="url" type="url" placeholder="Leave blank for a Manual source"/></label>
+        <label>Credential reference<input className="input" name="credentialReference" placeholder="e.g. an environment variable name, if this feed needs one"/></label>
+        <div className="modal-actions"><button type="button" className="button" onClick={() => setSourceModal(null)}>Cancel</button><button type="submit" className="button primary">Add source</button></div>
+      </form>}
     </Modal>
 
     <Modal open={keyModal} title="Generate API key" onClose={() => setKeyModal(false)}>
