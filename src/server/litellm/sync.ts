@@ -3,7 +3,7 @@ import { and, eq, isNotNull, notInArray } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { CURATOR_MANAGED_BY, CURATOR_VERSION } from "@/lib/constants";
 import { getDb } from "@/server/db/client";
-import { auditEvents, canonicalModels, laneAssignments, lanes, modelDeployments, providers, syncRuns } from "@/server/db/schema";
+import { auditEvents, canonicalModels, laneAssignments, lanes, modelDeployments, providers, rateLimitProfiles, syncRuns } from "@/server/db/schema";
 import { log } from "@/server/logging";
 import { resolveProvider } from "@/server/providers/catalog";
 import { deploymentIdentity, isManagedDeployment, sanitizedMetadata } from "./classify";
@@ -18,8 +18,11 @@ function providerIdentity(item: Awaited<ReturnType<HttpLiteLLMAdapter["listDeplo
     const known = resolveProvider(item.model_info.source_provider, "");
     if (known) return {slug: known.slug, name: known.name};
   }
-  const slug=model.includes("/")?model.split("/",1)[0]!.toLowerCase():"litellm";
-  return {slug,name:slug==="litellm"?"LiteLLM / Custom":slug.replace(/^./,c=>c.toUpperCase())};
+  const rawSlug=model.includes("/")?model.split("/",1)[0]!.toLowerCase():"litellm";
+  // LiteLLM's own provider prefixes don't always match this app's catalog slugs (e.g. "nvidia_nim", "vercel_ai_gateway") — route through the same alias map discovery uses so a deployment doesn't fragment into a second, credential-less provider row.
+  const known=rawSlug!=="litellm"?resolveProvider(rawSlug,""):null;
+  if(known)return {slug:known.slug,name:known.name};
+  return {slug:rawSlug,name:rawSlug==="litellm"?"LiteLLM / Custom":rawSlug.replace(/^./,c=>c.toUpperCase())};
 }
 function canonicalSlug(model: string) { return model.split("/").at(-1)!.toLowerCase().replace(/[^a-z0-9._-]+/g, "-"); }
 
@@ -51,7 +54,7 @@ export async function syncLiteLLM(options: { dryRun?: boolean } = {}, adapter = 
       const existing = (await db.select().from(modelDeployments).where(eq(modelDeployments.litellmDeploymentId, identity.deploymentId)).limit(1))[0];
       const values = { canonicalModelId: model.id, providerId: provider.id, providerModelId: identity.providerModelId, litellmDeploymentId: identity.deploymentId, litellmModelName: item.model_name, managed: managedFlag, managedBy: managedFlag ? String(item.model_info.managed_by) : null, curatorVersion: managedFlag ? String(item.model_info.curator_version ?? CURATOR_VERSION) : null, apiBase: typeof item.litellm_params.api_base === "string" ? item.litellm_params.api_base : null, rawMetadata: sanitizedMetadata(item), lastSeenAt: new Date() };
       if (existing) await db.update(modelDeployments).set({ ...values, updatedAt: new Date() }).where(eq(modelDeployments.id, existing.id));
-      else await db.insert(modelDeployments).values(values);
+      else { const [inserted] = await db.insert(modelDeployments).values(values).returning({ id: modelDeployments.id }); await db.insert(rateLimitProfiles).values({ deploymentId: inserted.id }); }
     }
     // Preserve inventory history, but never keep a removed router deployment
     // eligible through an old HEALTHY result after a successful inventory sync.

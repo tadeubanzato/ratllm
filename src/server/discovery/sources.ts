@@ -141,7 +141,7 @@ class TextCandidateSource implements DiscoverySource {
           seen.add(token.toLowerCase());
           const lo = Math.max(0, match.index! - 200); const hi = Math.min(visible.length, match.index! + token.length + 200);
           const evidence = visible.slice(lo, hi).replace(/\s+/g, " ").trim().slice(0, 500);
-          const provider = resolveProvider(null, token);
+          const provider = resolveProvider(this.config.providerHint ?? null, token);
           out.push({source: this.id, modelRef: token, displayName: token, providerName: provider?.name, freeType: "UNKNOWN", verifiedFree: false, sourceUrl: url, evidence: {line: index + 1, excerpt: evidence, freeLead: freeHit, providerResolution: provider ? {slug: provider.slug, method: "model-family"} : undefined}});
         }
       }
