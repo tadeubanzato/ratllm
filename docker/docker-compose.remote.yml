@@ -1,0 +1,10 @@
+# Use with docker-compose.yml on a workstation connected to the server LAN.
+services:
+  curator-db:
+    profiles: [local-database]
+  curator-worker:
+    profiles: [local-worker]
+  curator-web:
+    depends_on: !reset {}
+    # The server deployment owns migrations, seed data, and background jobs.
+    command: ["pnpm", "start"]

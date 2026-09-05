@@ -1,0 +1,5 @@
+# Apply only on the Linux database server.
+services:
+  curator-db:
+    ports:
+      - "192.168.5.48:5432:5432"
