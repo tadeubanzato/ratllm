@@ -4,7 +4,11 @@ import { StatusPill } from "@/components/status-pill";
 import { timeAgo } from "@/lib/utils";
 import { getCandidateCheckHistory, getModelCandidates, withDemo, type CandidateCheckPoint } from "@/server/queries";
 import { getCandidateProviderPortal } from "@/server/providers/portals";
+import { sourceRegistry } from "@/server/discovery/registry";
 import { DiscoveryButton } from "./discovery-button";
+
+const DISPLAY_LIMIT = 300;
+const tierRank: Record<string, number> = Object.fromEntries(sourceRegistry.map(source => [source.id, source.tier === "A1" ? 0 : source.tier === "A2" ? 1 : source.tier === "B" ? 2 : 3]));
 
 type CandidateRow=Awaited<ReturnType<typeof getModelCandidates>>[number];
 function availabilityFor(row:CandidateRow){const evidence=row.evidence;const lastStatus=String(evidence.lastStatus??"").toLowerCase();const status=lastStatus==="provider_unresolved"?"PROVIDER_UNRESOLVED":lastStatus==="provider_not_configured"?"VERIFIER_NOT_CONFIGURED":lastStatus==="auth_error"?"AUTH_ERROR":!row.providerId?"PROVIDER_UNRESOLVED":!row.credentialConfigured?"CREDENTIAL_MISSING":!row.credentialVerified?"CREDENTIAL_UNVERIFIED":lastStatus==="available"||lastStatus==="passed"?"AVAILABLE":lastStatus==="rate_limited"?"RATE_LIMITED":lastStatus==="unavailable"||lastStatus==="failed"?"UNAVAILABLE":"QUEUED";return{status,httpStatus:typeof evidence.lastHttpStatus==="number"?evidence.lastHttpStatus:null,lastTestedAt:typeof evidence.testedAt==="string"?new Date(evidence.testedAt):null,nextCheckAt:typeof evidence.nextCheckAt==="string"?new Date(evidence.nextCheckAt):null,requiredAction:typeof evidence.requiredAction==="string"?evidence.requiredAction:null};}
@@ -15,8 +19,16 @@ function candidateHistoryItems(points: CandidateCheckPoint[]) {
 
 export const dynamic="force-dynamic";
 export default async function ModelsPage(){
-  const [candidates,candidateHistory]=await Promise.all([getModelCandidates(),withDemo(() => getCandidateCheckHistory(20), () => new Map<string, CandidateCheckPoint[]>())]);
-  return <PageShell title="Discovered Models" eyebrow={`${candidates.length} discovery observations · live inventory lives under LiteLLM`} actions={<DiscoveryButton/>}><section className="panel"><div className="panel-header"><h3>Discovered free-model candidates</h3><span>Availability checks run automatically on schedule (Settings → Automation → Candidate verification)</span></div><div className="table-scroll"><table className="data-table"><thead><tr><th>Candidate</th><th>Provider / credential</th><th>Source</th><th>Free evidence</th><th>Context</th><th>Availability</th><th>Last tested</th></tr></thead><tbody>{candidates.length?candidates.map(row=>{
+  const [allCandidates,candidateHistory]=await Promise.all([getModelCandidates(),withDemo(() => getCandidateCheckHistory(20), () => new Map<string, CandidateCheckPoint[]>())]);
+  const sorted=[...allCandidates].sort((a,b)=>{
+    if(a.verifiedFree!==b.verifiedFree)return a.verifiedFree?-1:1;
+    const ta=tierRank[a.source]??4,tb=tierRank[b.source]??4;
+    if(ta!==tb)return ta-tb;
+    return a.displayName.localeCompare(b.displayName);
+  });
+  const candidates=sorted.slice(0,DISPLAY_LIMIT);
+  const truncated=allCandidates.length>DISPLAY_LIMIT;
+  return <PageShell title="Discovered Models" eyebrow={truncated?`Showing top ${DISPLAY_LIMIT} of ${allCandidates.length} discovery observations, highest-trust first · live inventory lives under LiteLLM`:`${allCandidates.length} discovery observations · live inventory lives under LiteLLM`} actions={<DiscoveryButton/>}><section className="panel"><div className="panel-header"><h3>Discovered free-model candidates</h3><span>Availability checks run automatically on schedule (Settings → Automation → Candidate verification)</span></div><div className="table-scroll"><table className="data-table"><thead><tr><th>Candidate</th><th>Provider / credential</th><th>Source</th><th>Free evidence</th><th>Context</th><th>Availability</th><th>Last tested</th></tr></thead><tbody>{candidates.length?candidates.map(row=>{
     const portal=getCandidateProviderPortal(row.source,row.providerName,row.modelRef);
     const availability=availabilityFor(row);
     const points=candidateHistoryItems(candidateHistory.get(row.id)??[]);
