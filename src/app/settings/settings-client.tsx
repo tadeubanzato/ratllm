@@ -8,6 +8,7 @@ import { CredentialForm } from "@/app/providers/[id]/credential-form";
 import { StatusPill } from "@/components/status-pill";
 import { Modal } from "@/components/modal";
 import { cronToSchedule, scheduleToCron, scheduleUnits, type ScheduleUnit } from "@/lib/schedule";
+import { sourceRegistry } from "@/server/discovery/registry";
 
 const tabs = ["General", "LiteLLM", "Providers", "Automation", "Free Model Sources", "API Access", "Safety"] as const;
 type Tab = (typeof tabs)[number];
@@ -34,11 +35,7 @@ const jobTypeDescriptions: Record<string, string> = {
 };
 type Source = {id: string; name: string; type: string; providerId: string | null; url: string | null; enabled: boolean; priority: number; status: string; discoveredModelCount: number; lastSyncAt: string | null; adapterReference: string | null};
 
-const builtinSourceDescriptions: Record<string, string> = {
-  openrouter: "OpenRouter's public model catalog, filtered to $0 pricing and :free variants.",
-  "litellm-cost-map": "LiteLLM's maintained cost table, filtered to chat models with $0 input/output cost.",
-  "community-lists": "Community-maintained GitHub lists, scanned for free-tier model mentions.",
-};
+const builtinSourceDescriptions: Record<string, string> = Object.fromEntries(sourceRegistry.map(source => [source.id, `${source.description} (Tier ${source.tier}${source.candidateOnly ? " · candidate-only" : ""})`]));
 type ApiKey = {id: string; name: string; prefix: string; scopes: string[]; createdAt: string; expiresAt: string | null; lastUsedAt: string | null; revokedAt: string | null};
 type Lane = {slug: string; minimumHealthy: number};
 

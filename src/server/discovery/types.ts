@@ -1,5 +1,5 @@
 export interface DiscoveredCandidate {
-  source: "openrouter" | "litellm-cost-map" | "community-lists";
+  source: string;
   modelRef: string;
   displayName: string;
   providerName?: string;
@@ -15,6 +15,6 @@ export interface DiscoveredCandidate {
 }
 
 export interface DiscoverySource {
-  readonly id: DiscoveredCandidate["source"];
+  readonly id: string;
   discover(): Promise<DiscoveredCandidate[]>;
 }

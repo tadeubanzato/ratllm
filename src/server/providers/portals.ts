@@ -29,6 +29,8 @@ const providerPortals: Readonly<Record<string, ProviderPortal>> = {
   "together-ai": { url: "https://api.together.ai/settings/api-keys", label: "Generate API key" },
   sarvam: { url: "https://dashboard.sarvam.ai/key-management", label: "Generate API key" },
   "public-ai": { url: "https://platform.publicai.co/", label: "Open provider console" },
+  deepseek: { url: "https://platform.deepseek.com/", label: "Generate API key" },
+  minimax: { url: "https://platform.minimax.io/", label: "Generate API key" },
 };
 
 export function getProviderPortal(slug: string): ProviderPortal | null {
