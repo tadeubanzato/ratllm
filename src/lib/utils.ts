@@ -19,3 +19,18 @@ export function duration(ms: number | null) {
   if (ms == null) return "—";
   return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`;
 }
+
+function formatSummaryValue(value: unknown): string {
+  if (value === null || value === undefined) return "—";
+  if (Array.isArray(value)) return `${value.length} item${value.length === 1 ? "" : "s"}`;
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>);
+    return entries.length ? entries.map(([key, inner]) => `${key} ${formatSummaryValue(inner)}`).join(", ") : "—";
+  }
+  return String(value);
+}
+
+/** Renders a run/job summary object as a compact one-line string, recursing into nested objects instead of printing "[object Object]". */
+export function formatSummary(summary: Record<string, unknown>): string {
+  return Object.entries(summary).map(([key, value]) => `${key} ${formatSummaryValue(value)}`).join(" · ");
+}
