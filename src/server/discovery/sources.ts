@@ -28,3 +28,10 @@ export class CommunityListsSource implements DiscoverySource {
 }
 
 export const discoverySources:readonly DiscoverySource[]=[new OpenRouterSource(),new LiteLLMCostMapSource(),new CommunityListsSource()];
+
+/** Reference metadata for the built-in scouting sources, used to seed and label their Settings → Free Model Sources rows. */
+export const discoverySourceInfo = [
+  {id: "openrouter", name: "OpenRouter Free Models", url: OPENROUTER_URL, description: "OpenRouter's public model catalog, filtered to $0 pricing and :free variants."},
+  {id: "litellm-cost-map", name: "LiteLLM Free Cost Map", url: COST_MAP_URL, description: "LiteLLM's maintained cost table, filtered to chat models with $0 input/output cost."},
+  {id: "community-lists", name: "Community Free-Model Lists", url: COMMUNITY_URLS[0], description: `Community-maintained GitHub lists, scanned for free-tier model mentions. Also reads: ${COMMUNITY_URLS.slice(1).join(", ")}`},
+] as const;

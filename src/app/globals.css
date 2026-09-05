@@ -65,11 +65,13 @@ table{width:100%;border-collapse:collapse}.data-table th{text-align:left;backgro
 .automation-job-card{border:1px solid var(--border);border-radius:8px;padding:16px 18px;background:var(--surface-2)}
 .automation-job-header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .automation-job-name{display:flex;align-items:center;gap:10px;font-size:12.5px}
+.automation-job-description{margin:6px 0 0;font-size:10.5px;color:var(--muted);max-width:520px;line-height:1.5}
 .automation-job-body{display:grid;grid-template-columns:minmax(260px,420px) 1fr;gap:24px;margin-top:16px;align-items:start}
 .automation-job-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
 .automation-job-stats div{display:grid;gap:3px}
 .automation-job-stats small{font-size:9px;color:var(--faint);text-transform:uppercase;letter-spacing:.06em}
-.automation-job-stats strong{font-size:11.5px;font-family:var(--font-mono);font-weight:600}
+.automation-job-stats strong{font-size:11.5px;font-family:var(--font-mono);font-weight:600;white-space:nowrap}
+.automation-job-stat-time{font-size:10px;font-family:var(--font-mono);color:var(--muted)}
 .automation-job-history{margin-top:16px;padding-top:14px;border-top:1px solid var(--border);display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .automation-job-history small{font-size:10px;color:var(--muted);white-space:nowrap;text-transform:uppercase;letter-spacing:.04em}
 @media(max-width:900px){.automation-job-body{grid-template-columns:1fr}.automation-job-stats{grid-template-columns:repeat(2,1fr)}}

@@ -9,15 +9,45 @@ import { StatusPill } from "@/components/status-pill";
 import { Modal } from "@/components/modal";
 import { cronToSchedule, scheduleToCron, scheduleUnits, type ScheduleUnit } from "@/lib/schedule";
 
-const tabs = ["General", "LiteLLM", "Providers", "Automation", "Model Sources", "API Access", "Safety"] as const;
+const tabs = ["General", "LiteLLM", "Providers", "Automation", "Free Model Sources", "API Access", "Safety"] as const;
 type Tab = (typeof tabs)[number];
 type Provider = {id: string; name: string; slug: string; enabled: boolean; credentialState: string; lastValidatedAt: string | null; environmentVariable: string; testSupported: boolean; portal: {url: string; label: string} | null};
 type Job = {type: string; enabled: boolean; schedule: string; timezone: string; status: string; lastRunAt: string | null; nextRunAt: string | null; durationMs: number | null; failureCount: number; lastError: string | null};
-type Source = {id: string; name: string; type: string; providerId: string | null; url: string | null; enabled: boolean; priority: number; status: string; discoveredModelCount: number; lastSyncAt: string | null};
+
+const jobTypeLabels: Record<string, string> = {
+  MODEL_DISCOVERY: "Model Discovery",
+  CANDIDATE_VERIFICATION: "Candidate Verification",
+  HEALTH_MONITOR: "Health Monitor",
+  RATE_LIMIT_LEARNING: "Rate Limit Learning",
+  APPLY_APPROVED_PLANS: "Apply Approved Plans",
+  DEEP_BENCHMARK: "Full Health Sweep (Daily)",
+  MAINTENANCE: "Maintenance",
+};
+const jobTypeDescriptions: Record<string, string> = {
+  MODEL_DISCOVERY: "Scans provider catalogs for new free or discounted models.",
+  CANDIDATE_VERIFICATION: "Tests discovered candidates directly against their provider for availability.",
+  HEALTH_MONITOR: "Frequent connectivity checks against a rotating slice of live LiteLLM deployments.",
+  RATE_LIMIT_LEARNING: "Probes provider rate limits to refine safe RPM/TPM estimates.",
+  APPLY_APPROVED_PLANS: "Applies validated LiteLLM configuration changes.",
+  DEEP_BENCHMARK: "The same health check as Health Monitor, run against nearly the entire inventory once a day — this is what populates the Benchmarks page.",
+  MAINTENANCE: "Cleans up expired leases and stale internal state.",
+};
+type Source = {id: string; name: string; type: string; providerId: string | null; url: string | null; enabled: boolean; priority: number; status: string; discoveredModelCount: number; lastSyncAt: string | null; adapterReference: string | null};
+
+const builtinSourceDescriptions: Record<string, string> = {
+  openrouter: "OpenRouter's public model catalog, filtered to $0 pricing and :free variants.",
+  "litellm-cost-map": "LiteLLM's maintained cost table, filtered to chat models with $0 input/output cost.",
+  "community-lists": "Community-maintained GitHub lists, scanned for free-tier model mentions.",
+};
 type ApiKey = {id: string; name: string; prefix: string; scopes: string[]; createdAt: string; expiresAt: string | null; lastUsedAt: string | null; revokedAt: string | null};
 type Lane = {slug: string; minimumHealthy: number};
 
 const stamp = (value: string | null | undefined) => value ? new Date(value).toLocaleString() : "—";
+function StampCell({label, value}: {label: string; value: string | null | undefined}) {
+  if (!value) return <div><small>{label}</small><strong>—</strong></div>;
+  const date = new Date(value);
+  return <div><small>{label}</small><strong>{date.toLocaleDateString()}</strong><span className="automation-job-stat-time">{date.toLocaleTimeString([], {hour: "numeric", minute: "2-digit"})}</span></div>;
+}
 
 function Card({title, children, aside}: {title: string; children: React.ReactNode; aside?: React.ReactNode}) {
   return <section className="panel settings-card"><div className="panel-header"><h3>{title}</h3>{aside}</div><div className="panel-body">{children}</div></section>;
@@ -100,7 +130,7 @@ export function SettingsClient({environment, lanes, initialHistory, smokeHistory
   }
 
   useEffect(() => {
-    const endpoint = active === "Providers" ? "/api/settings/providers" : active === "Automation" ? "/api/settings/automation" : active === "Model Sources" ? "/api/settings/model-sources" : active === "API Access" ? "/api/settings/api-keys" : null;
+    const endpoint = active === "Providers" ? "/api/settings/providers" : active === "Automation" ? "/api/settings/automation" : active === "Free Model Sources" ? "/api/settings/model-sources" : active === "API Access" ? "/api/settings/api-keys" : null;
     if (!endpoint) return;
     let current = true;
     const timer = setTimeout(() => {
@@ -109,7 +139,7 @@ export function SettingsClient({environment, lanes, initialHistory, smokeHistory
         if (!current) return;
         if (active === "Providers") setProviders(value);
         else if (active === "Automation") setJobs(value);
-        else if (active === "Model Sources") setSources(value);
+        else if (active === "Free Model Sources") setSources(value);
         else setKeys(value);
       }).catch(error => { if (current) setMessage(error.message); }).finally(() => { if (current) setLoading(false); });
     }, 0);
@@ -122,7 +152,7 @@ export function SettingsClient({environment, lanes, initialHistory, smokeHistory
       await fn(); setMessage("Saved.");
       if (active === "Providers") setProviders(await request("/api/settings/providers"));
       if (active === "Automation") setJobs(await request("/api/settings/automation"));
-      if (active === "Model Sources") setSources(await request("/api/settings/model-sources"));
+      if (active === "Free Model Sources") setSources(await request("/api/settings/model-sources"));
       if (active === "API Access") setKeys(await request("/api/settings/api-keys"));
     } catch (error) { setMessage(error instanceof Error ? error.message : "Request failed"); }
     finally { setBusy(false); }
@@ -172,10 +202,13 @@ export function SettingsClient({environment, lanes, initialHistory, smokeHistory
       <div className="automation-jobs">
         {jobs.map(job => <div className="automation-job-card" key={job.type}>
           <div className="automation-job-header">
-            <div className="automation-job-name">
-              <input aria-label={`${job.type} enabled`} type="checkbox" checked={job.enabled} disabled={busy} onChange={event => void act(() => request(`/api/settings/automation?type=${job.type}`, {method: "PATCH", body: JSON.stringify({enabled: event.target.checked})}))}/>
-              <strong>{job.type.replaceAll("_", " ")}</strong>
-              <StatusPill value={job.status}/>
+            <div>
+              <div className="automation-job-name">
+                <input aria-label={`${job.type} enabled`} type="checkbox" checked={job.enabled} disabled={busy} onChange={event => void act(() => request(`/api/settings/automation?type=${job.type}`, {method: "PATCH", body: JSON.stringify({enabled: event.target.checked})}))}/>
+                <strong>{jobTypeLabels[job.type] ?? job.type.replaceAll("_", " ")}</strong>
+                <StatusPill value={job.status}/>
+              </div>
+              {jobTypeDescriptions[job.type] && <p className="automation-job-description">{jobTypeDescriptions[job.type]}</p>}
             </div>
             <div className="settings-actions">
               <button className="button" type="button" disabled={busy} onClick={() => void runJobNow(job.type)}>Run now</button>
@@ -188,8 +221,8 @@ export function SettingsClient({environment, lanes, initialHistory, smokeHistory
               <ScheduleEditor schedule={job.schedule} jobType={job.type} disabled={busy} onSave={cron => void act(() => request(`/api/settings/automation?type=${job.type}`, {method: "PATCH", body: JSON.stringify({schedule: cron})}))}/>
             </div>
             <div className="automation-job-stats">
-              <div><small>Next run</small><strong>{stamp(job.nextRunAt)}</strong></div>
-              <div><small>Last run</small><strong>{stamp(job.lastRunAt)}</strong></div>
+              <StampCell label="Next run" value={job.nextRunAt}/>
+              <StampCell label="Last run" value={job.lastRunAt}/>
               <div><small>Duration</small><strong>{job.durationMs ?? "—"} ms</strong></div>
               <div><small>Failures</small><strong>{job.failureCount}</strong></div>
             </div>
@@ -203,20 +236,20 @@ export function SettingsClient({environment, lanes, initialHistory, smokeHistory
       </div>
     </Card>}
 
-    {active === "Model Sources" && <Card title="Model source management" aside={<button className="button primary" type="button" onClick={() => setSourceModal({mode: "add"})}>Add source</button>}>
-      <p className="settings-help">Manual sources can be used for a manually entered model inventory; external feeds are tested before sync.</p>
-      <div className="settings-table-wrap"><table className="data-table settings-table"><thead><tr><th>Source / provider</th><th>Type</th><th>Enabled</th><th>Status</th><th>Last sync / models</th><th>History</th><th>Actions</th></tr></thead><tbody>
+    {active === "Free Model Sources" && <Card title="Free model sources" aside={<button className="button primary" type="button" onClick={() => setSourceModal({mode: "add"})}>Add source</button>}>
+      <p className="settings-help">The built-in sources below are what the Model Discovery job actually scouts — disabling one here skips it on the next run. Custom sources you add are tested independently and do not yet feed discovery automatically.</p>
+      <div className="settings-table-wrap"><table className="data-table settings-table"><thead><tr><th>Source</th><th>Type</th><th>Enabled</th><th>Status</th><th>Last sync / models</th><th>History</th><th>Actions</th></tr></thead><tbody>
         {sources.map(source => <tr key={source.id}>
-          <td><strong>{source.name}</strong><br/><small>{source.url ?? "Manual source"}</small></td>
+          <td><strong>{source.name}</strong>{source.adapterReference && <span className="settings-help" style={{marginLeft: 6}}>Built-in</span>}<br/><small>{source.adapterReference ? builtinSourceDescriptions[source.adapterReference] ?? source.url : source.url ?? "Manual source"}</small></td>
           <td>{source.type.replaceAll("_", " ")}</td>
           <td><input aria-label={`${source.name} enabled`} type="checkbox" checked={source.enabled} disabled={busy} onChange={event => void act(() => request("/api/settings/model-sources", {method: "POST", body: JSON.stringify({...source, enabled: event.target.checked})}))}/></td>
           <td>{source.status}</td>
           <td>{stamp(source.lastSyncAt)}<br/>{source.discoveredModelCount} models</td>
           <td><StatusHistoryStrip label={`${source.name} sync history`} items={sourceHistory(source)}/></td>
           <td>
-            <button className="button" type="button" disabled={busy} onClick={() => void act(() => request("/api/settings/model-sources/action", {method: "POST", body: JSON.stringify({sourceId: source.id, action: "sync"})}))}>Test / sync now</button>{" "}
+            {source.adapterReference ? <span className="settings-help">Runs via the Model Discovery job</span> : <button className="button" type="button" disabled={busy} onClick={() => void act(() => request("/api/settings/model-sources/action", {method: "POST", body: JSON.stringify({sourceId: source.id, action: "sync"})}))}>Test / sync now</button>}{" "}
             <button className="button" type="button" disabled={busy} onClick={() => setSourceModal({mode: "edit", source})}>Edit</button>{" "}
-            <button className="button" type="button" disabled={busy} onClick={() => void act(() => request(`/api/settings/model-sources?id=${source.id}`, {method: "DELETE"}))}>Delete</button>
+            {!source.adapterReference && <button className="button" type="button" disabled={busy} onClick={() => void act(() => request(`/api/settings/model-sources?id=${source.id}`, {method: "DELETE"}))}>Delete</button>}
           </td>
         </tr>)}
       </tbody></table></div>
