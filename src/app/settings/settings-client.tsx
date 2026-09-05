@@ -93,6 +93,7 @@ export function SettingsClient({environment, lanes, initialHistory, smokeHistory
   const [sources, setSources] = useState<Source[]>([]);
   const [keys, setKeys] = useState<ApiKey[]>([]);
   const [editing, setEditing] = useState<string | null>(null);
+  const [deletingProvider, setDeletingProvider] = useState<string | null>(null);
   const [sourceModal, setSourceModal] = useState<null | {mode: "add"} | {mode: "edit"; source: Source}>(null);
   const [keyModal, setKeyModal] = useState(false);
   const [addProviderModal, setAddProviderModal] = useState(false);
@@ -185,6 +186,7 @@ export function SettingsClient({environment, lanes, initialHistory, smokeHistory
         <td><div className="settings-actions">
           <button className="button" type="button" onClick={() => setEditing(editing === provider.id ? null : provider.id)}>Configure credential</button>
           {provider.testSupported ? <button className="button" type="button" disabled={busy || !provider.enabled || provider.credentialState === "MISSING"} onClick={() => void act(async () => { await request(`/api/providers/${provider.id}/verify`, {method: "POST"}); })}>Test credential</button> : <span className="settings-help">API test unavailable</span>}
+          {provider.enabled && <button className="button small" type="button" disabled={busy} onClick={() => setDeletingProvider(provider.id)}>Delete</button>}
         </div></td>
       </tr>)}
     </tbody></table></div>
@@ -192,6 +194,13 @@ export function SettingsClient({environment, lanes, initialHistory, smokeHistory
     <Modal open={editing !== null} title={`${providers.find(p => p.id === editing)?.name ?? ""} credential`} onClose={() => setEditing(null)}>
       {editing && providers.find(p => p.id === editing)?.portal && <p className="settings-help"><a href={providers.find(p => p.id === editing)!.portal!.url} target="_blank" rel="noopener noreferrer">{providers.find(p => p.id === editing)!.portal!.label} on {providers.find(p => p.id === editing)?.name} ↗</a></p>}
       {editing && <CredentialForm providerId={editing} defaultEnv={providers.find(p => p.id === editing)!.environmentVariable}/>}
+    </Modal>
+    <Modal open={deletingProvider !== null} title={`Delete ${providers.find(p => p.id === deletingProvider)?.name ?? ""}`} onClose={() => setDeletingProvider(null)}>
+      <p className="settings-help">This deactivates the provider — it stops appearing as available for discovery and verification, but its credential, deployments, and history stay in the database. You can re-enable it any time from the Enabled column.</p>
+      <div className="modal-actions">
+        <button type="button" className="button" onClick={() => setDeletingProvider(null)}>Cancel</button>
+        <button type="button" className="button primary" disabled={busy} onClick={() => void act(async () => { await request("/api/settings/providers", {method: "PATCH", body: JSON.stringify({id: deletingProvider, enabled: false})}); setDeletingProvider(null); })}>Delete</button>
+      </div>
     </Modal>
 
     {active === "Automation" && <Card title="Automation jobs" aside={<span>Database-backed scheduler</span>}>
