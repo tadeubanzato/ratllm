@@ -21,7 +21,7 @@ function Card({title, children, aside}: {title: string; children: React.ReactNod
   return <section className="panel settings-card"><div className="panel-header"><h3>{title}</h3>{aside}</div><div className="panel-body">{children}</div></section>;
 }
 function History({items, label}: {items: StatusHistoryItem[]; label: string}) {
-  return <div className="history-row"><span>{label}</span><StatusHistoryStrip label={label} items={items.slice(0, 14)}/></div>;
+  return <div className="history-row"><StatusHistoryStrip label={label} items={items.slice(0, 14)}/></div>;
 }
 
 export function SettingsClient({environment, lanes, initialHistory, smokeHistory}: {environment: string; lanes: Lane[]; initialHistory: StatusHistoryItem[]; smokeHistory: StatusHistoryItem[]}) {
