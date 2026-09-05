@@ -15,7 +15,7 @@ export async function ensureModelSources() {
   const have = new Set(existing.map(row => row.adapterReference));
   const missing = sourceRegistry.filter(source => !have.has(source.id));
   if (!missing.length) return;
-  await db.insert(modelSources).values(missing.map(source => ({name: source.name, type: "CUSTOM_ADAPTER" as const, url: source.url, enabled: true, priority: source.tier === "A1" ? 10 : source.tier === "A2" ? 20 : source.tier === "B" ? 30 : 40, adapterReference: source.id})));
+  await db.insert(modelSources).values(missing.map(source => ({name: source.name, type: "CUSTOM_ADAPTER" as const, url: source.url, enabled: source.defaultEnabled ?? true, priority: source.tier === "A1" ? 10 : source.tier === "A2" ? 20 : source.tier === "B" ? 30 : 40, adapterReference: source.id})));
 }
 
 export async function getEnabledAdapterIds(): Promise<Set<string>> {

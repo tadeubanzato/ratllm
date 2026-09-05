@@ -22,6 +22,8 @@ export interface SourceConfig {
   providers?: readonly string[];
   focusTerms?: readonly string[];
   candidateOnly?: boolean;
+  /** Seed this source disabled. Use for sources whose API can't distinguish free from paid at all (unlike e.g. OpenRouter, which exposes per-model pricing) — enabling them means high verification-queue noise for little free-model signal. */
+  defaultEnabled?: boolean;
   description: string;
 }
 
@@ -32,7 +34,7 @@ export const sourceRegistry: readonly SourceConfig[] = [
   {id: "gemini", tier: "A1", name: "Google Gemini Models API", adapter: "openai_models", url: "https://generativelanguage.googleapis.com/v1beta/openai/models", registrationUrl: "https://aistudio.google.com/apikey", authEnv: "GEMINI_API_KEY", description: "Authoritative Gemini model inventory via the OpenAI-compatible endpoint."},
   {id: "deepseek", tier: "A1", name: "DeepSeek Models API", adapter: "openai_models", url: "https://api.deepseek.com/models", registrationUrl: "https://platform.deepseek.com/", authEnv: "DEEPSEEK_API_KEY", description: "Authoritative direct DeepSeek model discovery."},
   {id: "minimax", tier: "A1", name: "MiniMax Models API", adapter: "openai_models", url: "https://api.minimax.io/v1/models", registrationUrl: "https://platform.minimax.io/", authEnv: "MINIMAX_API_KEY", description: "Authoritative MiniMax model inventory."},
-  {id: "huggingface", tier: "A1", name: "Hugging Face Hub Provider Search", adapter: "huggingface", url: "https://huggingface.co/api/models", registrationUrl: "https://huggingface.co/settings/tokens", authEnv: "HF_TOKEN", authOptional: true, providers: ["cerebras", "cohere", "deepinfra", "fireworks-ai", "groq", "hf-inference", "novita", "nscale", "together", "zai-org"], description: "Discovers models served by many inference providers through the Hub API."},
+  {id: "huggingface", tier: "A1", name: "Hugging Face Hub Provider Search", adapter: "huggingface", url: "https://huggingface.co/api/models", registrationUrl: "https://huggingface.co/settings/tokens", authEnv: "HF_TOKEN", authOptional: true, providers: ["cerebras", "cohere", "deepinfra", "fireworks-ai", "groq", "hf-inference", "novita", "nscale", "together", "zai-org"], defaultEnabled: false, description: "Discovers models served by many inference providers through the Hub API. Disabled by default: unlike OpenRouter, the Hub API exposes no per-model pricing, so every result is 'available somewhere,' not 'free' — a provider's full paid catalog looks identical to its free one here."},
   {id: "groq", tier: "A2", name: "Groq Free Plan Limits", adapter: "text_candidates", url: "https://console.groq.com/docs/rate-limits", registrationUrl: "https://console.groq.com/keys", focusTerms: ["Free Plan Limits", "MODEL ID", "RPM", "RPD", "TPM", "TPD"], description: "Authoritative list of free-plan models and their exact rate limits."},
   {id: "nvidia_nim", tier: "A2", name: "NVIDIA NIM Model Catalog", adapter: "text_candidates", url: "https://build.nvidia.com/models", registrationUrl: "https://build.nvidia.com/", focusTerms: ["Free Endpoint", "Downloadable Free Endpoint"], description: "Hosted NIM free endpoints and new open models."},
   {id: "alibaba", tier: "A2", name: "Alibaba Model Studio Free Quota", adapter: "text_candidates", url: "https://www.alibabacloud.com/help/en/model-studio/new-free-quota", registrationUrl: "https://modelstudio.console.alibabacloud.com/", focusTerms: ["free quota", "Qwen", "Model"], description: "Authoritative Qwen/Tongyi free-quota eligibility."},
