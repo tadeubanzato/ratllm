@@ -30,8 +30,8 @@ export function DeploymentActions({ id, alias, health, live }: { id: string; ali
   if (!live) return <span>Removed</span>;
   return <>
     <span style={{ display: "inline-flex", gap: 6 }}>
-      <button className="button" onClick={() => { setPending("deactivate"); setError(""); }}>Deactivate</button>
-      {health !== "HEALTHY" && <button className="button" onClick={() => { setPending("delete"); setError(""); }}>Delete</button>}
+      <button className="button small" onClick={() => { setPending("deactivate"); setError(""); }}>Deactivate</button>
+      {health !== "HEALTHY" && <button className="button small" onClick={() => { setPending("delete"); setError(""); }}>Delete</button>}
     </span>
     <Modal open={pending !== null} title={pending === "delete" ? "Delete deployment" : "Deactivate deployment"} onClose={() => setPending(null)}>
       <form onSubmit={confirm}>
