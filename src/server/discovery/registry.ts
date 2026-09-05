@@ -7,7 +7,7 @@
  * establish free status on their own (see Trust & Rules: "Tier B/C
  * sources cannot directly enter LiteLLM").
  */
-export type SourceAdapter = "openrouter" | "litellm_costmap" | "openai_models" | "huggingface" | "text_candidates";
+export type SourceAdapter = "openrouter" | "litellm_costmap" | "openai_models" | "huggingface" | "text_candidates" | "provider_dataset";
 
 export interface SourceConfig {
   id: string;
@@ -43,8 +43,10 @@ export const sourceRegistry: readonly SourceConfig[] = [
   {id: "freellm_models", tier: "B", name: "freeLLM.net Models Directory", adapter: "text_candidates", url: "https://freellm.net/models/", registrationUrl: "https://freellm.net/api-keys/", candidateOnly: true, description: "Curated cross-provider free-model index; candidate-only cross-check."},
   {id: "freellm_providers", tier: "B", name: "freeLLM.net Providers Directory", adapter: "text_candidates", url: "https://freellm.net/providers/", registrationUrl: "https://freellm.net/api-keys/", candidateOnly: true, description: "Provider-level free-tier and registration discovery; candidate-only."},
   {id: "freellmapi", tier: "B", name: "FreeLLMAPI", adapter: "text_candidates", url: "https://freellmapi.co/models", registrationUrl: "https://github.com/tashfeenahmed/freellmapi", candidateOnly: true, description: "Third-party normalized free-model/provider catalog; candidate-only."},
-  {id: "cheahjs", tier: "B", name: "cheahjs/free-llm-api-resources", adapter: "text_candidates", url: "https://raw.githubusercontent.com/cheahjs/free-llm-api-resources/main/README.md", candidateOnly: true, description: "Reputable community discovery of free API programs and providers."},
+  {id: "cheahjs", tier: "B", name: "cheahjs/free-llm-api-resources (mirror)", adapter: "text_candidates", url: "https://raw.githubusercontent.com/raullenchai/free-llm-api-resources/main/README.md", candidateOnly: true, description: "Reputable community discovery of free API programs and providers. The original cheahjs/free-llm-api-resources repo was removed from GitHub; this is the most current, actively-synced fork of the same generated list (confirmed via GitHub API 404 on the upstream repo)."},
   {id: "xyzs996", tier: "B", name: "xyzs996/free-llm-api", adapter: "text_candidates", url: "https://raw.githubusercontent.com/xyzs996/free-llm-api/main/README.md", candidateOnly: true, description: "Secondary curated free-provider discovery."},
   {id: "ailookup", tier: "C", name: "AILookup/free-llm-resources", adapter: "text_candidates", url: "https://raw.githubusercontent.com/AILookup/free-llm-resources/main/README.md", candidateOnly: true, description: "Long-tail cross-check for free providers/models."},
   {id: "cybirdd", tier: "C", name: "CYBIRD-D/FREE-LLM-API-Provider", adapter: "text_candidates", url: "https://raw.githubusercontent.com/CYBIRD-D/FREE-LLM-API-Provider/main/README.md", candidateOnly: true, description: "China/APAC-focused free-provider discovery, included to reduce Western-source bias."},
+  {id: "tatn", tier: "B", name: "tatn/awesome-free-ai-apis", adapter: "text_candidates", url: "https://raw.githubusercontent.com/tatn/awesome-free-ai-apis/main/README.md", candidateOnly: true, description: "Per-provider free-tier tables with exact rate limits (Google AI Studio, OpenAI, OpenRouter, Ollama, and more)."},
+  {id: "freellmapihub", tier: "B", name: "freellmapihub.com dataset (pacocartones/free-llm-api-hub)", adapter: "provider_dataset", url: "https://raw.githubusercontent.com/pacocartones/free-llm-api-hub/main/data/providers.json", registrationUrl: "https://freellmapihub.com/", candidateOnly: true, description: "Structured, machine-readable dataset of free-tier providers with a per-provider 'independently verified against official docs' flag and explicit free model-id lists. Providers whose free tier isn't scoped to specific model ids (e.g. Mistral, Hugging Face) are skipped here since presence alone wouldn't prove free status."},
 ] as const;

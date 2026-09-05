@@ -31,6 +31,12 @@ const providerPortals: Readonly<Record<string, ProviderPortal>> = {
   "public-ai": { url: "https://platform.publicai.co/", label: "Open provider console" },
   deepseek: { url: "https://platform.deepseek.com/", label: "Generate API key" },
   minimax: { url: "https://platform.minimax.io/", label: "Generate API key" },
+  scaleway: { url: "https://console.scaleway.com/iam/api-keys", label: "Generate API key" },
+  "ollama-cloud": { url: "https://ollama.com/settings/keys", label: "Generate API key" },
+  modelscope: { url: "https://modelscope.cn/my/myaccesstoken", label: "Generate API key" },
+  pollinations: { url: "https://enter.pollinations.ai/keys", label: "Generate API key" },
+  wandb: { url: "https://wandb.ai/authorize", label: "Generate API key" },
+  typhoon: { url: "https://playground.opentyphoon.ai/api-key", label: "Generate API key" },
 };
 
 export function getProviderPortal(slug: string): ProviderPortal | null {

@@ -108,8 +108,14 @@ class HuggingFaceProviderSource implements DiscoverySource {
 }
 
 /** Generalized HTML/Markdown text scraper for official tables (Groq, NVIDIA, Alibaba, Z.AI, Kilo) and curated/community lists. Every hit is a lead, never a confirmed fact — candidateOnly sources are explicitly excluded from auto-promotion elsewhere in the pipeline. */
-const MODEL_TOKEN_PATTERN = /(?:[a-z0-9._-]+\/(?:qwen|deepseek|glm|kimi|minimax|mimo|stepfun|hunyuan|doubao|ernie|longcat|baichuan|internlm|yi-|gpt-oss|llama|mistral|codestral|command|gemini|phi)[a-z0-9._:+/-]*|(?:qwen|tongyi|deepseek|glm|zhipu|kimi|minimax|mimo|stepfun|hunyuan|doubao|ernie|longcat|baichuan|internlm|yi-|gpt-oss|llama|mistral|codestral|command|gemini|phi)[a-z0-9._:+/-]*)/gi;
+const MODEL_TOKEN_PATTERN = /(?:[a-z0-9._-]+\/(?:qwen|deepseek|glm|kimi|minimax|mimo|stepfun|hunyuan|doubao|ernie|longcat|baichuan|internlm|yi-|gpt-oss|llama|mistral|codestral|command|gemini|phi)[a-z0-9._:+-]*|(?:qwen|tongyi|deepseek|glm|zhipu|kimi|minimax|mimo|stepfun|hunyuan|doubao|ernie|longcat|baichuan|internlm|yi-|gpt-oss|llama|mistral|codestral|command|gemini|phi)[a-z0-9._:+-]*)/gi;
 const FREE_WORDS = ["free", "免费", "$0", "no credit card", "free tier", "free quota", "trial credit", "free endpoint", "free plan"];
+/** README convention for collapsible "paid pricing" tables — duplicates the free-tier model names next to their paid cost, which reads as free-signal noise if left in. */
+const DETAILS_BLOCK_PATTERN = /<details[^>]*>[\s\S]*?<\/details>/gi;
+/** A prose mention like "Llama" or "Gemini" isn't a model id; real ids carry a digit, a hyphenated qualifier, or an org/repo slash. */
+const looksLikeModelId = (token: string) => /[0-9/-]/.test(token);
+/** Doc links and repo references match the family-word pattern too (e.g. "ai.google.dev/gemini-api/docs", "ggml-org/llama.cpp") — filter those out by their non-model suffix/prefix shape. */
+const DOC_OR_REPO_SHAPE = /(^[a-z0-9.-]+\.(?:com|dev|org|net|io|co|ai)\/)|(\.(?:com|dev|org|net|io|co|ai|cpp|git|md|html?)$)/i;
 class TextCandidateSource implements DiscoverySource {
   constructor(private config: SourceConfig) {}
   get id() { return this.config.id; }
@@ -121,20 +127,43 @@ class TextCandidateSource implements DiscoverySource {
     for (const result of settled) {
       if (result.status !== "fulfilled") continue;
       const {url, text} = result.value;
-      const visible = text.includes("<") && text.includes(">") ? text.replace(/<[^>]+>/g, " ") : text;
+      const withoutPaidTables = text.replace(DETAILS_BLOCK_PATTERN, " ");
+      const visible = withoutPaidTables.includes("<") && withoutPaidTables.includes(">") ? withoutPaidTables.replace(/<[^>]+>/g, " ") : withoutPaidTables;
       for (const [index, line] of visible.split("\n").entries()) {
         const focusHit = this.config.focusTerms ? this.config.focusTerms.some(term => line.toLowerCase().includes(term.toLowerCase())) : true;
         const freeHit = FREE_WORDS.some(word => line.toLowerCase().includes(word));
         if (!focusHit && !freeHit) continue;
         for (const match of line.matchAll(MODEL_TOKEN_PATTERN)) {
           const token = match[0].replace(/^[`'"[({<]+|[`'")\]}>.,;:|]+$/g, "");
-          if (token.length < 4 || seen.has(token.toLowerCase()) || /^https?:/.test(token)) continue;
+          if (token.length < 4 || seen.has(token.toLowerCase()) || /^https?:/.test(token) || !looksLikeModelId(token) || DOC_OR_REPO_SHAPE.test(token)) continue;
           seen.add(token.toLowerCase());
           const lo = Math.max(0, match.index! - 200); const hi = Math.min(visible.length, match.index! + token.length + 200);
           const evidence = visible.slice(lo, hi).replace(/\s+/g, " ").trim().slice(0, 500);
           const provider = resolveProvider(null, token);
           out.push({source: this.id, modelRef: token, displayName: token, providerName: provider?.name, freeType: "UNKNOWN", verifiedFree: false, sourceUrl: url, evidence: {line: index + 1, excerpt: evidence, freeLead: freeHit, providerResolution: provider ? {slug: provider.slug, method: "model-family"} : undefined}});
         }
+      }
+    }
+    return out;
+  }
+}
+
+/** freellmapihub's machine-readable dataset: one JSON object per provider with an explicit `models_free` id list and a `verified` flag for whether the facts were independently re-checked against official docs. Providers with no discrete free model ids are skipped — same reasoning as disabling the Hugging Face source: presence isn't proof of "free". */
+const providerDatasetEntrySchema = z.object({name: z.string(), docs_url: z.string().optional(), verified: z.boolean().optional(), models_free: z.array(z.string()).optional()});
+class ProviderDatasetSource implements DiscoverySource {
+  constructor(private config: SourceConfig) {}
+  get id() { return this.config.id; }
+  async discover(): Promise<DiscoveredCandidate[]> {
+    const body = await getJson(this.config.url) as Record<string, unknown>;
+    const providersRaw = Array.isArray(body.providers) ? body.providers : [];
+    const out: DiscoveredCandidate[] = [];
+    for (const raw of providersRaw) {
+      const parsed = providerDatasetEntrySchema.safeParse(raw);
+      if (!parsed.success || !parsed.data.models_free?.length) continue;
+      const {name, docs_url: docsUrl, verified, models_free: modelsFree} = parsed.data;
+      const provider = resolveProvider(name, modelsFree[0]);
+      for (const modelRef of modelsFree) {
+        out.push({source: this.id, modelRef, displayName: modelRef, providerName: provider?.name ?? name, freeType: "FREE_TIER", verifiedFree: false, sourceUrl: docsUrl ?? this.config.url, evidence: {datasetVerified: verified ?? false, providerDocsUrl: docsUrl}});
       }
     }
     return out;
@@ -148,6 +177,7 @@ function buildSource(config: SourceConfig): DiscoverySource {
     case "openai_models": return new OpenAICompatibleModelsSource(config);
     case "huggingface": return new HuggingFaceProviderSource(config);
     case "text_candidates": return new TextCandidateSource(config);
+    case "provider_dataset": return new ProviderDatasetSource(config);
   }
 }
 
