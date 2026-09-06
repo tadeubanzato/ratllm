@@ -22,6 +22,7 @@ const jobTypeLabels: Record<string, string> = {
   RATE_LIMIT_LEARNING: "Rate Limit Learning",
   APPLY_APPROVED_PLANS: "Apply Approved Plans",
   DEEP_BENCHMARK: "Full Health Sweep (Daily)",
+  LANE_RECONCILE: "Lane Routing Reconcile",
   MAINTENANCE: "Maintenance",
 };
 const jobTypeDescriptions: Record<string, string> = {
@@ -31,6 +32,7 @@ const jobTypeDescriptions: Record<string, string> = {
   RATE_LIMIT_LEARNING: "Probes provider rate limits to refine safe RPM/TPM estimates.",
   APPLY_APPROVED_PLANS: "Applies validated LiteLLM configuration changes.",
   DEEP_BENCHMARK: "The same health check as Health Monitor, run against nearly the entire inventory once a day — this is what populates the Benchmarks page.",
+  LANE_RECONCILE: "Re-adds any smart-* lane member missing from LiteLLM and re-pushes the cross-lane fallback chains.",
   MAINTENANCE: "Cleans up expired leases and stale internal state.",
 };
 type Source = {id: string; name: string; type: string; providerId: string | null; url: string | null; enabled: boolean; priority: number; status: string; discoveredModelCount: number; lastSyncAt: string | null; adapterReference: string | null; credentialReference: string | null};
