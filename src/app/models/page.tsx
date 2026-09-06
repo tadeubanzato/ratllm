@@ -5,6 +5,7 @@ import { timeAgo } from "@/lib/utils";
 import { getCandidateCheckHistory, getModelCandidates, withDemo, type CandidateCheckPoint } from "@/server/queries";
 import { sourceRegistry } from "@/server/discovery/registry";
 import { DiscoveryButton } from "./discovery-button";
+import { VerifyButton } from "./verify-button";
 import { AddToLiteLLMButton } from "./connect-button";
 
 const DISPLAY_LIMIT = 300;
@@ -29,7 +30,7 @@ export default async function ModelsPage(){
   });
   const candidates=sorted.slice(0,DISPLAY_LIMIT);
   const truncated=allCandidates.length>DISPLAY_LIMIT;
-  return <PageShell title="Discovered Models" eyebrow={truncated?`Showing top ${DISPLAY_LIMIT} of ${allCandidates.length} discovery observations, models you can already test first · manage credentials under Settings → Providers`:`${allCandidates.length} discovery observations · manage credentials under Settings → Providers`} actions={<DiscoveryButton/>}><section className="panel"><div className="panel-header"><h3>Discovered free-model candidates</h3><span>Availability checks run automatically on schedule (Settings → Automation → Candidate verification)</span></div><div className="table-scroll"><table className="data-table"><thead><tr><th>Candidate</th><th>Provider / credential</th><th>Free evidence</th><th>Context</th><th>Availability</th><th>Last tested</th><th>LiteLLM</th></tr></thead><tbody>{candidates.length?candidates.map(row=>{
+  return <PageShell title="Discovered Models" eyebrow={truncated?`Showing top ${DISPLAY_LIMIT} of ${allCandidates.length} discovery observations, models you can already test first · manage credentials under Settings → Providers`:`${allCandidates.length} discovery observations · manage credentials under Settings → Providers`} actions={<div style={{display:"flex",alignItems:"center",gap:12}}><VerifyButton/><DiscoveryButton/></div>}><section className="panel"><div className="panel-header"><h3>Discovered free-model candidates</h3><span>Availability checks run automatically on schedule (Settings → Automation → Candidate verification)</span></div><div className="table-scroll"><table className="data-table"><thead><tr><th>Candidate</th><th>Provider / credential</th><th>Free evidence</th><th>Context</th><th>Availability</th><th>Last tested</th><th>LiteLLM</th></tr></thead><tbody>{candidates.length?candidates.map(row=>{
     const availability=availabilityFor(row);
     const points=candidateHistoryItems(candidateHistory.get(row.id)??[]);
     const inLiteLLM=Boolean(row.liteLLMDeploymentId);
