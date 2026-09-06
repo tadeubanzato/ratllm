@@ -13,8 +13,13 @@ export function bareModelKey(modelRef: string): string {
   return candidate.toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
 
+/** Every LiteLLM deployment a discovery candidate corresponds to — one per lane it was added to, plus any direct alias. */
+export function matchDeployments<T extends {providerId: string; providerModelId: string}>(deployments: readonly T[], providerId: string, modelRef: string): T[] {
+  const key = bareModelKey(modelRef);
+  return deployments.filter(deployment => deployment.providerId === providerId && bareModelKey(deployment.providerModelId) === key);
+}
+
 /** Finds the LiteLLM deployment (if any) a discovery candidate already corresponds to, so the UI/promotion flow never depends on having written a link back at add-time. */
 export function matchDeployment<T extends {providerId: string; providerModelId: string}>(deployments: readonly T[], providerId: string, modelRef: string): T | null {
-  const key = bareModelKey(modelRef);
-  return deployments.find(deployment => deployment.providerId === providerId && bareModelKey(deployment.providerModelId) === key) ?? null;
+  return matchDeployments(deployments, providerId, modelRef)[0] ?? null;
 }

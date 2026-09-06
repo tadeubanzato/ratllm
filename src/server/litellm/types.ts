@@ -17,6 +17,8 @@ export interface SmokeResult {
   error?: string;
 }
 
+export type FallbackType = "general" | "context_window" | "content_policy";
+
 export interface LiteLLMAdapter {
   listDeployments(): Promise<LiteLLMDeployment[]>;
   getVersion(): Promise<string | null>;
@@ -24,4 +26,7 @@ export interface LiteLLMAdapter {
   addDeployment(input: { modelName:string; model:string; apiKey:string; apiBase?:string; metadata:Record<string,unknown> }): Promise<{ id?:string }>;
   setDeploymentBlocked(id: string, blocked: boolean): Promise<void>;
   removeDeployment(id:string): Promise<void>;
+  getFallback(model: string, type: FallbackType): Promise<string[]>;
+  setFallback(model: string, fallbackModels: string[], type: FallbackType): Promise<void>;
+  deleteFallback(model: string, type: FallbackType): Promise<void>;
 }

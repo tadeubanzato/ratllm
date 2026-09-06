@@ -47,7 +47,9 @@ pnpm build
 
 Set `LITELLM_BASE_URL` and the server-only `LITELLM_MASTER_KEY`, then open **LiteLLM** and select **Sync inventory**. Okame reads `/v1/model/info` through a version-tolerant adapter and stores a sanitized inventory. Select a model to run a chat-completions smoke test.
 
-Milestone 1 does not mutate LiteLLM deployments. Deployment changes will only be enabled with change plans, safety validation, snapshots, smoke verification, and idempotent rollback.
+On the **Discovered Models** page, **Add to LiteLLM** opens a lane picker: the model's capabilities pre-select the `smart-*` groups that fit (`smart-vision`, `smart-long`, …), and adding it registers a router deployment per lane plus a `lane_assignments` record, then refreshes the cross-lane fallback chains. The `LANE_RECONCILE` automation re-adds any lane member missing from the router and re-pushes fallbacks on a schedule. See `docs/LITELLM.md`.
+
+Other LiteLLM deployment changes still require change plans, safety validation, snapshots, smoke verification, and idempotent rollback.
 
 ## Environment variables
 

@@ -6,13 +6,14 @@ import { automationJobs, leases, syncRuns } from "@/server/db/schema";
 import { runDiscovery } from "@/server/discovery/run";
 import { verifyDueCandidates, verifyConnectedCandidates } from "@/server/discovery/verify-due";
 import { consolidateModelCandidates } from "@/server/discovery/consolidate";
+import { reconcileLaneMembership } from "@/server/lanes/reconcile";
 import { runHealthMonitor } from "@/server/health/monitor";
 import { learnRateLimits } from "@/server/rate-limits/learn";
 import { syncLiteLLM } from "@/server/litellm/sync";
 
-export const JOB_TYPES = ["MODEL_DISCOVERY","CANDIDATE_VERIFICATION","HEALTH_MONITOR","RATE_LIMIT_LEARNING","APPLY_APPROVED_PLANS","DEEP_BENCHMARK","MAINTENANCE"] as const;
+export const JOB_TYPES = ["MODEL_DISCOVERY","CANDIDATE_VERIFICATION","HEALTH_MONITOR","RATE_LIMIT_LEARNING","APPLY_APPROVED_PLANS","DEEP_BENCHMARK","LANE_RECONCILE","MAINTENANCE"] as const;
 export type AutomationType = typeof JOB_TYPES[number];
-const defaults: Record<AutomationType,string>={MODEL_DISCOVERY:"0 */6 * * *",CANDIDATE_VERIFICATION:"15 */6 * * *",HEALTH_MONITOR:"*/10 * * * *",RATE_LIMIT_LEARNING:"30 */6 * * *",APPLY_APPROVED_PLANS:"0 * * * *",DEEP_BENCHMARK:"0 3 * * *",MAINTENANCE:"30 3 * * *"};
+const defaults: Record<AutomationType,string>={MODEL_DISCOVERY:"0 */6 * * *",CANDIDATE_VERIFICATION:"15 */6 * * *",HEALTH_MONITOR:"*/10 * * * *",RATE_LIMIT_LEARNING:"30 */6 * * *",APPLY_APPROVED_PLANS:"0 * * * *",DEEP_BENCHMARK:"0 3 * * *",LANE_RECONCILE:"*/15 * * * *",MAINTENANCE:"30 3 * * *"};
 
 /** Small, deliberately strict five-field cron evaluator. Invalid schedules are rejected rather than guessed. */
 export function nextCron(schedule:string, from=new Date()):Date {
@@ -25,7 +26,7 @@ export async function ensureAutomationJobs(){const db=getDb();for(const type of 
 async function claim(type:string, owner:string){const db=getDb();const until=new Date(Date.now()+10*60_000);const result=await db.execute(sql`insert into leases ("key", "owner", "expires_at") values (${`automation:${type}`}, ${owner}, ${until.toISOString()}::timestamptz) on conflict ("key") do update set "owner" = excluded."owner", "expires_at" = excluded."expires_at", "updated_at" = now() where leases."expires_at" < now() returning "key"`);return result.length>0;}
 async function release(type:string,owner:string){await getDb().delete(leases).where(and(eq(leases.key,`automation:${type}`),eq(leases.owner,owner)));}
 export type AutomationOptions={candidateScope?:"due"|"connected"};
-async function execute(type:AutomationType,options?:AutomationOptions){switch(type){case "MODEL_DISCOVERY": return runDiscovery();case "CANDIDATE_VERIFICATION":return options?.candidateScope==="connected"?verifyConnectedCandidates():verifyDueCandidates();case "HEALTH_MONITOR":return runHealthMonitor();case "RATE_LIMIT_LEARNING":return learnRateLimits();case "APPLY_APPROVED_PLANS":return syncLiteLLM({dryRun:false});case "DEEP_BENCHMARK":return runHealthMonitor({limit:100});case "MAINTENANCE":return {leasesPruned:await getDb().delete(leases).where(lte(leases.expiresAt,new Date())).returning({key:leases.key}),candidates:await consolidateModelCandidates()};}}
+async function execute(type:AutomationType,options?:AutomationOptions){switch(type){case "MODEL_DISCOVERY": return runDiscovery();case "CANDIDATE_VERIFICATION":return options?.candidateScope==="connected"?verifyConnectedCandidates():verifyDueCandidates();case "HEALTH_MONITOR":return runHealthMonitor();case "RATE_LIMIT_LEARNING":return learnRateLimits();case "APPLY_APPROVED_PLANS":return syncLiteLLM({dryRun:false});case "DEEP_BENCHMARK":return runHealthMonitor({limit:100});case "LANE_RECONCILE":return reconcileLaneMembership();case "MAINTENANCE":return {leasesPruned:await getDb().delete(leases).where(lte(leases.expiresAt,new Date())).returning({key:leases.key}),candidates:await consolidateModelCandidates()};}}
 export async function runAutomation(type:AutomationType, trigger="SCHEDULED", options?:AutomationOptions){
   await ensureAutomationJobs(); const db=getDb(); const owner=randomUUID(); if(!await claim(type,owner)) return {started:false,reason:"already_running" as const};
   const started=new Date();const correlationId=randomUUID();const [run]=await db.insert(syncRuns).values({type, status:"RUNNING",correlationId,startedAt:started,summary:{trigger,affectedEntities:[]}}).returning();

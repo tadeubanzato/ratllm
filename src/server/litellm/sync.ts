@@ -1,7 +1,7 @@
 import "server-only";
 import { and, eq, isNotNull, notInArray } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
-import { CURATOR_MANAGED_BY, CURATOR_VERSION } from "@/lib/constants";
+import { CURATOR_MANAGED_BY, CURATOR_VERSION, LANE_IDS } from "@/lib/constants";
 import { getDb } from "@/server/db/client";
 import { auditEvents, canonicalModels, laneAssignments, lanes, modelDeployments, providers, rateLimitProfiles, syncRuns } from "@/server/db/schema";
 import { log } from "@/server/logging";
@@ -53,8 +53,15 @@ export async function syncLiteLLM(options: { dryRun?: boolean } = {}, adapter = 
       if (managedFlag) managed += 1; else unmanaged += 1;
       const existing = (await db.select().from(modelDeployments).where(eq(modelDeployments.litellmDeploymentId, identity.deploymentId)).limit(1))[0];
       const values = { canonicalModelId: model.id, providerId: provider.id, providerModelId: identity.providerModelId, litellmDeploymentId: identity.deploymentId, litellmModelName: item.model_name, managed: managedFlag, managedBy: managedFlag ? String(item.model_info.managed_by) : null, curatorVersion: managedFlag ? String(item.model_info.curator_version ?? CURATOR_VERSION) : null, apiBase: typeof item.litellm_params.api_base === "string" ? item.litellm_params.api_base : null, rawMetadata: sanitizedMetadata(item), lastSeenAt: new Date() };
-      if (existing) await db.update(modelDeployments).set({ ...values, updatedAt: new Date() }).where(eq(modelDeployments.id, existing.id));
-      else { const [inserted] = await db.insert(modelDeployments).values(values).returning({ id: modelDeployments.id }); await db.insert(rateLimitProfiles).values({ deploymentId: inserted.id }); }
+      let deploymentRowId: string;
+      if (existing) { deploymentRowId = existing.id; await db.update(modelDeployments).set({ ...values, updatedAt: new Date() }).where(eq(modelDeployments.id, existing.id)); }
+      else { const [inserted] = await db.insert(modelDeployments).values(values).returning({ id: modelDeployments.id }); deploymentRowId = inserted.id; await db.insert(rateLimitProfiles).values({ deploymentId: inserted.id }); }
+      // A managed deployment whose router name is a lane slug is a lane member — make sure ratllm tracks the assignment
+      // even if it was added straight in LiteLLM or a prior promote failed to write it. Never overwrites a richer row.
+      if (managedFlag && (LANE_IDS as readonly string[]).includes(item.model_name)) {
+        const laneRow = (await db.select({ id: lanes.id }).from(lanes).where(eq(lanes.slug, item.model_name)).limit(1))[0];
+        if (laneRow) await db.insert(laneAssignments).values({ laneId: laneRow.id, deploymentId: deploymentRowId, priority: 50, explanation: { source: "SYNC", boundAt: new Date().toISOString() } }).onConflictDoNothing();
+      }
     }
     // Preserve inventory history, but never keep a removed router deployment
     // eligible through an old HEALTHY result after a successful inventory sync.
