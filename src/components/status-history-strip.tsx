@@ -13,7 +13,7 @@ export interface StatusHistoryItem {
 
 export const stateFor = (value: StatusHistoryItem["status"]): StatusHistoryState => {
   const normalized = value.toLowerCase().replaceAll(" ", "_");
-  if (["success", "healthy", "passed", "pass", "completed", "succeeded", "applied", "verified"].includes(normalized)) return "success";
+  if (["success", "healthy", "passed", "pass", "completed", "succeeded", "applied", "verified", "available", "reachable", "ok", "up"].includes(normalized)) return "success";
   if (["warning", "warn", "degraded", "slow", "partial"].includes(normalized)) return "warning";
   if (["rate_limited", "429", "throttled"].includes(normalized)) return "rate_limited";
   if (["running", "pending", "in_progress", "applying"].includes(normalized)) return "running";
