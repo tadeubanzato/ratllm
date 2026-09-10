@@ -6,6 +6,26 @@ Milestone 1 provides a production-built Next.js control plane, PostgreSQL persis
 
 ## Quick start
 
+Requires [Docker](https://docs.docker.com/get-docker/) (with Compose) installed and running.
+
+```bash
+git clone <this-repo-url>
+cd ratllm
+./scripts/setup.sh
+```
+
+This generates a private `.env` (git-ignored, never committed) with unique
+`POSTGRES_PASSWORD`, `CREDENTIAL_ENCRYPTION_KEY`, and `INTERNAL_API_SECRET`
+values, then builds and starts the full stack (app, worker, PostgreSQL). The
+script is safe to re-run — it never overwrites an existing `.env`. Open
+`http://localhost:9090` once it reports ready.
+
+To connect LiteLLM or a model provider, edit `.env` and set `LITELLM_BASE_URL`,
+`LITELLM_MASTER_KEY`, and any provider API keys, then re-run the script (or
+`docker compose -f docker/docker-compose.yml up -d --build`) to pick them up.
+
+Prefer to do it by hand instead?
+
 ```bash
 cp .env.example .env
 # Set POSTGRES_PASSWORD, DATABASE_URL, LITELLM_BASE_URL, and LITELLM_MASTER_KEY.

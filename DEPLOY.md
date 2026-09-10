@@ -5,6 +5,13 @@ RATLLM (Okame Model Curator) runs as a Next.js production container with a dedic
 ## Quick start
 
 ```bash
+./scripts/setup.sh
+```
+
+This bootstraps `.env` with generated secrets (if it doesn't already exist)
+and starts the stack. To do it by hand instead:
+
+```bash
 cp .env.example .env
 # set POSTGRES_PASSWORD, DATABASE_URL, LITELLM_BASE_URL and LITELLM_MASTER_KEY
 docker compose -f docker/docker-compose.yml up -d --build
