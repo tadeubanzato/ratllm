@@ -8,7 +8,7 @@ import { resolveVerificationEndpoint } from "./discovery/verify";
 import { laneStatus, type LaneStatus } from "./status";
 
 export interface ProviderRow { id: string; slug: string; name: string; status: string; adapterCapability: string; modelCount: number; healthyCount: number; credentialConfigured: boolean; credentialVerified?: boolean; enabled?: boolean; credentialState?: string; lastDiscoveryAt: Date | null }
-export interface DeploymentRow { id: string; slug: string; modelName: string; providerModelId: string; litellmModelName: string; litellmDeploymentId: string | null; providerName: string; managed: boolean; health: string; score: number | null; freeType: string; contextWindow: number | null; rpmLimit: number | null; tpmLimit: number | null; safeRpm: number | null; safeTpm: number | null; confidence: string; lastTestedAt: Date | null; benchmarkRunCount: number; lastBenchmarkStatus: string | null; apiBase?: string | null; backend?: string | null; host?: string | null }
+export interface DeploymentRow { id: string; slug: string; modelName: string; providerModelId: string; litellmModelName: string; litellmDeploymentId: string | null; providerName: string; managed: boolean; health: string; score: number | null; freeType: string; contextWindow: number | null; rpmLimit: number | null; tpmLimit: number | null; safeRpm: number | null; safeTpm: number | null; confidence: string; lastTestedAt: Date | null; benchmarkRunCount: number; lastBenchmarkStatus: string | null; apiBase?: string | null; backend?: string | null; host?: string | null; rateLimitProfileId: string | null; observedRpm: number | null; observedTpm: number | null; manualRpm: number | null; manualTpm: number | null; lastProbeAt: Date | null }
 export interface LaneSummary { id: string; slug: string; name: string; enabled: boolean; healthy: number; total: number; minimumHealthy: number; status: LaneStatus; confidence: string }
 export interface RunRow { id: string; type: string; status: string; createdAt: Date; durationMs: number | null; summary: Record<string, unknown> }
 export interface DashboardData {
@@ -49,6 +49,8 @@ export async function getDeployments(): Promise<DeploymentRow[]> {
     health: modelDeployments.health, score: modelDeployments.score, freeType: modelDeployments.freeType, contextWindow: canonicalModels.contextWindow,
     rpmLimit: rateLimitProfiles.rpmLimit, tpmLimit: rateLimitProfiles.tpmLimit, safeRpm: rateLimitProfiles.safeRpm, safeTpm: rateLimitProfiles.safeTpm,
     confidence: rateLimitProfiles.confidence, lastTestedAt: modelDeployments.lastTestedAt,
+    rateLimitProfileId: rateLimitProfiles.id, observedRpm: rateLimitProfiles.observedRpm, observedTpm: rateLimitProfiles.observedTpm,
+    manualRpm: rateLimitProfiles.manualRpm, manualTpm: rateLimitProfiles.manualTpm, lastProbeAt: rateLimitProfiles.lastProbeAt,
     benchmarkRunCount: sql<number>`(select count(*)::int from smoke_tests where smoke_tests.deployment_id = ${modelDeployments.id})`,
     lastBenchmarkStatus: sql<string | null>`(select status::text from smoke_tests where smoke_tests.deployment_id = ${modelDeployments.id} order by created_at desc limit 1)`,
     apiBase:modelDeployments.apiBase,rawMetadata:modelDeployments.rawMetadata,
