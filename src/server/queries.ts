@@ -129,6 +129,21 @@ export async function getRuns(options: {type?: string; limit?: number} = {}): Pr
   return rows.map(row => ({ id: row.id, type: row.type, status: row.status, createdAt: row.createdAt, durationMs: row.startedAt && row.finishedAt ? row.finishedAt.getTime() - row.startedAt.getTime() : null, summary: row.summary }));
 }
 
+/**
+ * The last `perType` runs of each given type, so a high-frequency job (LANE_RECONCILE, LITELLM_SYNC) can't starve a
+ * daily job out of the shared run history the settings page renders. One indexed query per type — cheap for ~10 types.
+ */
+export async function getRunHistoryByType(types: readonly string[], perType = 20): Promise<Record<string, RunRow[]>> {
+  const db = getDb();
+  const lists = await Promise.all(types.map(type =>
+    db.select().from(syncRuns).where(eq(syncRuns.type, type)).orderBy(desc(syncRuns.createdAt)).limit(perType)
+  ));
+  return Object.fromEntries(types.map((type, index) => [type, lists[index].map(row => ({
+    id: row.id, type: row.type, status: row.status, createdAt: row.createdAt,
+    durationMs: row.startedAt && row.finishedAt ? row.finishedAt.getTime() - row.startedAt.getTime() : null, summary: row.summary,
+  }))]));
+}
+
 export async function getSmokeTests(limit = 20) {
   return getDb().select().from(smokeTests).orderBy(desc(smokeTests.createdAt)).limit(limit);
 }

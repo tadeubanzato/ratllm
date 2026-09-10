@@ -161,7 +161,7 @@ export const syncRuns = pgTable("sync_runs", {
   idempotencyKey: text("idempotency_key").unique(), correlationId: text("correlation_id").notNull(),
   startedAt: timestamp("started_at", { withTimezone: true }), finishedAt: timestamp("finished_at", { withTimezone: true }),
   summary: jsonb("summary").$type<Record<string, unknown>>().notNull().default({}), error: text("error"), ...timestamps,
-}, (table) => [index("sync_runs_created_idx").on(table.createdAt)]);
+}, (table) => [index("sync_runs_created_idx").on(table.createdAt), index("sync_runs_type_created_idx").on(table.type, table.createdAt)]);
 
 export const smokeTests = pgTable("smoke_tests", {
   id: uuid("id").primaryKey().defaultRandom(), runId: uuid("run_id").references(() => syncRuns.id, { onDelete: "set null" }),
@@ -186,7 +186,7 @@ export const leases = pgTable("leases", {
 });
 
 export const automationJobs = pgTable("automation_jobs", {
-  id: uuid("id").primaryKey().defaultRandom(), type: text("type").notNull().unique(), enabled: boolean("enabled").notNull().default(true), schedule: text("schedule").notNull(), timezone: text("timezone").notNull().default("UTC"), status: automationStatus("status").notNull().default("IDLE"), lastRunAt: timestamp("last_run_at", { withTimezone: true }), nextRunAt: timestamp("next_run_at", { withTimezone: true }), durationMs: integer("duration_ms"), failureCount: integer("failure_count").notNull().default(0), lastError: text("last_error"), ...timestamps,
+  id: uuid("id").primaryKey().defaultRandom(), type: text("type").notNull().unique(), enabled: boolean("enabled").notNull().default(true), schedule: text("schedule").notNull(), customSchedule: boolean("custom_schedule").notNull().default(false), timezone: text("timezone").notNull().default("UTC"), status: automationStatus("status").notNull().default("IDLE"), lastRunAt: timestamp("last_run_at", { withTimezone: true }), nextRunAt: timestamp("next_run_at", { withTimezone: true }), durationMs: integer("duration_ms"), failureCount: integer("failure_count").notNull().default(0), lastError: text("last_error"), ...timestamps,
 }, (table) => [index("automation_jobs_due_idx").on(table.enabled, table.nextRunAt)]);
 
 export const modelSources = pgTable("model_sources", {
