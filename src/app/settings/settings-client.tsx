@@ -171,7 +171,7 @@ export function SettingsClient({environment, lanes, initialHistory, smokeHistory
         <dt>System health</dt><dd><History label="Recent health observations" items={smokeHistory}/></dd>
       </dl></Card>
       <Card title="Operating profile"><dl className="definition-list">
-        <dt>Application</dt><dd>Okame Model Curator</dd>
+        <dt>Application</dt><dd>RatLLM</dd>
         <dt>Environment</dt><dd>{environment}</dd>
         <dt>Credential storage</dt><dd>Server environment variables or encrypted server-side secrets. Saving a replacement never displays the stored secret.</dd>
       </dl></Card>

@@ -1,5 +1,5 @@
 {
-  "name": "okame-model-curator",
+  "name": "ratllm",
   "version": "0.1.0",
   "private": true,
   "packageManager": "pnpm@10.17.1",

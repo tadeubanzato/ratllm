@@ -1,4 +1,4 @@
-export const CURATOR_MANAGED_BY = "okame-model-curator";
+export const CURATOR_MANAGED_BY = "ratllm-curator";
 export const CURATOR_VERSION = "0.1.0";
 
 export const LANE_IDS = [
