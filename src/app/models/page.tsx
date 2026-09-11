@@ -1,4 +1,5 @@
-import { UptimeBar } from "@/components/status-history-strip";
+import Link from "next/link";
+import { UptimeBar, availabilityPercent } from "@/components/status-history-strip";
 import { PageShell } from "@/components/page-shell";
 import { StatusPill } from "@/components/status-pill";
 import { timeAgo } from "@/lib/utils";
@@ -18,10 +19,25 @@ function candidateHistoryItems(points: CandidateCheckPoint[]) {
   return points.map(point => ({at: point.at, status: point.httpStatus === 429 ? "RATE_LIMITED" : point.status, detail: `HTTP ${point.httpStatus ?? "—"}${point.error ? ` · ${point.error}` : ""}`}));
 }
 
+/** Turns a static "here's what's blocking promotion" reason into a link to wherever that's actually fixed —
+ *  a dead sentence with no next step is worse than nothing. Only "provider not resolved" has no fix available
+ *  in this app (the discovery source itself would need to change), so that one stays plain text. */
+function promotionBlocker(row: CandidateRow) {
+  if (!row.promotableReason) return null;
+  if (!row.providerId) return <span className="settings-help" style={{fontSize:10}}>Unresolved provider</span>;
+  if (row.promotableReason === "Credential not verified") return <Link className="settings-link-button" style={{fontSize:10}} href={`/providers/${row.providerId}`}>Verify credential →</Link>;
+  if (row.promotableReason === "No known endpoint for this provider") return <Link className="settings-link-button" style={{fontSize:10}} href={`/providers/${row.providerId}`}>Set base URL →</Link>;
+  return <span className="settings-help" style={{fontSize:10}}>{row.promotableReason}</span>;
+}
+
 export const dynamic="force-dynamic";
 export default async function ModelsPage(){
   const [allCandidates,candidateHistory]=await Promise.all([getModelCandidates(),withDemo(() => getCandidateCheckHistory(20), () => new Map<string, CandidateCheckPoint[]>())]);
+  const availabilityById=new Map(allCandidates.map(row=>[row.id,availabilityPercent(candidateHistoryItems(candidateHistory.get(row.id)??[]),12)]));
   const sorted=[...allCandidates].sort((a,b)=>{
+    // Highest availability first; candidates with no check history yet sort last regardless of how they compare otherwise.
+    const pa=availabilityById.get(a.id)??null,pb=availabilityById.get(b.id)??null;
+    if(pa!==pb){if(pa===null)return 1;if(pb===null)return -1;if(pa!==pb)return pb-pa;}
     if(a.credentialVerified!==b.credentialVerified)return a.credentialVerified?-1:1;
     if(a.verifiedFree!==b.verifiedFree)return a.verifiedFree?-1:1;
     const ta=tierRank[a.source]??4,tb=tierRank[b.source]??4;
@@ -30,17 +46,29 @@ export default async function ModelsPage(){
   });
   const candidates=sorted.slice(0,DISPLAY_LIMIT);
   const truncated=allCandidates.length>DISPLAY_LIMIT;
-  return <PageShell title="Discovered Models" eyebrow={truncated?`Showing top ${DISPLAY_LIMIT} of ${allCandidates.length} discovery observations, models you can already test first · manage credentials under Settings → Providers`:`${allCandidates.length} discovery observations · manage credentials under Settings → Providers`} actions={<div style={{display:"flex",alignItems:"center",gap:12}}><VerifyButton/><DiscoveryButton/></div>}><section className="panel"><div className="panel-header"><h3>Discovered free-model candidates</h3><span>Availability checks run automatically on schedule (Settings → Automation → Candidate verification)</span></div><div className="table-scroll"><table className="data-table"><thead><tr><th>Candidate</th><th>Provider / credential</th><th>Free evidence</th><th>Context</th><th>Availability</th><th>Last tested</th><th>LiteLLM</th></tr></thead><tbody>{candidates.length?candidates.map(row=>{
+  return <PageShell title="Discovered Models" eyebrow={truncated?`Showing top ${DISPLAY_LIMIT} of ${allCandidates.length} discovery observations, models you can already test first · manage credentials under Settings → Providers`:`${allCandidates.length} discovery observations · manage credentials under Settings → Providers`} actions={<div style={{display:"flex",alignItems:"center",gap:12}}><VerifyButton/><DiscoveryButton/></div>}><section className="panel"><div className="panel-header"><h3>Discovered free-model candidates</h3><span>Availability checks run automatically on schedule (Settings → Automation → Candidate verification)</span></div><div className="table-scroll"><table className="data-table"><thead><tr><th>Candidate</th><th>Provider</th><th>Free tier</th><th>Availability</th><th>LiteLLM</th></tr></thead><tbody>{candidates.length?candidates.map(row=>{
     const availability=availabilityFor(row);
     const points=candidateHistoryItems(candidateHistory.get(row.id)??[]);
-    const memberships=row.laneMemberships??[];
-    const litellmCell=memberships.length
-      ? <span className="mono" style={{fontSize:10}} title={memberships.map(m=>m.slug).join(", ")}>{memberships.map(m=>m.slug.replace("smart-","")).join(", ")}</span>
-      : row.liteLLMDeploymentId
-        ? <button className="button small success" type="button" disabled>Added</button>
-        : row.promotable
-          ? <AddToLiteLLMButton candidateId={row.id}/>
-          : <span className="settings-help" style={{fontSize:10}}>{row.promotableReason}</span>;
-    return <tr key={row.id}><td><strong>{row.displayName}</strong><br/><span className="mono">{row.modelRef}</span></td><td>{row.providerName??"Unresolved"}<br/><StatusPill value={row.credentialVerified?"Credential verified":row.credentialConfigured?"Credential unverified":"Credential missing"}/></td><td><StatusPill value={row.verifiedFree?row.freeType:"UNVERIFIED"}/></td><td className="mono">{row.contextWindow?.toLocaleString()??"—"}</td><td><UptimeBar items={points} label={`${row.displayName} availability checks`} count={20} compact/>{availability.requiredAction&&<div style={{marginTop:4,fontSize:10,color:"var(--muted)"}}>{availability.requiredAction.replaceAll("_"," ")}</div>}{availability.status==="RATE_LIMITED"&&availability.nextCheckAt&&<div style={{marginTop:2,fontSize:10,color:"var(--muted)"}}>Retries {timeAgo(availability.nextCheckAt)}</div>}</td><td>{availability.lastTestedAt?timeAgo(availability.lastTestedAt):availability.status==="QUEUED"?"Awaiting scheduled test":"—"}</td><td>{litellmCell}</td></tr>;
-  }):<tr><td colSpan={7}>No candidates stored. Run discovery to query the live sources.</td></tr>}</tbody></table></div></section></PageShell>;
+    // Already in LiteLLM (whether via a lane or a direct alias) collapses to one small "Added" badge — the exact lane
+    // membership and routing details live on the LiteLLM page, so repeating them here just added width for nothing.
+    const litellmCell=row.liteLLMDeploymentId
+      ? <span className="status-pill status-good">Added to LiteLLM</span>
+      : row.promotable
+        ? <AddToLiteLLMButton candidateId={row.id}/>
+        : promotionBlocker(row);
+    return <tr key={row.id}>
+      <td><strong>{row.displayName}</strong><br/><span className="mono truncate" title={row.modelRef} style={{maxWidth:220}}>{row.modelRef}</span></td>
+      <td>{row.providerName??"Unresolved"}<br/><StatusPill value={row.credentialVerified?"Credential verified":row.credentialConfigured?"Credential unverified":"Credential missing"}/></td>
+      <td><span className="mono" style={{fontSize:9.5}}>{row.contextWindow?.toLocaleString()??"—"} ctx</span><br/><StatusPill value={row.verifiedFree?row.freeType:"UNVERIFIED"}/></td>
+      <td>
+        <UptimeBar items={points} label={`${row.displayName} availability checks`} count={12} compact/>
+        <div style={{marginTop:3,fontSize:9.5,color:"var(--faint)",whiteSpace:"normal",maxWidth:180}}>
+          {availability.lastTestedAt?timeAgo(availability.lastTestedAt):availability.status==="QUEUED"?"Awaiting scheduled test":"Never tested"}
+          {availability.requiredAction&&` · ${availability.requiredAction.replaceAll("_"," ").toLowerCase()}`}
+          {availability.status==="RATE_LIMITED"&&availability.nextCheckAt&&` · retries ${timeAgo(availability.nextCheckAt)}`}
+        </div>
+      </td>
+      <td>{litellmCell}</td>
+    </tr>;
+  }):<tr><td colSpan={5}>No candidates stored. Run discovery to query the live sources.</td></tr>}</tbody></table></div></section></PageShell>;
 }

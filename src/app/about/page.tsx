@@ -1,6 +1,20 @@
+import Link from "next/link";
 import { PageShell } from "@/components/page-shell";
+import { LANE_IDS, type LaneId } from "@/lib/constants";
+import { LANE_FALLBACKS } from "@/server/lanes/rules";
 
 export const dynamic = "force-dynamic";
+
+const LANE_PURPOSES: Record<LaneId, string> = {
+  "smart-general": "General-purpose chat models",
+  "smart-coding": "Coding-focused models",
+  "smart-agent": "Tool-calling / agentic models",
+  "smart-deep": "Deep reasoning models",
+  "smart-long": "Long-context models (200k+ tokens)",
+  "smart-vision": "Vision-capable models",
+  "smart-summary": "Small, fast summarization models",
+  "smart-speech": "Speech / audio models",
+};
 
 export default function AboutPage() {
   return <PageShell title="About" eyebrow="What this is, page by page" showSearch={false}>
@@ -27,8 +41,6 @@ export default function AboutPage() {
             <dd>Models found on a provider&apos;s catalog before they are added to LiteLLM. Add one into a lane once you are ready to route traffic to it and test it.</dd>
             <dt>Lanes</dt>
             <dd>The <code>smart-*</code> LiteLLM model groups (general, coding, agent, deep reasoning, long-context, vision, summary, speech) and which deployments currently back each one, with cross-lane fallback chains kept in sync automatically.</dd>
-            <dt>Rate Limits</dt>
-            <dd>Fully automated: published, observed, and safe RPM/TPM per deployment, learned from real smoke-test evidence on a schedule. There is no manual override — every value here is machine-derived.</dd>
             <dt>Benchmarks</dt>
             <dd>Operational results from the automatic health probe for every deployment: pass/fail, latency, success rate over recent runs, latency percentiles, and time-to-first-token.</dd>
             <dt>Runs</dt>
@@ -38,6 +50,25 @@ export default function AboutPage() {
             <dt>Settings</dt>
             <dd>Environment information, provider credentials, the LiteLLM connection, automation schedules, model sources, and API access.</dd>
           </dl>
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-header"><h3>How the LiteLLM setup works</h3></div>
+        <div className="panel-body">
+          <p>Every model you add goes into one or more <code>smart-*</code> lanes in LiteLLM — a lane is just a named group of interchangeable deployments (LiteLLM load-balances across everything in it). On top of that, RatLLM declares a cross-lane <strong>fallback strategy</strong>: if a lane has no healthy deployments left, LiteLLM automatically retries the request against the lanes listed for it below, in order, so one empty lane doesn&apos;t fail a request outright.</p>
+          <div className="settings-table-wrap" style={{marginTop: 10}}>
+            <table className="data-table settings-table">
+              <thead><tr><th>Lane</th><th>Purpose</th><th>Falls back to</th></tr></thead>
+              <tbody>{LANE_IDS.map(slug => <tr key={slug}>
+                <td className="mono">{slug}</td>
+                <td>{LANE_PURPOSES[slug]}</td>
+                <td>{(LANE_FALLBACKS.general[slug] ?? []).map(f => f.replace("smart-", "")).join(" → ") || "—"}</td>
+              </tr>)}</tbody>
+            </table>
+          </div>
+          <p style={{marginTop: 12}}>This lane and fallback layout is fixed by RatLLM (it&apos;s what the lane-eligibility rules and the LANE_RECONCILE job both converge everything toward) — there&apos;s nothing to design yourself. Settings → LiteLLM has an <strong>Auto setup</strong> button that pushes this exact configuration to your LiteLLM instance immediately, instead of waiting for the next scheduled reconcile. It needs the LiteLLM master key configured there first.</p>
+          <Link className="button primary" href="/settings?tab=LiteLLM" style={{marginTop: 4, display: "inline-flex"}}>Go to LiteLLM settings →</Link>
         </div>
       </section>
 

@@ -3,14 +3,14 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { StatusHistoryStrip, type StatusHistoryItem } from "@/components/status-history-strip";
-import { LiteLLMConnectionForm, request } from "./connection-form";
+import { LiteLLMConnectionForm, LiteLLMManagementForm, LiteLLMLaneSetupPanel, type LaneOverviewItem, request } from "./connection-form";
 import { CredentialForm } from "@/app/providers/[id]/credential-form";
 import { StatusPill } from "@/components/status-pill";
 import { Modal } from "@/components/modal";
 import { cronToSchedule, scheduleToCron, scheduleUnits, type ScheduleUnit } from "@/lib/schedule";
 import { sourceRegistry } from "@/server/discovery/registry";
 
-const tabs = ["General", "LiteLLM", "Providers", "Automation", "Free Model Sources", "API Access", "Safety"] as const;
+const tabs = ["General", "LiteLLM", "Providers", "Automation", "Free Model Sources", "Safety"] as const;
 type Tab = (typeof tabs)[number];
 type Provider = {id: string; name: string; slug: string; enabled: boolean; credentialState: string; lastValidatedAt: string | null; environmentVariable: string; testSupported: boolean; portal: {url: string; label: string} | null};
 type Job = {type: string; enabled: boolean; schedule: string; customSchedule: boolean; defaultSchedule: string | null; timezone: string; status: string; lastRunAt: string | null; nextRunAt: string | null; durationMs: number | null; failureCount: number; lastError: string | null};
@@ -40,7 +40,6 @@ const jobTypeDescriptions: Record<string, string> = {
 type Source = {id: string; name: string; type: string; providerId: string | null; url: string | null; enabled: boolean; priority: number; status: string; discoveredModelCount: number; lastSyncAt: string | null; adapterReference: string | null; credentialReference: string | null};
 
 const builtinSourceDescriptions: Record<string, string> = Object.fromEntries(sourceRegistry.map(source => [source.id, `${source.description} (Tier ${source.tier}${source.candidateOnly ? " · candidate-only" : ""})`]));
-type ApiKey = {id: string; name: string; prefix: string; scopes: string[]; createdAt: string; expiresAt: string | null; lastUsedAt: string | null; revokedAt: string | null};
 type Lane = {slug: string; minimumHealthy: number};
 
 const stamp = (value: string | null | undefined) => value ? new Date(value).toLocaleString() : "—";
@@ -91,7 +90,7 @@ function ScheduleEditor({schedule, defaultCron, customized, jobType, disabled, o
   </div>;
 }
 
-export function SettingsClient({environment, lanes, initialHistory, smokeHistory}: {environment: string; lanes: Lane[]; initialHistory: StatusHistoryItem[]; smokeHistory: StatusHistoryItem[]}) {
+export function SettingsClient({environment, lanes, laneOverview, initialHistory, smokeHistory}: {environment: string; lanes: Lane[]; laneOverview: LaneOverviewItem[]; initialHistory: StatusHistoryItem[]; smokeHistory: StatusHistoryItem[]}) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const tabParam = searchParams.get("tab") as Tab | null;
@@ -99,13 +98,10 @@ export function SettingsClient({environment, lanes, initialHistory, smokeHistory
   const [providers, setProviders] = useState<Provider[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [sources, setSources] = useState<Source[]>([]);
-  const [keys, setKeys] = useState<ApiKey[]>([]);
   const [editing, setEditing] = useState<string | null>(null);
   const [deletingProvider, setDeletingProvider] = useState<string | null>(null);
   const [sourceModal, setSourceModal] = useState<null | {mode: "add"} | {mode: "edit"; source: Source}>(null);
-  const [keyModal, setKeyModal] = useState(false);
   const [addProviderModal, setAddProviderModal] = useState(false);
-  const [revealedKey, setRevealedKey] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -148,7 +144,7 @@ export function SettingsClient({environment, lanes, initialHistory, smokeHistory
   }, [active]);
 
   useEffect(() => {
-    const endpoint = active === "Providers" ? "/api/settings/providers" : active === "Automation" ? "/api/settings/automation" : active === "Free Model Sources" ? "/api/settings/model-sources" : active === "API Access" ? "/api/settings/api-keys" : null;
+    const endpoint = active === "Providers" ? "/api/settings/providers" : active === "Automation" ? "/api/settings/automation" : active === "Free Model Sources" ? "/api/settings/model-sources" : null;
     if (!endpoint) return;
     let current = true;
     const timer = setTimeout(() => {
@@ -157,8 +153,7 @@ export function SettingsClient({environment, lanes, initialHistory, smokeHistory
         if (!current) return;
         if (active === "Providers") setProviders(value);
         else if (active === "Automation") setJobs(value);
-        else if (active === "Free Model Sources") setSources(value);
-        else setKeys(value);
+        else setSources(value);
       }).catch(error => { if (current) setMessage(error.message); }).finally(() => { if (current) setLoading(false); });
     }, 0);
     return () => { current = false; clearTimeout(timer); };
@@ -171,7 +166,6 @@ export function SettingsClient({environment, lanes, initialHistory, smokeHistory
       if (active === "Providers") setProviders(await request("/api/settings/providers"));
       if (active === "Automation") setJobs(await request("/api/settings/automation"));
       if (active === "Free Model Sources") setSources(await request("/api/settings/model-sources"));
-      if (active === "API Access") setKeys(await request("/api/settings/api-keys"));
     } catch (error) { setMessage(error instanceof Error ? error.message : "Request failed"); }
     finally { setBusy(false); }
   }
@@ -195,7 +189,7 @@ export function SettingsClient({environment, lanes, initialHistory, smokeHistory
       </dl></Card>
     </div>}
 
-    {active === "LiteLLM" && <LiteLLMConnectionForm/>}
+    {active === "LiteLLM" && <div className="settings-grid"><LiteLLMConnectionForm/><LiteLLMManagementForm/><LiteLLMLaneSetupPanel lanes={laneOverview}/></div>}
 
     {active === "Providers" && <Card title="Provider credentials" aside={<button className="button primary" type="button" onClick={() => setAddProviderModal(true)}>Add provider</button>}><div className="settings-table-wrap"><table className="data-table settings-table"><thead><tr><th>Provider</th><th>Enabled</th><th>Credential</th><th>Last credential test</th><th>Actions</th></tr></thead><tbody>
       {providers.map(provider => <tr key={provider.id}>
@@ -285,20 +279,6 @@ export function SettingsClient({environment, lanes, initialHistory, smokeHistory
       </tbody></table></div>
     </Card>}
 
-    {active === "API Access" && <Card title="RATLLM API keys" aside={<button className="button primary" type="button" onClick={() => setKeyModal(true)}>Generate key</button>}>
-      <div className="settings-table-wrap"><table className="data-table settings-table"><thead><tr><th>Name</th><th>Prefix</th><th>Scopes</th><th>Created / expires</th><th>Last used</th><th>State</th><th>Actions</th></tr></thead><tbody>
-        {keys.map(key => <tr key={key.id}>
-          <td>{key.name}</td><td className="mono">{key.prefix}</td><td>{key.scopes.join(", ")}</td>
-          <td>{stamp(key.createdAt)}<br/>{stamp(key.expiresAt)}</td><td>{stamp(key.lastUsedAt)}</td>
-          <td>{key.revokedAt ? "Revoked" : "Active"}</td>
-          <td>
-            <button className="button" type="button" disabled={busy} onClick={() => void act(() => request("/api/settings/api-keys", {method: "PATCH", body: JSON.stringify({keyId: key.id, action: "rotate", graceHours: 1})}))}>Rotate</button>{" "}
-            <button className="button" type="button" disabled={busy} onClick={() => void act(() => request("/api/settings/api-keys", {method: "PATCH", body: JSON.stringify({keyId: key.id, action: "revoke"})}))}>Revoke</button>
-          </td>
-        </tr>)}
-      </tbody></table></div>
-    </Card>}
-
     {active === "Safety" && <div className="settings-grid">
       <Card title="Current safety policy"><dl className="definition-list">
         <dt>Rate limit safety factor</dt><dd>70% · current worker policy</dd>
@@ -360,25 +340,6 @@ export function SettingsClient({environment, lanes, initialHistory, smokeHistory
         <label>Credential reference<input className="input" name="credentialReference" placeholder="e.g. an environment variable name, if this feed needs one"/></label>
         <div className="modal-actions"><button type="button" className="button" onClick={() => setSourceModal(null)}>Cancel</button><button type="submit" className="button primary">Add source</button></div>
       </form>}
-    </Modal>
-
-    <Modal open={keyModal} title="Generate API key" onClose={() => setKeyModal(false)}>
-      <form onSubmit={event => {
-        event.preventDefault();
-        const name = String(new FormData(event.currentTarget).get("name") ?? "").trim();
-        if (!name) return;
-        setKeyModal(false);
-        void act(async () => { const result = await request("/api/settings/api-keys", {method: "POST", body: JSON.stringify({name, scopes: ["read", "automation"]})}); setRevealedKey(result.key); return result; });
-      }}>
-        <label>Key name<input className="input" name="name" required autoFocus placeholder="e.g. external monitoring integration"/></label>
-        <div className="modal-actions"><button type="button" className="button" onClick={() => setKeyModal(false)}>Cancel</button><button type="submit" className="button primary">Generate</button></div>
-      </form>
-    </Modal>
-
-    <Modal open={revealedKey !== null} title="API key created" onClose={() => setRevealedKey(null)}>
-      <p className="settings-help">Copy this key now — it will not be shown again.</p>
-      <p className="modal-secret">{revealedKey}</p>
-      <div className="modal-actions"><button type="button" className="button primary" onClick={() => setRevealedKey(null)}>Done</button></div>
     </Modal>
 
     <Modal open={addProviderModal} title="Add provider" onClose={() => setAddProviderModal(false)}>

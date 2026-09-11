@@ -60,12 +60,18 @@ export function StatusHistoryStrip({ items, label = "Recent status history", cla
   </span>;
 }
 
+/** The same success/unknown classification and recency window UptimeBar renders, exposed standalone so a page can
+ *  sort a list by the exact percentage it shows instead of recomputing its own (slightly different) version. */
+export function availabilityPercent(items: StatusHistoryItem[], count = 30): number | null {
+  const measured = items.slice(0, count).filter(item => { const state = stateFor(item.status); return state !== "unknown" && state !== "running"; });
+  if (!measured.length) return null;
+  return (measured.filter(item => stateFor(item.status) === "success").length / measured.length) * 100;
+}
+
 /** A status strip with a trailing uptime percentage, in the style of a status-page uptime row. `items` must be newest-first. */
 export function UptimeBar({ items, label, count = 30, compact = false }: { items: StatusHistoryItem[]; label: string; count?: number; compact?: boolean }) {
   const visible = items.slice(0, count);
-  const measured = visible.filter(item => stateFor(item.status) !== "unknown" && stateFor(item.status) !== "running");
-  const healthy = measured.filter(item => stateFor(item.status) === "success").length;
-  const uptime = measured.length ? (healthy / measured.length) * 100 : null;
+  const uptime = availabilityPercent(items, count);
   return <div className="uptime-bar">
     <StatusHistoryStrip items={visible} label={label} count={count} className={compact ? "status-history-compact" : ""}/>
     <span className="uptime-bar-value">{uptime === null ? "No data" : `${uptime.toFixed(uptime === 100 ? 0 : 1)}%`}</span>

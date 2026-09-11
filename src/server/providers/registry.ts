@@ -39,6 +39,15 @@ export async function setProviderEnabled(id: string, enabled: boolean) {
   return row;
 }
 
+/** Some catalog providers (Cloudflare Workers AI's account-scoped endpoint, a self-hosted gateway, etc.) need a
+ *  base URL before their models can actually be called — this is the same field resolveVerificationEndpoint and
+ *  the promotion flow already check first, before falling back to any hardcoded default for that provider slug. */
+export async function setProviderBaseUrl(id: string, baseUrl: string | null) {
+  const [row] = await getDb().update(providers).set({baseUrl, updatedAt: new Date()}).where(eq(providers.id, id)).returning({id: providers.id, baseUrl: providers.baseUrl});
+  if (!row) throw new ProviderNotFoundError("Provider not found");
+  return row;
+}
+
 function slugify(name: string) {
   return name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 }

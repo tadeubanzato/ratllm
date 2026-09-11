@@ -123,10 +123,16 @@ export async function getLanes(): Promise<LaneSummary[]> {
   });
 }
 
-export async function getRuns(options: {type?: string; limit?: number} = {}): Promise<RunRow[]> {
+export async function getRuns(options: {type?: string; limit?: number; offset?: number} = {}): Promise<RunRow[]> {
   const query = getDb().select().from(syncRuns);
-  const rows = await (options.type ? query.where(eq(syncRuns.type, options.type)) : query).orderBy(desc(syncRuns.createdAt)).limit(options.limit ?? 12);
+  const rows = await (options.type ? query.where(eq(syncRuns.type, options.type)) : query).orderBy(desc(syncRuns.createdAt)).limit(options.limit ?? 12).offset(options.offset ?? 0);
   return rows.map(row => ({ id: row.id, type: row.type, status: row.status, createdAt: row.createdAt, durationMs: row.startedAt && row.finishedAt ? row.finishedAt.getTime() - row.startedAt.getTime() : null, summary: row.summary }));
+}
+
+export async function getRunsCount(type?: string): Promise<number> {
+  const query = getDb().select({ value: sql<number>`count(*)` }).from(syncRuns);
+  const rows = await (type ? query.where(eq(syncRuns.type, type)) : query);
+  return Number(rows[0]?.value ?? 0);
 }
 
 /**
