@@ -5,7 +5,6 @@ import { getBenchmarkStats, getDeployments, getSmokeTests, withDemo } from "@/se
 import { healthFromSmokeResult } from "@/server/status";
 export const dynamic="force-dynamic";
 
-const rank: Record<string, number> = {HEALTHY: 0, DEGRADED: 1, RATE_LIMITED: 2, AUTH_ERROR: 3, UNAVAILABLE: 4, NOT_RUN: 5};
 const STAT_WINDOW = 20;
 
 export default async function BenchmarksPage() {
@@ -18,7 +17,20 @@ export default async function BenchmarksPage() {
     const displayStatus = t ? healthFromSmokeResult(t.status === "PASSED", t.httpStatus ?? 0, t.latencyMs ?? 0, t.error ?? undefined) : "NOT_RUN";
     const stat = stats.get(d.id) ?? null;
     return {d, t, displayStatus, stat};
-  }).sort((a, b) => (rank[a.displayStatus] ?? 9) - (rank[b.displayStatus] ?? 9));
+  }).sort((a, b) => {
+    // Effectiveness, not just current status: highest success rate over real sample history first (a model
+    // passing 95% of its last 20 checks beats one that merely happens to be HEALTHY on its single latest check),
+    // then lowest p50 latency, then lowest first-token time as a final tiebreaker. No stats yet sorts last.
+    if (!a.stat && !b.stat) return 0;
+    if (!a.stat) return 1;
+    if (!b.stat) return -1;
+    if (a.stat.successRate !== b.stat.successRate) return b.stat.successRate - a.stat.successRate;
+    const ap50 = a.stat.p50LatencyMs, bp50 = b.stat.p50LatencyMs;
+    if (ap50 !== bp50) { if (ap50 == null) return 1; if (bp50 == null) return -1; if (ap50 !== bp50) return ap50 - bp50; }
+    const aFtt = a.stat.avgFirstTokenMs, bFtt = b.stat.avgFirstTokenMs;
+    if (aFtt !== bFtt) { if (aFtt == null) return 1; if (bFtt == null) return -1; return aFtt - bFtt; }
+    return 0;
+  });
 
   const passed = rows.filter(row => row.displayStatus === "HEALTHY").length;
   const failed = rows.filter(row => row.displayStatus !== "HEALTHY" && row.displayStatus !== "NOT_RUN").length;
@@ -31,7 +43,7 @@ export default async function BenchmarksPage() {
       <div className="system-item"><div><small>FAILED</small><strong>{failed}</strong></div></div>
     </section>
     <section className="panel">
-      <div className="panel-header"><h3>Operational benchmark results</h3><span>Automatic health-monitor probe · newest result per deployment, healthiest first</span></div>
+      <div className="panel-header"><h3>Operational benchmark results</h3><span>Automatic health-monitor probe · ranked by success rate over recent checks, then latency</span></div>
       <div className="table-scroll"><table className="data-table"><thead><tr><th>Model / alias</th><th>Provider</th><th>Result</th><th>Latency</th><th>Success rate</th><th>p50 / p95</th><th>First token</th><th>HTTP</th><th>Runs</th><th>Last tested</th></tr></thead><tbody>
         {rows.map(({d, t, displayStatus, stat}) => <tr key={d.id}>
           <td><strong>{d.modelName}</strong><br/><span className="mono">{d.litellmModelName}</span></td>
