@@ -1,0 +1,1 @@
+ALTER TABLE "smoke_tests" ADD COLUMN "first_token_ms" integer;

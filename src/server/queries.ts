@@ -133,6 +133,29 @@ export async function getSmokeTests(limit = 20) {
   return getDb().select().from(smokeTests).orderBy(desc(smokeTests.createdAt)).limit(limit);
 }
 
+export interface BenchmarkStat { deploymentId: string; samples: number; successRate: number; p50LatencyMs: number | null; p95LatencyMs: number | null; avgFirstTokenMs: number | null }
+
+/** Success rate and latency percentiles per deployment over its most recent `window` smoke tests. */
+export async function getBenchmarkStats(window = 20): Promise<Map<string, BenchmarkStat>> {
+  const rows = await getDb().execute(sql`
+    with ranked as (
+      select deployment_id, status, latency_ms, first_token_ms,
+        row_number() over (partition by deployment_id order by created_at desc) as rn
+      from smoke_tests where deployment_id is not null
+    )
+    select deployment_id as "deploymentId",
+      count(*)::int as samples,
+      round(100.0 * count(*) filter (where status = 'PASSED') / count(*), 1)::float as "successRate",
+      percentile_cont(0.5) within group (order by latency_ms)::int as "p50LatencyMs",
+      percentile_cont(0.95) within group (order by latency_ms)::int as "p95LatencyMs",
+      round(avg(first_token_ms) filter (where first_token_ms is not null))::int as "avgFirstTokenMs"
+    from ranked where rn <= ${window}
+    group by deployment_id
+  `);
+  const stats = rows as unknown as BenchmarkStat[];
+  return new Map(stats.map(row => [row.deploymentId, row]));
+}
+
 export interface SmokeHistoryPoint { at: Date; status: string; httpStatus: number | null; latencyMs: number | null; error: string | null }
 
 /** Recent per-deployment smoke-test history for uptime strips. One query, grouped in memory to avoid N+1 per row. */
