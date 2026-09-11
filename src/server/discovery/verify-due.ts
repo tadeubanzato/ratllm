@@ -64,18 +64,6 @@ export async function verifyDueCandidates(limit=20){
   return {processed:results.length,results,nextEligibleAt:results.find(item=>item.status==="rate_limited")?.nextCheckAt??null};
 }
 
-/** Manual "test this one now" for a single candidate row — always a real request against the provider, regardless
- *  of schedule or provider skip state (an explicit click on one row overrides the batch-level skip). Persists the
- *  same candidate_checks row and evidence the scheduled jobs do, so the row's history strip picks it up immediately. */
-export async function verifyCandidateNow(candidateId: string): Promise<VerificationRow> {
-  const db = getDb();
-  const rows = await getModelCandidates();
-  const row = rows.find(item => item.id === candidateId);
-  if (!row) throw new Error("Candidate not found");
-  const { autoAdd } = await getLiteLLMManagementSettings();
-  return checkCandidate(db, row, null, autoAdd);
-}
-
 /** Manual "test my connected models now": every credential-verified candidate gets a real request, ignoring both the
  *  recheck schedule and per-provider backoff, so the status bars always gain a fresh point on click. Concurrency-limited
  *  so a few hundred candidates don't open a few hundred sockets at once. */
