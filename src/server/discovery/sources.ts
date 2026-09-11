@@ -9,12 +9,12 @@ import { resolveCredentialSecret } from "./verify";
 import { sourceRegistry, type SourceConfig } from "./registry";
 
 async function getJson(url: string, headers: Record<string, string> = {}): Promise<unknown> {
-  const response = await fetch(url, {headers: {accept: "application/json", "user-agent": "okame-model-curator/0.1", ...headers}, signal: AbortSignal.timeout(30_000), cache: "no-store"});
+  const response = await fetch(url, {headers: {accept: "application/json", "user-agent": "ratllm/0.1", ...headers}, signal: AbortSignal.timeout(30_000), cache: "no-store"});
   if (!response.ok) throw new Error(`${url} returned ${response.status}`);
   return response.json();
 }
 async function getText(url: string): Promise<string> {
-  const response = await fetch(url, {headers: {accept: "text/plain,text/html", "user-agent": "okame-model-curator/0.1"}, signal: AbortSignal.timeout(30_000), cache: "no-store"});
+  const response = await fetch(url, {headers: {accept: "text/plain,text/html", "user-agent": "ratllm/0.1"}, signal: AbortSignal.timeout(30_000), cache: "no-store"});
   if (!response.ok) throw new Error(`${url} returned ${response.status}`);
   return response.text();
 }

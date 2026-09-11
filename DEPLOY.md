@@ -1,8 +1,15 @@
 # Production deployment
 
-RATLLM (Okame Model Curator) runs as a Next.js production container with a dedicated PostgreSQL database and its own scheduling worker. LiteLLM runs separately and is configured through `.env`.
+RatLLM runs as a Next.js production container with a dedicated PostgreSQL database and its own scheduling worker. LiteLLM runs separately and is configured through `.env`.
 
 ## Quick start
+
+```bash
+./scripts/setup.sh
+```
+
+This bootstraps `.env` with generated secrets (if it doesn't already exist)
+and starts the stack. To do it by hand instead:
 
 ```bash
 cp .env.example .env
@@ -54,6 +61,6 @@ docker compose -f docker/docker-compose.yml ps
 docker compose -f docker/docker-compose.yml down
 ```
 
-The containers are named `ratllm-web` and `ratllm-db`. The Compose project is `ratllm`. PostgreSQL data is persisted in the existing `okame-model-curator_curator-db-data` volume so renaming does not lose inventory. Do not use `down --volumes` unless that data is intentionally being destroyed.
+The containers are named `ratllm-web` and `ratllm-db`. The Compose project is `ratllm`. PostgreSQL data is persisted in the `ratllm_curator-db-data` volume. Do not use `down --volumes` unless that data is intentionally being destroyed.
 
 Scheduling (model discovery, health monitoring, rate-limit learning, and the rest of automation) runs entirely inside the `curator-worker` container against the Curator database — there is no external orchestrator dependency. Configure schedules from the Automation tab in Settings.

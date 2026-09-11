@@ -3,7 +3,7 @@ import { deploymentIdentity, isManagedDeployment, sanitizedMetadata } from "../s
 
 describe("LiteLLM ownership boundary", () => {
   it("only treats the exact Curator marker as managed", () => {
-    expect(isManagedDeployment({ model_name:"smart-general", model_info:{managed_by:"okame-model-curator"}, litellm_params:{} })).toBe(true);
+    expect(isManagedDeployment({ model_name:"smart-general", model_info:{managed_by:"ratllm-curator"}, litellm_params:{} })).toBe(true);
     expect(isManagedDeployment({ model_name:"manual", model_info:{managed_by:"ratllm"}, litellm_params:{} })).toBe(false);
     expect(isManagedDeployment({ model_name:"manual", model_info:{}, litellm_params:{} })).toBe(false);
   });

@@ -29,5 +29,5 @@ pg_restore --list ratllm-YYYYMMDD-HHMMSS.dump
 5. Do not run `dropdb`, `createdb`, `drizzle-kit push`, schema resets, or
    destructive test commands against the production database.
 
-Compose uses the explicitly named `okame-model-curator_curator-db-data`
+Compose uses the explicitly named `ratllm_curator-db-data`
 volume, preserving the existing data across service rebuilds and restarts.

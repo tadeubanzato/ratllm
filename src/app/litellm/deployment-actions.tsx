@@ -20,7 +20,7 @@ export function DeploymentActions({ id, alias, health, live }: { id: string; ali
     if (confirmation !== instruction) { setError(`Type exactly: ${instruction}`); return; }
     setBusy(true); setError("");
     try {
-      const response = await fetch(`/api/litellm/deployments/${id}`, { method: "POST", headers: { "content-type": "application/json", "x-okame-admin-token": adminToken }, body: JSON.stringify({ action: pending, confirmation }) });
+      const response = await fetch(`/api/litellm/deployments/${id}`, { method: "POST", headers: { "content-type": "application/json", "x-ratllm-admin-token": adminToken }, body: JSON.stringify({ action: pending, confirmation }) });
       if (!response.ok) { setError((await response.json().catch(() => null))?.error?.message ?? "LiteLLM change failed"); return; }
       setPending(null);
       router.refresh();

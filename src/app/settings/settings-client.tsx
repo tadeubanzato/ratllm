@@ -13,13 +13,14 @@ import { sourceRegistry } from "@/server/discovery/registry";
 const tabs = ["General", "LiteLLM", "Providers", "Automation", "Free Model Sources", "API Access", "Safety"] as const;
 type Tab = (typeof tabs)[number];
 type Provider = {id: string; name: string; slug: string; enabled: boolean; credentialState: string; lastValidatedAt: string | null; environmentVariable: string; testSupported: boolean; portal: {url: string; label: string} | null};
-type Job = {type: string; enabled: boolean; schedule: string; timezone: string; status: string; lastRunAt: string | null; nextRunAt: string | null; durationMs: number | null; failureCount: number; lastError: string | null};
+type Job = {type: string; enabled: boolean; schedule: string; customSchedule: boolean; defaultSchedule: string | null; timezone: string; status: string; lastRunAt: string | null; nextRunAt: string | null; durationMs: number | null; failureCount: number; lastError: string | null};
 
 const jobTypeLabels: Record<string, string> = {
   MODEL_DISCOVERY: "Model Discovery",
   CANDIDATE_VERIFICATION: "Candidate Verification",
   HEALTH_MONITOR: "Health Monitor",
   RATE_LIMIT_LEARNING: "Rate Limit Learning",
+  PROVIDER_VERIFICATION: "Provider Verification",
   APPLY_APPROVED_PLANS: "Apply Approved Plans",
   DEEP_BENCHMARK: "Full Health Sweep (Daily)",
   LANE_RECONCILE: "Lane Routing Reconcile",
@@ -30,6 +31,7 @@ const jobTypeDescriptions: Record<string, string> = {
   CANDIDATE_VERIFICATION: "Tests discovered candidates directly against their provider for availability.",
   HEALTH_MONITOR: "Frequent connectivity checks against a rotating slice of live LiteLLM deployments.",
   RATE_LIMIT_LEARNING: "Probes provider rate limits to refine safe RPM/TPM estimates.",
+  PROVIDER_VERIFICATION: "Re-checks every enabled provider's credential against a safe, low-cost endpoint, keeping the Providers page status current automatically instead of only on manual click.",
   APPLY_APPROVED_PLANS: "Applies validated LiteLLM configuration changes.",
   DEEP_BENCHMARK: "The same health check as Health Monitor, run against nearly the entire inventory once a day — this is what populates the Benchmarks page.",
   LANE_RECONCILE: "Re-adds any smart-* lane member missing from LiteLLM and re-pushes the cross-lane fallback chains.",
@@ -55,11 +57,11 @@ function History({items, label}: {items: StatusHistoryItem[]; label: string}) {
   return <div className="history-row"><StatusHistoryStrip label={label} items={items.slice(0, 14)}/></div>;
 }
 
-function ScheduleEditor({schedule, jobType, disabled, onSave}: {schedule: string; jobType: string; disabled: boolean; onSave: (cron: string) => void}) {
+function ScheduleEditor({schedule, defaultCron, customized, jobType, disabled, onSave, onReset}: {schedule: string; defaultCron: string | null; customized: boolean; jobType: string; disabled: boolean; onSave: (cron: string) => void; onReset: () => void}) {
   const parsed = cronToSchedule(schedule);
   const [custom, setCustom] = useState(parsed === null);
   const [n, setN] = useState(parsed?.n ?? 1);
-  const [unit, setUnit] = useState<ScheduleUnit>(parsed?.unit ?? "DAY");
+  const [unit, setUnit] = useState<ScheduleUnit>(parsed?.unit ?? "HOUR");
   const [trackedSchedule, setTrackedSchedule] = useState(schedule);
 
   if (schedule !== trackedSchedule) {
@@ -68,9 +70,12 @@ function ScheduleEditor({schedule, jobType, disabled, onSave}: {schedule: string
     if (parsed) { setN(parsed.n); setUnit(parsed.unit); }
   }
 
+  const resetHint = customized && defaultCron ? <button type="button" className="button small" disabled={disabled} onClick={onReset}>Reset to default ({defaultCron})</button> : null;
+
   if (custom) return <div className="schedule-picker">
-    <input aria-label={`${jobType} cron schedule`} className="input compact-input" defaultValue={schedule} disabled={disabled} onBlur={event => onSave(event.target.value)}/>
-    <button type="button" className="button" disabled={disabled} onClick={() => { setCustom(false); setN(1); setUnit("DAY"); onSave(scheduleToCron(1, "DAY")); }}>Use simple schedule</button>
+    <input aria-label={`${jobType} cron schedule`} className="input compact-input" defaultValue={schedule} disabled={disabled} onBlur={event => { if (event.target.value.trim() && event.target.value.trim() !== schedule) onSave(event.target.value.trim()); }}/>
+    <button type="button" className="button" disabled={disabled} onClick={() => { const seed = (defaultCron && cronToSchedule(defaultCron)) || {n: 1, unit: "HOUR" as ScheduleUnit}; setN(seed.n); setUnit(seed.unit); setCustom(false); }}>Use simple schedule</button>
+    {resetHint}
   </div>;
 
   return <div className="schedule-picker">
@@ -82,6 +87,7 @@ function ScheduleEditor({schedule, jobType, disabled, onSave}: {schedule: string
       {scheduleUnits.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
     </select>
     <button type="button" className="button" disabled={disabled} onClick={() => setCustom(true)}>Custom cron</button>
+    {resetHint}
   </div>;
 }
 
@@ -112,6 +118,10 @@ export function SettingsClient({environment, lanes, initialHistory, smokeHistory
     router.replace(`?${params.toString()}`, {scroll: false});
   }
 
+  function refreshJobHistory() {
+    request("/api/settings/automation/history").then((items: StatusHistoryItem[]) => setJobHistory(items)).catch(() => {});
+  }
+
   async function runJobNow(type: string) {
     setBusy(true); setMessage("");
     try {
@@ -123,11 +133,19 @@ export function SettingsClient({environment, lanes, initialHistory, smokeHistory
         setMessage(result.reason === "already_running" ? "That job is already running." : "Saved.");
       }
       setJobs(await request("/api/settings/automation"));
+      refreshJobHistory();
     } catch (error) {
       setJobHistory(current => [{at: new Date().toISOString(), status: "FAILED", label: type, detail: error instanceof Error ? error.message : undefined}, ...current]);
       setMessage(error instanceof Error ? error.message : "Request failed");
     } finally { setBusy(false); }
   }
+
+  useEffect(() => {
+    if (active !== "Automation") return;
+    let live = true;
+    request("/api/settings/automation/history").then((items: StatusHistoryItem[]) => { if (live) setJobHistory(items); }).catch(() => {});
+    return () => { live = false; };
+  }, [active]);
 
   useEffect(() => {
     const endpoint = active === "Providers" ? "/api/settings/providers" : active === "Automation" ? "/api/settings/automation" : active === "Free Model Sources" ? "/api/settings/model-sources" : active === "API Access" ? "/api/settings/api-keys" : null;
@@ -171,7 +189,7 @@ export function SettingsClient({environment, lanes, initialHistory, smokeHistory
         <dt>System health</dt><dd><History label="Recent health observations" items={smokeHistory}/></dd>
       </dl></Card>
       <Card title="Operating profile"><dl className="definition-list">
-        <dt>Application</dt><dd>Okame Model Curator</dd>
+        <dt>Application</dt><dd>RatLLM</dd>
         <dt>Environment</dt><dd>{environment}</dd>
         <dt>Credential storage</dt><dd>Server environment variables or encrypted server-side secrets. Saving a replacement never displays the stored secret.</dd>
       </dl></Card>
@@ -225,8 +243,16 @@ export function SettingsClient({environment, lanes, initialHistory, smokeHistory
           </div>
           <div className="automation-job-body">
             <div>
-              <label className="settings-job-label">Schedule</label>
-              <ScheduleEditor schedule={job.schedule} jobType={job.type} disabled={busy} onSave={cron => void act(() => request(`/api/settings/automation?type=${job.type}`, {method: "PATCH", body: JSON.stringify({schedule: cron})}))}/>
+              <label className="settings-job-label">Schedule{job.customSchedule && <span className="settings-help" style={{marginLeft: 6}}>· customized</span>}</label>
+              <ScheduleEditor
+                schedule={job.schedule}
+                defaultCron={job.defaultSchedule}
+                customized={job.customSchedule}
+                jobType={job.type}
+                disabled={busy}
+                onSave={cron => void act(() => request(`/api/settings/automation?type=${job.type}`, {method: "PATCH", body: JSON.stringify({schedule: cron})}))}
+                onReset={() => void act(() => request(`/api/settings/automation?type=${job.type}`, {method: "PATCH", body: JSON.stringify({resetSchedule: true})}))}
+              />
             </div>
             <div className="automation-job-stats">
               <StampCell label="Next run" value={job.nextRunAt}/>

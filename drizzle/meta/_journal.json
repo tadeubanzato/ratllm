@@ -43,6 +43,20 @@
       "when": 1788600000001,
       "tag": "0005_whole_unus",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1789084727274,
+      "tag": "0006_serious_colleen_wing",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1789088475000,
+      "tag": "0007_automation_schedule_heal",
+      "breakpoints": true
     }
   ]
 }
