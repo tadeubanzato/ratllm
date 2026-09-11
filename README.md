@@ -106,11 +106,6 @@ Models found on a provider's catalog before they're added to LiteLLM. **Add to L
 
 The `smart-*` LiteLLM model groups (general, coding, agent, deep reasoning, long-context, vision, summary, speech) and which deployments currently back each one. The `LANE_RECONCILE` automation re-adds any missing lane member and re-pushes fallback chains on a schedule.
 
-### Rate Limits
-![Rate Limits](docs/screenshots/rate-limits.png)
-
-Fully automated — published, observed, and safe RPM/TPM per deployment, learned from real smoke-test evidence every 6 hours by the Rate Limit Learning job. There is no manual override; every value here is machine-derived.
-
 ### Benchmarks
 ![Benchmarks](docs/screenshots/benchmarks.png)
 
@@ -124,12 +119,12 @@ The execution log for every scheduled and manually triggered job — discovery, 
 ### LiteLLM
 ![LiteLLM](docs/screenshots/litellm.png)
 
-The connection to your LiteLLM proxy. Sync inventory, run a smoke test against any deployment, and see which deployments RatLLM manages versus which it leaves alone. Unmanaged deployments never enter a mutation code path.
+The connection to your LiteLLM proxy: live deployment inventory sorted by real check availability, local (MLX) deployments called out, and which deployments RatLLM manages versus which it leaves alone. Health checks run automatically on a schedule — no manual per-deployment test button needed. Unmanaged deployments never enter a mutation code path.
 
 ### Settings
 ![Settings](docs/screenshots/settings.png)
 
-Environment information, provider credentials, the LiteLLM connection, automation schedules (including `PROVIDER_VERIFICATION`, which re-checks every credentialed provider on a schedule instead of only on manual click), model sources, and API access.
+Control plane status, the LiteLLM connection (with a one-click **Auto setup** for lanes and fallbacks, plus auto-add/auto-remove toggles), per-provider settings, automation schedules (including `PROVIDER_VERIFICATION`, which re-checks every credentialed provider on a schedule instead of only on manual click), free model sources, and safety controls.
 
 ### About
 ![About](docs/screenshots/about.png)
@@ -145,7 +140,6 @@ The in-app version of the [About & license](#about--license) section below.
 | `LITELLM_MASTER_KEY` | Server-only LiteLLM administrative key |
 | `INTERNAL_API_SECRET` | Authenticates internal automation endpoints |
 | `CREDENTIAL_ENCRYPTION_KEY` | Encrypts provider credentials at rest |
-| `ADMIN_TOKEN` | Optional bearer protection for non-health routes |
 | `DEMO_MODE` | Enables isolated development data |
 
 See [architecture](docs/ARCHITECTURE.md), [database](docs/DATABASE.md), [LiteLLM](docs/LITELLM.md), [deployment](docs/DEPLOYMENT.md), [rate-limit learning](docs/RATE-LIMIT-LEARNING.md), and [security](docs/SECURITY.md) for deeper detail than this file covers. The production stack is the Next.js/PostgreSQL application under `src/` and `docker/`.
