@@ -6,6 +6,7 @@ import { getDb } from "@/server/db/client";
 import { auditEvents, canonicalModels, laneAssignments, lanes, modelDeployments, providers, rateLimitProfiles, syncRuns } from "@/server/db/schema";
 import { log } from "@/server/logging";
 import { resolveProvider } from "@/server/providers/catalog";
+import { connectionError, recordConnection } from "@/server/settings/connections";
 import { deploymentIdentity, isManagedDeployment, sanitizedMetadata } from "./classify";
 import { HttpLiteLLMAdapter } from "./client";
 
@@ -30,7 +31,15 @@ export async function syncLiteLLM(options: { dryRun?: boolean } = {}, adapter = 
   const db = getDb(); const correlationId = randomUUID();
   const [run] = await db.insert(syncRuns).values({ type: "LITELLM_SYNC", status: "RUNNING", correlationId, startedAt: new Date() }).returning();
   try {
-    const remote = await adapter.listDeployments(); let managed = 0; let unmanaged = 0;
+    let remote: Awaited<ReturnType<typeof adapter.listDeployments>>;
+    try {
+      remote = await adapter.listDeployments();
+      await recordConnection("litellm", { ok: true, deploymentCount: remote.length });
+    } catch (error) {
+      await recordConnection("litellm", { ok: false, error: connectionError(error) }).catch(() => undefined);
+      throw error;
+    }
+    let managed = 0; let unmanaged = 0;
     if (options.dryRun) {
       const existing = await db.select({ id: modelDeployments.litellmDeploymentId }).from(modelDeployments);
       const current = new Set(existing.map(row => row.id).filter((id): id is string => id !== null));
