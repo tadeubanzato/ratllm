@@ -8,6 +8,40 @@ import { getProviderPortal } from "./portals";
 export interface DetectCandidateResult { url: string; outcome: "hit" | "miss"; status: number | null; detail: string }
 export interface DetectResult { candidates: DetectCandidateResult[]; suggestion: string | null }
 
+async function providerAndSecret(providerId: string) {
+  const db = getDb();
+  const provider = (await db.select().from(providers).where(eq(providers.id, providerId)).limit(1))[0];
+  if (!provider) throw new Error("Provider not found");
+  const credential = (await db.select().from(providerCredentialReferences).where(and(eq(providerCredentialReferences.providerId, providerId), eq(providerCredentialReferences.disabled, false))).limit(1))[0];
+  if (!credential) throw new Error("Add a credential for this provider before detecting its endpoint");
+  const apiKey = resolveCredentialSecret(credential);
+  if (!apiKey) throw new Error(`Credential ${credential.environmentVariable} is not available to the server`);
+  return { provider, apiKey };
+}
+
+export interface CloudflareAccount { id: string; name: string }
+export interface CloudflareAccountResult { accounts: CloudflareAccount[]; suggestion: string | null; error: string | null }
+
+/** Cloudflare Workers AI's completions endpoint is account-scoped, so no domain guess can ever find it — but
+ *  Cloudflare's own API can list which account(s) a token has access to, which is enough to construct the real
+ *  Base URL directly instead of asking the user to dig it out of the dashboard. Requires the token to carry
+ *  "Account Settings: Read" (or broader) — a narrowly-scoped Workers AI-only token won't have this, in which case
+ *  this reports that plainly rather than pretending it found nothing. */
+export async function detectCloudflareAccount(providerId: string): Promise<CloudflareAccountResult> {
+  const { apiKey } = await providerAndSecret(providerId);
+  let response: Response;
+  try {
+    response = await fetch("https://api.cloudflare.com/client/v4/accounts", { headers: { authorization: `Bearer ${apiKey}`, accept: "application/json" }, signal: AbortSignal.timeout(10_000), cache: "no-store" });
+  } catch (error) {
+    return { accounts: [], suggestion: null, error: error instanceof Error ? error.message : "Request to Cloudflare failed" };
+  }
+  const body = await response.json().catch(() => null) as { result?: CloudflareAccount[]; errors?: { message?: string }[] } | null;
+  if (!response.ok) return { accounts: [], suggestion: null, error: body?.errors?.[0]?.message ?? `Cloudflare returned HTTP ${response.status} — this token likely doesn't have "Account Settings: Read" permission to list accounts` };
+  const accounts = (body?.result ?? []).map(item => ({ id: item.id, name: item.name }));
+  const suggestion = accounts.length === 1 ? `https://api.cloudflare.com/client/v4/accounts/${accounts[0].id}/ai` : null;
+  return { accounts, suggestion, error: null };
+}
+
 function apexDomain(hostname: string): string {
   const parts = hostname.split(".");
   return parts.length <= 2 ? hostname : parts.slice(-2).join(".");
@@ -62,14 +96,7 @@ function scoreResponse(status: number, body: unknown): { hit: boolean; detail: s
 /** Tries each candidate with a live, minimal chat-completions request using the provider's real saved credential.
  *  Never applies a result itself — always returns a suggestion for the caller (the UI) to confirm and save. */
 export async function autoDetectCompletionsEndpoint(providerId: string): Promise<DetectResult> {
-  const db = getDb();
-  const provider = (await db.select().from(providers).where(eq(providers.id, providerId)).limit(1))[0];
-  if (!provider) throw new Error("Provider not found");
-  const credential = (await db.select().from(providerCredentialReferences).where(and(eq(providerCredentialReferences.providerId, providerId), eq(providerCredentialReferences.disabled, false))).limit(1))[0];
-  if (!credential) throw new Error("Add a credential for this provider before auto-detecting its endpoint");
-  const apiKey = resolveCredentialSecret(credential);
-  if (!apiKey) throw new Error(`Credential ${credential.environmentVariable} is not available to the server`);
-
+  const { provider, apiKey } = await providerAndSecret(providerId);
   const urls = candidateUrls(provider.slug, provider.baseUrl);
   if (!urls.length) return { candidates: [], suggestion: null };
 
