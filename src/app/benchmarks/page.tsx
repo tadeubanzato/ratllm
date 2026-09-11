@@ -36,7 +36,7 @@ export default async function BenchmarksPage() {
         {rows.map(({d, t, displayStatus, stat}) => <tr key={d.id}>
           <td><strong>{d.modelName}</strong><br/><span className="mono">{d.litellmModelName}</span></td>
           <td>{d.providerName}</td>
-          <td><StatusPill value={t ? displayStatus : "NOT RUN"}/>{t?.error && <><br/><span style={{fontSize: 10, color: "var(--muted)"}}>{t.error.slice(0, 100)}</span></>}</td>
+          <td><StatusPill value={t ? displayStatus : "NOT RUN"}/>{t?.error && <><br/><span className="truncate" style={{fontSize: 10, color: "var(--muted)", maxWidth: 220}} title={t.error}>{t.error}</span></>}</td>
           <td className="mono">{t?.latencyMs ? duration(t.latencyMs) : "—"}</td>
           <td className="mono">{stat ? `${stat.successRate}% (${stat.samples})` : "—"}</td>
           <td className="mono">{stat?.p50LatencyMs != null ? `${duration(stat.p50LatencyMs)} / ${stat.p95LatencyMs != null ? duration(stat.p95LatencyMs) : "—"}` : "—"}</td>
