@@ -1,11 +1,18 @@
 "use client";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+
+interface DetectCandidateResult { url: string; outcome: "hit" | "miss"; status: number | null; detail: string }
+interface DetectResult { candidates: DetectCandidateResult[]; suggestion: string | null }
 
 export function BaseUrlForm({providerId, baseUrl}: {providerId: string; baseUrl: string | null}) {
   const router = useRouter();
+  const inputRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [detecting, setDetecting] = useState(false);
+  const [detectResult, setDetectResult] = useState<DetectResult | null>(null);
+  const [detectError, setDetectError] = useState("");
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -21,9 +28,36 @@ export function BaseUrlForm({providerId, baseUrl}: {providerId: string; baseUrl:
     } finally { setBusy(false); }
   }
 
-  return <form onSubmit={submit} style={{display: "flex", gap: 8, alignItems: "center"}}>
-    <input className="input" name="baseUrl" type="url" defaultValue={baseUrl ?? ""} placeholder="Only needed for account-scoped or self-hosted endpoints" style={{minWidth: 280}}/>
-    <button className="button small" type="submit" disabled={busy}>{busy ? "Saving…" : "Save"}</button>
-    {message && <small className="settings-help">{message}</small>}
-  </form>;
+  async function autoDetect() {
+    setDetecting(true); setDetectError(""); setDetectResult(null);
+    try {
+      const response = await fetch(`/api/providers/${providerId}/auto-detect`, {method: "POST"});
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error?.message ?? "Auto-detect failed");
+      setDetectResult(body);
+    } catch (error) {
+      setDetectError(error instanceof Error ? error.message : "Auto-detect failed");
+    } finally { setDetecting(false); }
+  }
+
+  function useSuggestion() {
+    if (detectResult?.suggestion && inputRef.current) inputRef.current.value = detectResult.suggestion;
+  }
+
+  return <div style={{display: "grid", gap: 8}}>
+    <form onSubmit={submit} style={{display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap"}}>
+      <input ref={inputRef} className="input" name="baseUrl" type="url" defaultValue={baseUrl ?? ""} placeholder="Only needed for account-scoped or self-hosted endpoints" style={{minWidth: 280}}/>
+      <button className="button small" type="submit" disabled={busy}>{busy ? "Saving…" : "Save"}</button>
+      <button className="button small" type="button" disabled={detecting} onClick={() => void autoDetect()}>{detecting ? "Detecting…" : "Auto-detect"}</button>
+      {message && <small className="settings-help">{message}</small>}
+    </form>
+    {detectError && <p className="settings-feedback is-error" role="alert">{detectError}</p>}
+    {detectResult && <div className="settings-help" style={{display: "grid", gap: 4}}>
+      <span>Tried {detectResult.candidates.length} likely URL{detectResult.candidates.length === 1 ? "" : "s"} with your saved credential — a live, best-effort guess, not a guarantee. A hit just means the request landed on a real completions-shaped API, not necessarily that a model call would succeed.</span>
+      {detectResult.candidates.map(candidate => <span key={candidate.url} className="mono" style={{fontSize: 9.5, color: candidate.outcome === "hit" ? "var(--green)" : "var(--faint)"}}>{candidate.outcome === "hit" ? "✓" : "·"} {candidate.url} — {candidate.detail}</span>)}
+      {detectResult.suggestion
+        ? <div style={{display: "flex", gap: 8, alignItems: "center", marginTop: 2}}><span>Best guess: <strong className="mono">{detectResult.suggestion}</strong></span><button className="button small" type="button" onClick={useSuggestion}>Use this</button></div>
+        : <span>No single clear match — {detectResult.candidates.some(c => c.outcome === "hit") ? "more than one candidate looked plausible" : "none of the guessed URLs look right"}. This provider likely needs a Base URL researched from its own docs.</span>}
+    </div>}
+  </div>;
 }
