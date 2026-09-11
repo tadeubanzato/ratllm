@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { UptimeBar } from "@/components/status-history-strip";
+import { UptimeBar, availabilityPercent } from "@/components/status-history-strip";
 import { PageShell } from "@/components/page-shell";
 import { StatusPill } from "@/components/status-pill";
 import { timeAgo } from "@/lib/utils";
@@ -33,7 +33,11 @@ function promotionBlocker(row: CandidateRow) {
 export const dynamic="force-dynamic";
 export default async function ModelsPage(){
   const [allCandidates,candidateHistory]=await Promise.all([getModelCandidates(),withDemo(() => getCandidateCheckHistory(20), () => new Map<string, CandidateCheckPoint[]>())]);
+  const availabilityById=new Map(allCandidates.map(row=>[row.id,availabilityPercent(candidateHistoryItems(candidateHistory.get(row.id)??[]),12)]));
   const sorted=[...allCandidates].sort((a,b)=>{
+    // Highest availability first; candidates with no check history yet sort last regardless of how they compare otherwise.
+    const pa=availabilityById.get(a.id)??null,pb=availabilityById.get(b.id)??null;
+    if(pa!==pb){if(pa===null)return 1;if(pb===null)return -1;if(pa!==pb)return pb-pa;}
     if(a.credentialVerified!==b.credentialVerified)return a.credentialVerified?-1:1;
     if(a.verifiedFree!==b.verifiedFree)return a.verifiedFree?-1:1;
     const ta=tierRank[a.source]??4,tb=tierRank[b.source]??4;
@@ -48,7 +52,7 @@ export default async function ModelsPage(){
     // Already in LiteLLM (whether via a lane or a direct alias) collapses to one small "Added" badge — the exact lane
     // membership and routing details live on the LiteLLM page, so repeating them here just added width for nothing.
     const litellmCell=row.liteLLMDeploymentId
-      ? <span className="status-pill status-good">Added</span>
+      ? <span className="status-pill status-good">Added to LiteLLM</span>
       : row.promotable
         ? <AddToLiteLLMButton candidateId={row.id}/>
         : promotionBlocker(row);
