@@ -48,7 +48,7 @@ export default async function ModelsPage(){
     // Already in LiteLLM (whether via a lane or a direct alias) collapses to one small "Added" badge — the exact lane
     // membership and routing details live on the LiteLLM page, so repeating them here just added width for nothing.
     const litellmCell=row.liteLLMDeploymentId
-      ? <span className="status-pill status-good"><i/> Added</span>
+      ? <span className="status-pill status-good">Added</span>
       : row.promotable
         ? <AddToLiteLLMButton candidateId={row.id}/>
         : promotionBlocker(row);
