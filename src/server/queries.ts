@@ -174,6 +174,23 @@ export async function getDeploymentSmokeHistory(perDeployment = 30, rawLimit = 4
   return byDeployment;
 }
 
+/** Recent per-provider smoke-test history (across all of a provider's deployments) for uptime strips. */
+export async function getProviderSmokeHistory(perProvider = 20, rawLimit = 6000): Promise<Map<string, SmokeHistoryPoint[]>> {
+  const rows = await getDb().select({
+    providerId: modelDeployments.providerId, at: smokeTests.createdAt, status: smokeTests.status,
+    httpStatus: smokeTests.httpStatus, latencyMs: smokeTests.latencyMs, error: smokeTests.error,
+  }).from(smokeTests)
+    .innerJoin(modelDeployments, eq(smokeTests.deploymentId, modelDeployments.id))
+    .orderBy(desc(smokeTests.createdAt)).limit(rawLimit);
+  const byProvider = new Map<string, SmokeHistoryPoint[]>();
+  for (const row of rows) {
+    const list = byProvider.get(row.providerId) ?? [];
+    if (list.length < perProvider) list.push({at: row.at, status: row.status, httpStatus: row.httpStatus, latencyMs: row.latencyMs, error: row.error});
+    byProvider.set(row.providerId, list);
+  }
+  return byProvider;
+}
+
 export async function getDashboard(): Promise<DashboardData> {
   const [{ demoDashboard }, { env }] = await Promise.all([import("./demo-data"), import("./config")]);
   if (env.DEMO_MODE) return demoDashboard;
