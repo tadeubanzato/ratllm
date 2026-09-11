@@ -2,7 +2,7 @@ import Link from "next/link";
 import { AlertTriangle, Cable, Database, ServerCog } from "@/components/icons";
 import { StatusPill } from "@/components/status-pill";
 import { Topbar } from "@/components/topbar";
-import { timeAgo } from "@/lib/utils";
+import { formatSummary, timeAgo } from "@/lib/utils";
 import { getDashboard } from "@/server/queries";
 
 export const dynamic = "force-dynamic";
@@ -20,7 +20,7 @@ export default async function OverviewPage() {
       <section className="panel"><div className="panel-header"><h3>Provider health</h3><Link href="/providers">View providers →</Link></div><div className="panel-body provider-list">{data.providers.slice(0,6).map(provider=><div className="provider-row" key={provider.id}><div className="provider-id"><span className="provider-icon">{provider.name.slice(0,2).toUpperCase()}</span><div><strong>{provider.name}</strong><small>{provider.credentialState ? `Credential ${provider.credentialState.toLowerCase()}` : provider.credentialConfigured ? "Credential configured" : "Credential missing"}</small></div></div><StatusPill value={provider.enabled === false ? "DISABLED" : provider.status}/><div className="provider-stat"><strong>{provider.healthyCount}/{provider.modelCount}</strong><small>healthy</small></div><div className="provider-stat"><strong>{provider.lastDiscoveryAt?timeAgo(provider.lastDiscoveryAt):"Manual"}</strong><small>discovery</small></div></div>)}</div></section>
     </div>
     <div className="content-grid">
-      <section className="panel"><div className="panel-header"><h3>Recent activity</h3><Link href="/runs">Execution log →</Link></div><div className="panel-body flush"><table className="data-table"><thead><tr><th>Run</th><th>Type</th><th>Status</th><th>Summary</th><th>Started</th></tr></thead><tbody>{data.runs.map(run=><tr key={run.id}><td className="mono">{run.id.slice(0,8)}</td><td><strong>{run.type.replaceAll("_"," ")}</strong></td><td><StatusPill value={run.status}/></td><td>{Object.entries(run.summary).map(([k,v])=>`${k} ${String(v)}`).join(" · ")}</td><td>{timeAgo(run.createdAt)}</td></tr>)}</tbody></table></div></section>
+      <section className="panel"><div className="panel-header"><h3>Recent activity</h3><Link href="/runs">Execution log →</Link></div><div className="panel-body flush"><table className="data-table"><thead><tr><th>Run</th><th>Type</th><th>Status</th><th>Summary</th><th>Started</th></tr></thead><tbody>{data.runs.map(run=>{const summary=formatSummary(run.summary);return <tr key={run.id}><td className="mono">{run.id.slice(0,8)}</td><td><strong>{run.type.replaceAll("_"," ")}</strong></td><td><StatusPill value={run.status}/></td><td><span className="truncate" title={summary}>{summary||"—"}</span></td><td>{timeAgo(run.createdAt)}</td></tr>})}</tbody></table></div></section>
       <section className="panel"><div className="panel-header"><h3>Needs attention</h3><span>{data.incidents.length} open</span></div><div className="panel-body attention-list">{data.incidents.length?data.incidents.map((incident,index)=><div className="attention" key={`${incident.title}-${index}`}><i/><div><strong>{incident.title}</strong><p>{incident.detail}</p></div><time>{timeAgo(incident.at)}</time></div>):<p style={{color:"var(--muted)",fontSize:11}}>No recorded problems. Check connection status and the latest test times in Settings.</p>}</div></section>
     </div>
   </main></>;
