@@ -1,10 +1,30 @@
-# Okame Model Curator
+# RatLLM
 
-Okame is a self-hosted control plane for the model deployments behind stable LiteLLM aliases. The Curator database is authoritative; LiteLLM is an external deployment target, and unmanaged LiteLLM deployments are always preserved.
+RatLLM is a self-hosted control plane for the model deployments behind stable LiteLLM aliases. The Curator database is authoritative; LiteLLM is an external deployment target, and unmanaged LiteLLM deployments are always preserved.
 
 Milestone 1 provides a production-built Next.js control plane, PostgreSQL persistence, LiteLLM inventory synchronization, managed/unmanaged classification, eight `smart-*` lanes, model detail views, health/readiness endpoints, and persisted smoke tests.
 
 ## Quick start
+
+Requires [Docker](https://docs.docker.com/get-docker/) (with Compose) installed and running.
+
+```bash
+git clone <this-repo-url>
+cd ratllm
+./scripts/setup.sh
+```
+
+This generates a private `.env` (git-ignored, never committed) with unique
+`POSTGRES_PASSWORD`, `CREDENTIAL_ENCRYPTION_KEY`, and `INTERNAL_API_SECRET`
+values, then builds and starts the full stack (app, worker, PostgreSQL). The
+script is safe to re-run — it never overwrites an existing `.env`. Open
+`http://localhost:9090` once it reports ready.
+
+To connect LiteLLM or a model provider, edit `.env` and set `LITELLM_BASE_URL`,
+`LITELLM_MASTER_KEY`, and any provider API keys, then re-run the script (or
+`docker compose -f docker/docker-compose.yml up -d --build`) to pick them up.
+
+Prefer to do it by hand instead?
 
 ```bash
 cp .env.example .env
@@ -45,7 +65,7 @@ pnpm build
 
 ## Connecting LiteLLM
 
-Set `LITELLM_BASE_URL` and the server-only `LITELLM_MASTER_KEY`, then open **LiteLLM** and select **Sync inventory**. Okame reads `/v1/model/info` through a version-tolerant adapter and stores a sanitized inventory. Select a model to run a chat-completions smoke test.
+Set `LITELLM_BASE_URL` and the server-only `LITELLM_MASTER_KEY`, then open **LiteLLM** and select **Sync inventory**. RatLLM reads `/v1/model/info` through a version-tolerant adapter and stores a sanitized inventory. Select a model to run a chat-completions smoke test.
 
 On the **Discovered Models** page, **Add to LiteLLM** opens a lane picker: the model's capabilities pre-select the `smart-*` groups that fit (`smart-vision`, `smart-long`, …), and adding it registers a router deployment per lane plus a `lane_assignments` record, then refreshes the cross-lane fallback chains. The `LANE_RECONCILE` automation re-adds any lane member missing from the router and re-pushes fallbacks on a schedule. See `docs/LITELLM.md`.
 

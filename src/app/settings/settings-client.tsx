@@ -20,6 +20,7 @@ const jobTypeLabels: Record<string, string> = {
   CANDIDATE_VERIFICATION: "Candidate Verification",
   HEALTH_MONITOR: "Health Monitor",
   RATE_LIMIT_LEARNING: "Rate Limit Learning",
+  PROVIDER_VERIFICATION: "Provider Verification",
   APPLY_APPROVED_PLANS: "Apply Approved Plans",
   DEEP_BENCHMARK: "Full Health Sweep (Daily)",
   LANE_RECONCILE: "Lane Routing Reconcile",
@@ -30,6 +31,7 @@ const jobTypeDescriptions: Record<string, string> = {
   CANDIDATE_VERIFICATION: "Tests discovered candidates directly against their provider for availability.",
   HEALTH_MONITOR: "Frequent connectivity checks against a rotating slice of live LiteLLM deployments.",
   RATE_LIMIT_LEARNING: "Probes provider rate limits to refine safe RPM/TPM estimates.",
+  PROVIDER_VERIFICATION: "Re-checks every enabled provider's credential against a safe, low-cost endpoint, keeping the Providers page status current automatically instead of only on manual click.",
   APPLY_APPROVED_PLANS: "Applies validated LiteLLM configuration changes.",
   DEEP_BENCHMARK: "The same health check as Health Monitor, run against nearly the entire inventory once a day — this is what populates the Benchmarks page.",
   LANE_RECONCILE: "Re-adds any smart-* lane member missing from LiteLLM and re-pushes the cross-lane fallback chains.",
@@ -171,7 +173,7 @@ export function SettingsClient({environment, lanes, initialHistory, smokeHistory
         <dt>System health</dt><dd><History label="Recent health observations" items={smokeHistory}/></dd>
       </dl></Card>
       <Card title="Operating profile"><dl className="definition-list">
-        <dt>Application</dt><dd>Okame Model Curator</dd>
+        <dt>Application</dt><dd>RatLLM</dd>
         <dt>Environment</dt><dd>{environment}</dd>
         <dt>Credential storage</dt><dd>Server environment variables or encrypted server-side secrets. Saving a replacement never displays the stored secret.</dd>
       </dl></Card>

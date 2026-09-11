@@ -6,7 +6,7 @@ import { SettingsClient } from "./settings-client";
 export const dynamic = "force-dynamic";
 export default async function SettingsPage() {
   const [lanes, runs, smoke] = await Promise.all([getLanes(), getRuns({limit: 150}), getSmokeTests(14)]);
-  return <PageShell title="Settings" eyebrow="Control plane configuration">
+  return <PageShell title="Settings" eyebrow="Control plane configuration" showSearch={false}>
     <SettingsClient
       environment={env.DEMO_MODE ? "Demo" : process.env.NODE_ENV === "production" ? "Production" : "Development"}
       lanes={lanes.map(({slug,minimumHealthy}) => ({slug,minimumHealthy}))}

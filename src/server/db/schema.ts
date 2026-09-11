@@ -166,7 +166,7 @@ export const syncRuns = pgTable("sync_runs", {
 export const smokeTests = pgTable("smoke_tests", {
   id: uuid("id").primaryKey().defaultRandom(), runId: uuid("run_id").references(() => syncRuns.id, { onDelete: "set null" }),
   deploymentId: uuid("deployment_id").references(() => modelDeployments.id, { onDelete: "set null" }), lane: text("lane"),
-  status: smokeStatus("status").notNull().default("PENDING"), latencyMs: integer("latency_ms"), httpStatus: integer("http_status"),
+  status: smokeStatus("status").notNull().default("PENDING"), latencyMs: integer("latency_ms"), firstTokenMs: integer("first_token_ms"), httpStatus: integer("http_status"),
   errorCode: text("error_code"), error: text("error"), responseExcerpt: text("response_excerpt"), correlationId: text("correlation_id").notNull(), ...timestamps,
 }, (table) => [index("smoke_tests_created_idx").on(table.createdAt)]);
 

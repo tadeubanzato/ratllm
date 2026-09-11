@@ -13,6 +13,7 @@ export interface SmokeResult {
   ok: boolean;
   status: number;
   latencyMs: number;
+  firstTokenMs?: number;
   content?: string;
   error?: string;
 }

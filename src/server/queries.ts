@@ -8,7 +8,7 @@ import { resolveVerificationEndpoint } from "./discovery/verify";
 import { laneStatus, type LaneStatus } from "./status";
 
 export interface ProviderRow { id: string; slug: string; name: string; status: string; adapterCapability: string; modelCount: number; healthyCount: number; credentialConfigured: boolean; credentialVerified?: boolean; enabled?: boolean; credentialState?: string; lastDiscoveryAt: Date | null }
-export interface DeploymentRow { id: string; slug: string; modelName: string; providerModelId: string; litellmModelName: string; litellmDeploymentId: string | null; providerName: string; managed: boolean; health: string; score: number | null; freeType: string; contextWindow: number | null; rpmLimit: number | null; tpmLimit: number | null; safeRpm: number | null; safeTpm: number | null; confidence: string; lastTestedAt: Date | null; benchmarkRunCount: number; lastBenchmarkStatus: string | null; apiBase?: string | null; backend?: string | null; host?: string | null }
+export interface DeploymentRow { id: string; slug: string; modelName: string; providerModelId: string; litellmModelName: string; litellmDeploymentId: string | null; providerName: string; managed: boolean; health: string; score: number | null; freeType: string; contextWindow: number | null; rpmLimit: number | null; tpmLimit: number | null; safeRpm: number | null; safeTpm: number | null; confidence: string; lastTestedAt: Date | null; benchmarkRunCount: number; lastBenchmarkStatus: string | null; apiBase?: string | null; backend?: string | null; host?: string | null; rateLimitProfileId: string | null; observedRpm: number | null; observedTpm: number | null; manualRpm: number | null; manualTpm: number | null; lastProbeAt: Date | null }
 export interface LaneSummary { id: string; slug: string; name: string; enabled: boolean; healthy: number; total: number; minimumHealthy: number; status: LaneStatus; confidence: string }
 export interface RunRow { id: string; type: string; status: string; createdAt: Date; durationMs: number | null; summary: Record<string, unknown> }
 export interface DashboardData {
@@ -49,6 +49,8 @@ export async function getDeployments(): Promise<DeploymentRow[]> {
     health: modelDeployments.health, score: modelDeployments.score, freeType: modelDeployments.freeType, contextWindow: canonicalModels.contextWindow,
     rpmLimit: rateLimitProfiles.rpmLimit, tpmLimit: rateLimitProfiles.tpmLimit, safeRpm: rateLimitProfiles.safeRpm, safeTpm: rateLimitProfiles.safeTpm,
     confidence: rateLimitProfiles.confidence, lastTestedAt: modelDeployments.lastTestedAt,
+    rateLimitProfileId: rateLimitProfiles.id, observedRpm: rateLimitProfiles.observedRpm, observedTpm: rateLimitProfiles.observedTpm,
+    manualRpm: rateLimitProfiles.manualRpm, manualTpm: rateLimitProfiles.manualTpm, lastProbeAt: rateLimitProfiles.lastProbeAt,
     benchmarkRunCount: sql<number>`(select count(*)::int from smoke_tests where smoke_tests.deployment_id = ${modelDeployments.id})`,
     lastBenchmarkStatus: sql<string | null>`(select status::text from smoke_tests where smoke_tests.deployment_id = ${modelDeployments.id} order by created_at desc limit 1)`,
     apiBase:modelDeployments.apiBase,rawMetadata:modelDeployments.rawMetadata,
@@ -131,6 +133,29 @@ export async function getSmokeTests(limit = 20) {
   return getDb().select().from(smokeTests).orderBy(desc(smokeTests.createdAt)).limit(limit);
 }
 
+export interface BenchmarkStat { deploymentId: string; samples: number; successRate: number; p50LatencyMs: number | null; p95LatencyMs: number | null; avgFirstTokenMs: number | null }
+
+/** Success rate and latency percentiles per deployment over its most recent `window` smoke tests. */
+export async function getBenchmarkStats(window = 20): Promise<Map<string, BenchmarkStat>> {
+  const rows = await getDb().execute(sql`
+    with ranked as (
+      select deployment_id, status, latency_ms, first_token_ms,
+        row_number() over (partition by deployment_id order by created_at desc) as rn
+      from smoke_tests where deployment_id is not null
+    )
+    select deployment_id as "deploymentId",
+      count(*)::int as samples,
+      round(100.0 * count(*) filter (where status = 'PASSED') / count(*), 1)::float as "successRate",
+      percentile_cont(0.5) within group (order by latency_ms)::int as "p50LatencyMs",
+      percentile_cont(0.95) within group (order by latency_ms)::int as "p95LatencyMs",
+      round(avg(first_token_ms) filter (where first_token_ms is not null))::int as "avgFirstTokenMs"
+    from ranked where rn <= ${window}
+    group by deployment_id
+  `);
+  const stats = rows as unknown as BenchmarkStat[];
+  return new Map(stats.map(row => [row.deploymentId, row]));
+}
+
 export interface SmokeHistoryPoint { at: Date; status: string; httpStatus: number | null; latencyMs: number | null; error: string | null }
 
 /** Recent per-deployment smoke-test history for uptime strips. One query, grouped in memory to avoid N+1 per row. */
@@ -147,6 +172,23 @@ export async function getDeploymentSmokeHistory(perDeployment = 30, rawLimit = 4
     byDeployment.set(row.deploymentId, list);
   }
   return byDeployment;
+}
+
+/** Recent per-provider smoke-test history (across all of a provider's deployments) for uptime strips. */
+export async function getProviderSmokeHistory(perProvider = 20, rawLimit = 6000): Promise<Map<string, SmokeHistoryPoint[]>> {
+  const rows = await getDb().select({
+    providerId: modelDeployments.providerId, at: smokeTests.createdAt, status: smokeTests.status,
+    httpStatus: smokeTests.httpStatus, latencyMs: smokeTests.latencyMs, error: smokeTests.error,
+  }).from(smokeTests)
+    .innerJoin(modelDeployments, eq(smokeTests.deploymentId, modelDeployments.id))
+    .orderBy(desc(smokeTests.createdAt)).limit(rawLimit);
+  const byProvider = new Map<string, SmokeHistoryPoint[]>();
+  for (const row of rows) {
+    const list = byProvider.get(row.providerId) ?? [];
+    if (list.length < perProvider) list.push({at: row.at, status: row.status, httpStatus: row.httpStatus, latencyMs: row.latencyMs, error: row.error});
+    byProvider.set(row.providerId, list);
+  }
+  return byProvider;
 }
 
 export async function getDashboard(): Promise<DashboardData> {

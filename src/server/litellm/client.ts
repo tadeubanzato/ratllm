@@ -44,11 +44,37 @@ export class HttpLiteLLMAdapter implements LiteLLMAdapter {
       await this.configure();
       const response = await fetch(`${this.baseUrl!.replace(/\/$/, "")}/v1/chat/completions`, {
         method: "POST", headers: this.headers(), signal: AbortSignal.timeout(30_000),
-        body: JSON.stringify({ model, messages: [{ role: "user", content: "Reply with exactly: OK" }], max_tokens: 12, temperature: 0, stream: false }),
+        body: JSON.stringify({ model, messages: [{ role: "user", content: "Reply with exactly: OK" }], max_tokens: 128, temperature: 0, stream: true }),
       });
-      const body = await response.json().catch(() => ({})) as { choices?: Array<{ message?: { content?: string } }>; error?: { message?: string } };
-      const content = body.choices?.[0]?.message?.content?.trim();
-      return { ok: response.ok && Boolean(body.choices?.length), status: response.status, latencyMs: Math.round(performance.now() - start), content: content?.slice(0, 200), error: response.ok ? undefined : body.error?.message?.slice(0, 300) ?? `HTTP ${response.status}` };
+      if (!response.ok || !response.body) {
+        const body = await response.json().catch(() => ({})) as { error?: { message?: string } };
+        return { ok: false, status: response.status, latencyMs: Math.round(performance.now() - start), error: body.error?.message?.slice(0, 300) ?? `HTTP ${response.status}` };
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let firstTokenMs: number | undefined;
+      let content = "";
+      let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (firstTokenMs === undefined) firstTokenMs = Math.round(performance.now() - start);
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("data:")) continue;
+          const payload = trimmed.slice(5).trim();
+          if (payload === "[DONE]") continue;
+          try {
+            const chunk = JSON.parse(payload) as { choices?: Array<{ delta?: { content?: string } }> };
+            content += chunk.choices?.[0]?.delta?.content ?? "";
+          } catch { /* partial or non-JSON chunk boundary; ignore */ }
+        }
+      }
+      const trimmed = content.trim();
+      return { ok: response.ok && trimmed.length > 0, status: response.status, latencyMs: Math.round(performance.now() - start), firstTokenMs, content: trimmed.slice(0, 200), error: trimmed.length > 0 ? undefined : "Empty completion" };
     } catch (error) {
       return { ok: false, status: 0, latencyMs: Math.round(performance.now() - start), error: error instanceof Error ? error.message : "Unknown LiteLLM error" };
     }
