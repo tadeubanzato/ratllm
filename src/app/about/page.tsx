@@ -41,8 +41,6 @@ export default function AboutPage() {
             <dd>Models found on a provider&apos;s catalog before they are added to LiteLLM. Add one into a lane once you are ready to route traffic to it and test it.</dd>
             <dt>Lanes</dt>
             <dd>The <code>smart-*</code> LiteLLM model groups (general, coding, agent, deep reasoning, long-context, vision, summary, speech) and which deployments currently back each one, with cross-lane fallback chains kept in sync automatically.</dd>
-            <dt>Rate Limits</dt>
-            <dd>Fully automated: published, observed, and safe RPM/TPM per deployment, learned from real smoke-test evidence on a schedule. There is no manual override — every value here is machine-derived.</dd>
             <dt>Benchmarks</dt>
             <dd>Operational results from the automatic health probe for every deployment: pass/fail, latency, success rate over recent runs, latency percentiles, and time-to-first-token.</dd>
             <dt>Runs</dt>
