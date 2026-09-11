@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { UptimeBar } from "@/components/status-history-strip";
 import { PageShell } from "@/components/page-shell";
 import { StatusPill } from "@/components/status-pill";
@@ -7,6 +8,7 @@ import { sourceRegistry } from "@/server/discovery/registry";
 import { DiscoveryButton } from "./discovery-button";
 import { VerifyButton } from "./verify-button";
 import { AddToLiteLLMButton } from "./connect-button";
+import { TestCandidateButton } from "./test-button";
 
 const DISPLAY_LIMIT = 300;
 const tierRank: Record<string, number> = Object.fromEntries(sourceRegistry.map(source => [source.id, source.tier === "A1" ? 0 : source.tier === "A2" ? 1 : source.tier === "B" ? 2 : 3]));
@@ -30,17 +32,17 @@ export default async function ModelsPage(){
   });
   const candidates=sorted.slice(0,DISPLAY_LIMIT);
   const truncated=allCandidates.length>DISPLAY_LIMIT;
-  return <PageShell title="Discovered Models" eyebrow={truncated?`Showing top ${DISPLAY_LIMIT} of ${allCandidates.length} discovery observations, models you can already test first · manage credentials under Settings → Providers`:`${allCandidates.length} discovery observations · manage credentials under Settings → Providers`} actions={<div style={{display:"flex",alignItems:"center",gap:12}}><VerifyButton/><DiscoveryButton/></div>}><section className="panel"><div className="panel-header"><h3>Discovered free-model candidates</h3><span>Availability checks run automatically on schedule (Settings → Automation → Candidate verification)</span></div><div className="table-scroll"><table className="data-table"><thead><tr><th>Candidate</th><th>Provider / credential</th><th>Free evidence</th><th>Context</th><th>Availability</th><th>Last tested</th><th>LiteLLM</th></tr></thead><tbody>{candidates.length?candidates.map(row=>{
+  return <PageShell title="Discovered Models" eyebrow={truncated?`Showing top ${DISPLAY_LIMIT} of ${allCandidates.length} discovery observations, models you can already test first · manage credentials under Settings → Providers`:`${allCandidates.length} discovery observations · manage credentials under Settings → Providers`} actions={<div style={{display:"flex",alignItems:"center",gap:12}}><VerifyButton/><DiscoveryButton/></div>}><section className="panel"><div className="panel-header"><h3>Discovered free-model candidates</h3><span>Availability checks run automatically on schedule (Settings → Automation → Candidate verification)</span></div><div className="table-scroll"><table className="data-table"><thead><tr><th>Candidate</th><th>Provider / credential</th><th>Free evidence</th><th>Context</th><th>Availability</th><th>Last tested</th><th>Test now</th><th>LiteLLM</th></tr></thead><tbody>{candidates.length?candidates.map(row=>{
     const availability=availabilityFor(row);
     const points=candidateHistoryItems(candidateHistory.get(row.id)??[]);
     const memberships=row.laneMemberships??[];
     const litellmCell=memberships.length
       ? <span className="mono" style={{fontSize:10}} title={memberships.map(m=>m.slug).join(", ")}>{memberships.map(m=>m.slug.replace("smart-","")).join(", ")}</span>
       : row.liteLLMDeploymentId
-        ? <button className="button small success" type="button" disabled>Added</button>
+        ? <Link className="button small success" href={`/models/${row.liteLLMDeploymentId}`}>Added</Link>
         : row.promotable
           ? <AddToLiteLLMButton candidateId={row.id}/>
           : <span className="settings-help" style={{fontSize:10}}>{row.promotableReason}</span>;
-    return <tr key={row.id}><td><strong>{row.displayName}</strong><br/><span className="mono">{row.modelRef}</span></td><td>{row.providerName??"Unresolved"}<br/><StatusPill value={row.credentialVerified?"Credential verified":row.credentialConfigured?"Credential unverified":"Credential missing"}/></td><td><StatusPill value={row.verifiedFree?row.freeType:"UNVERIFIED"}/></td><td className="mono">{row.contextWindow?.toLocaleString()??"—"}</td><td><UptimeBar items={points} label={`${row.displayName} availability checks`} count={20} compact/>{availability.requiredAction&&<div style={{marginTop:4,fontSize:10,color:"var(--muted)"}}>{availability.requiredAction.replaceAll("_"," ")}</div>}{availability.status==="RATE_LIMITED"&&availability.nextCheckAt&&<div style={{marginTop:2,fontSize:10,color:"var(--muted)"}}>Retries {timeAgo(availability.nextCheckAt)}</div>}</td><td>{availability.lastTestedAt?timeAgo(availability.lastTestedAt):availability.status==="QUEUED"?"Awaiting scheduled test":"—"}</td><td>{litellmCell}</td></tr>;
-  }):<tr><td colSpan={7}>No candidates stored. Run discovery to query the live sources.</td></tr>}</tbody></table></div></section></PageShell>;
+    return <tr key={row.id}><td><strong>{row.displayName}</strong><br/><span className="mono">{row.modelRef}</span></td><td>{row.providerName??"Unresolved"}<br/><StatusPill value={row.credentialVerified?"Credential verified":row.credentialConfigured?"Credential unverified":"Credential missing"}/></td><td><StatusPill value={row.verifiedFree?row.freeType:"UNVERIFIED"}/></td><td className="mono">{row.contextWindow?.toLocaleString()??"—"}</td><td><UptimeBar items={points} label={`${row.displayName} availability checks`} count={20} compact/>{availability.requiredAction&&<div style={{marginTop:4,fontSize:10,color:"var(--muted)"}}>{availability.requiredAction.replaceAll("_"," ")}</div>}{availability.status==="RATE_LIMITED"&&availability.nextCheckAt&&<div style={{marginTop:2,fontSize:10,color:"var(--muted)"}}>Retries {timeAgo(availability.nextCheckAt)}</div>}</td><td>{availability.lastTestedAt?timeAgo(availability.lastTestedAt):availability.status==="QUEUED"?"Awaiting scheduled test":"—"}</td><td><TestCandidateButton candidateId={row.id}/></td><td>{litellmCell}</td></tr>;
+  }):<tr><td colSpan={8}>No candidates stored. Run discovery to query the live sources.</td></tr>}</tbody></table></div></section></PageShell>;
 }

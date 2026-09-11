@@ -1,20 +1,20 @@
 import { NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
-import { env } from "@/server/config";
 import { getDb } from "@/server/db/client";
 import { auditEvents, modelDeployments } from "@/server/db/schema";
-import { apiError, correlationId, secretMatches } from "@/server/http";
+import { apiError, correlationId } from "@/server/http";
 import { HttpLiteLLMAdapter } from "@/server/litellm/client";
 
 const input = z.object({ action: z.enum(["deactivate", "reactivate", "delete"]), confirmation: z.string().min(1) });
 
+/** Guarded only by the typed confirmation phrase — the same authorization boundary as every other mutating
+ *  action in this app (promote, deactivate a provider, delete a source). Talking to LiteLLM itself is still
+ *  gated by the master key configured in Settings → LiteLLM, which HttpLiteLLMAdapter reads server-side. */
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const correlation = correlationId(request);
   const parsed = input.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return apiError("INVALID_REQUEST", "A lifecycle action and confirmation are required", 400, correlation);
-  if (!env.ADMIN_TOKEN) return apiError("ADMIN_TOKEN_NOT_CONFIGURED", "Set ADMIN_TOKEN before changing LiteLLM deployments", 503, correlation);
-  if (!secretMatches(request.headers.get("x-ratllm-admin-token"), env.ADMIN_TOKEN)) return apiError("UNAUTHORIZED", "Valid admin token required", 401, correlation);
   const { id } = await params;
   const db = getDb();
   const deployment = (await db.select().from(modelDeployments).where(eq(modelDeployments.id, id)).limit(1))[0];

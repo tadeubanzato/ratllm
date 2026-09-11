@@ -193,10 +193,6 @@ export const modelSources = pgTable("model_sources", {
   id: uuid("id").primaryKey().defaultRandom(), name: text("name").notNull(), type: sourceType("type").notNull(), providerId: uuid("provider_id").references(() => providers.id, { onDelete: "set null" }), url: text("url"), enabled: boolean("enabled").notNull().default(true), priority: integer("priority").notNull().default(100), credentialReference: text("credential_reference"), adapterReference: text("adapter_reference"), lastSyncAt: timestamp("last_sync_at", { withTimezone: true }), status: text("status").notNull().default("UNKNOWN"), discoveredModelCount: integer("discovered_model_count").notNull().default(0), ...timestamps,
 });
 
-export const apiKeys = pgTable("api_keys", {
-  id: uuid("id").primaryKey().defaultRandom(), name: text("name").notNull(), keyHash: text("key_hash").notNull().unique(), prefix: text("prefix").notNull(), fingerprint: text("fingerprint").notNull(), scopes: jsonb("scopes").$type<string[]>().notNull().default([]), expiresAt: timestamp("expires_at", { withTimezone: true }), lastUsedAt: timestamp("last_used_at", { withTimezone: true }), revokedAt: timestamp("revoked_at", { withTimezone: true }), replacedById: uuid("replaced_by_id"), graceUntil: timestamp("grace_until", { withTimezone: true }), ...timestamps,
-}, (table) => [index("api_keys_prefix_idx").on(table.prefix)]);
-
 export const providersRelations = relations(providers, ({ many }) => ({ deployments: many(modelDeployments), credentials: many(providerCredentialReferences) }));
 export const modelsRelations = relations(canonicalModels, ({ many }) => ({ deployments: many(modelDeployments), capabilities: many(modelCapabilities) }));
 export const deploymentsRelations = relations(modelDeployments, ({ one, many }) => ({
