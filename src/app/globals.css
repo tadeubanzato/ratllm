@@ -15,7 +15,7 @@ input[type="checkbox"]:disabled { opacity:.5; cursor:not-allowed; }
 input[type="checkbox"]:focus-visible { outline:2px solid var(--blue); outline-offset:2px; }
 .sidebar { width:228px; background:var(--sidebar); color:#aeb4be; position:fixed; inset:0 auto 0 0; z-index:20; padding:0 12px 16px; display:flex; flex-direction:column; border-right:1px solid #252930; }
 .brand { height:68px; display:flex; align-items:center; gap:11px; padding:0 10px; color:#f5f6f8; }
-.brand-mark { width:30px; height:30px; border-radius:8px; display:grid; place-items:center; background:var(--red); color:#facc15; font-size:17px; font-weight:700; }
+.brand-mark { width:30px; height:30px; border-radius:8px; display:grid; place-items:center; background:#cc0000; color:#facc15; font-size:17px; font-weight:700; }
 .brand strong,.brand small { display:block; line-height:1.05; letter-spacing:.08em; }.brand strong{font-size:13px}.brand small{font-size:8px;color:#737b87;margin-top:5px;letter-spacing:.16em}
 .sidebar nav { display:flex; flex-direction:column; gap:2px; flex:1; padding-top:9px; border-top:1px solid #242830; }
 .sidebar nav a { display:flex; align-items:center; gap:10px; height:37px; padding:0 10px; border-radius:6px; font-size:13px; font-weight:490; transition:.15s ease; }
