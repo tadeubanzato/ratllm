@@ -32,23 +32,22 @@ export default async function ModelsPage(){
   });
   const candidates=sorted.slice(0,DISPLAY_LIMIT);
   const truncated=allCandidates.length>DISPLAY_LIMIT;
-  return <PageShell title="Discovered Models" eyebrow={truncated?`Showing top ${DISPLAY_LIMIT} of ${allCandidates.length} discovery observations, models you can already test first · manage credentials under Settings → Providers`:`${allCandidates.length} discovery observations · manage credentials under Settings → Providers`} actions={<div style={{display:"flex",alignItems:"center",gap:12}}><VerifyButton/><DiscoveryButton/></div>}><section className="panel"><div className="panel-header"><h3>Discovered free-model candidates</h3><span>Availability checks run automatically on schedule (Settings → Automation → Candidate verification)</span></div><div className="table-scroll"><table className="data-table"><thead><tr><th>Candidate</th><th>Provider / credential</th><th>Free evidence</th><th>Context</th><th>Availability</th><th>Last tested</th><th>Test now</th><th>LiteLLM</th></tr></thead><tbody>{candidates.length?candidates.map(row=>{
+  return <PageShell title="Discovered Models" eyebrow={truncated?`Showing top ${DISPLAY_LIMIT} of ${allCandidates.length} discovery observations, models you can already test first · manage credentials under Settings → Providers`:`${allCandidates.length} discovery observations · manage credentials under Settings → Providers`} actions={<div style={{display:"flex",alignItems:"center",gap:12}}><VerifyButton/><DiscoveryButton/></div>}><section className="panel"><div className="panel-header"><h3>Discovered free-model candidates</h3><span>Availability checks run automatically on schedule (Settings → Automation → Candidate verification)</span></div><div className="table-scroll"><table className="data-table"><thead><tr><th>Candidate</th><th>Provider / credential</th><th>Free evidence</th><th>Context</th><th>Availability</th><th>Last tested</th><th>Actions</th></tr></thead><tbody>{candidates.length?candidates.map(row=>{
     const availability=availabilityFor(row);
     const points=candidateHistoryItems(candidateHistory.get(row.id)??[]);
-    const memberships=row.laneMemberships??[];
-    const litellmCell=memberships.length
-      ? <span className="mono" style={{fontSize:10}} title={memberships.map(m=>m.slug).join(", ")}>{memberships.map(m=>m.slug.replace("smart-","")).join(", ")}</span>
-      : row.liteLLMDeploymentId
-        ? <Link className="button small success" href={`/models/${row.liteLLMDeploymentId}`}>Added</Link>
-        : row.promotable
-          ? <AddToLiteLLMButton candidateId={row.id}/>
-          : <span className="settings-help" style={{fontSize:10}}>{row.promotableReason}</span>;
+    // Already in LiteLLM (whether via a lane or a direct alias) collapses to one small "Added" badge — the exact lane
+    // membership and routing details live on the LiteLLM page, so repeating them here just added width for nothing.
+    const litellmCell=row.liteLLMDeploymentId
+      ? <span className="status-pill status-good"><i/> Added</span>
+      : row.promotable
+        ? <AddToLiteLLMButton candidateId={row.id}/>
+        : <span className="settings-help" style={{fontSize:10}}>{row.promotableReason}</span>;
     // A "Test" button only makes sense once the provider is resolved AND its credential is verified — verifyCandidateDirectly
     // refuses to make a real request otherwise (by design, to never burn a call on a credential that might not even work), so
     // showing an active-looking "Test" button in those cases would just silently do nothing and confuse whoever clicks it.
-    const testCell = !row.providerId ? <span className="settings-help" style={{fontSize:10}}>Provider unresolved</span>
+    const testCell = !row.providerId ? null
       : !row.credentialVerified ? <Link className="button small" href={`/providers/${row.providerId}`}>Verify credential →</Link>
         : <TestCandidateButton candidateId={row.id}/>;
-    return <tr key={row.id}><td><strong>{row.displayName}</strong><br/><span className="mono">{row.modelRef}</span></td><td>{row.providerName??"Unresolved"}<br/><StatusPill value={row.credentialVerified?"Credential verified":row.credentialConfigured?"Credential unverified":"Credential missing"}/></td><td><StatusPill value={row.verifiedFree?row.freeType:"UNVERIFIED"}/></td><td className="mono">{row.contextWindow?.toLocaleString()??"—"}</td><td><UptimeBar items={points} label={`${row.displayName} availability checks`} count={20} compact/>{availability.requiredAction&&<div style={{marginTop:4,fontSize:10,color:"var(--muted)"}}>{availability.requiredAction.replaceAll("_"," ")}</div>}{availability.status==="RATE_LIMITED"&&availability.nextCheckAt&&<div style={{marginTop:2,fontSize:10,color:"var(--muted)"}}>Retries {timeAgo(availability.nextCheckAt)}</div>}</td><td>{availability.lastTestedAt?timeAgo(availability.lastTestedAt):availability.status==="QUEUED"?"Awaiting scheduled test":"—"}</td><td>{testCell}</td><td>{litellmCell}</td></tr>;
-  }):<tr><td colSpan={8}>No candidates stored. Run discovery to query the live sources.</td></tr>}</tbody></table></div></section></PageShell>;
+    return <tr key={row.id}><td><strong>{row.displayName}</strong><br/><span className="mono">{row.modelRef}</span></td><td>{row.providerName??"Unresolved"}<br/><StatusPill value={row.credentialVerified?"Credential verified":row.credentialConfigured?"Credential unverified":"Credential missing"}/></td><td><StatusPill value={row.verifiedFree?row.freeType:"UNVERIFIED"}/></td><td className="mono">{row.contextWindow?.toLocaleString()??"—"}</td><td><UptimeBar items={points} label={`${row.displayName} availability checks`} count={20} compact/>{availability.requiredAction&&<div style={{marginTop:4,fontSize:10,color:"var(--muted)"}}>{availability.requiredAction.replaceAll("_"," ")}</div>}{availability.status==="RATE_LIMITED"&&availability.nextCheckAt&&<div style={{marginTop:2,fontSize:10,color:"var(--muted)"}}>Retries {timeAgo(availability.nextCheckAt)}</div>}</td><td>{availability.lastTestedAt?timeAgo(availability.lastTestedAt):availability.status==="QUEUED"?"Awaiting scheduled test":"—"}</td><td style={{display:"flex",gap:6,alignItems:"center"}}>{testCell}{litellmCell}</td></tr>;
+  }):<tr><td colSpan={7}>No candidates stored. Run discovery to query the live sources.</td></tr>}</tbody></table></div></section></PageShell>;
 }

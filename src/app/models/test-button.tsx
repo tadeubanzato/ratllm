@@ -26,7 +26,7 @@ export function TestCandidateButton({ candidateId }: { candidateId: string }) {
     } finally { setBusy(false); }
   }
 
-  return <div style={{ display: "grid", gap: 2 }}>
+  return <div style={{ display: "inline-flex", flexDirection: "column", alignItems: "flex-start", gap: 2 }}>
     <button className="button small" type="button" onClick={run} disabled={busy}>{busy ? "Testing…" : "Test"}</button>
     {message && <span style={{ fontSize: 9.5, color: "var(--muted)" }}>{message}</span>}
   </div>;
