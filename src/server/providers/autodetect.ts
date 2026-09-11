@@ -18,34 +18,45 @@ function apexDomain(hostname: string): string {
  *  This only catches providers that follow the common `api.{domain}/v1/chat/completions` convention; providers
  *  with a distinct subdomain (router.*, ark.*, api-inference.*), a different TLD, or an unconventional path are
  *  real research, not something guessable — auto-detect says so honestly rather than reporting a false miss as success. */
+/** Path suffixes to try under each candidate domain. Most providers are flat (`/v1/chat/completions`), but a
+ *  few nest their OpenAI-compatible layer under an extra segment (Groq's real path is `/openai/v1/chat/completions`
+ *  — a plain domain guess without this would land on the right host and still suggest the wrong URL). */
+const PATH_SUFFIXES = ["/v1/chat/completions", "/openai/v1/chat/completions"];
+
 function candidateUrls(slug: string, existingBaseUrl: string | null): string[] {
-  const urls = new Set<string>();
-  if (existingBaseUrl) urls.add(`${existingBaseUrl.replace(/\/$/, "").replace(/\/v1$/, "")}/v1/chat/completions`);
+  const bases = new Set<string>();
+  if (existingBaseUrl) bases.add(existingBaseUrl.replace(/\/$/, "").replace(/\/v1$/, ""));
   const portal = getProviderPortal(slug);
   if (portal) {
     try {
       const host = new URL(portal.url).hostname;
       const apex = apexDomain(host);
-      urls.add(`https://api.${apex}/v1/chat/completions`);
-      urls.add(`https://${apex}/v1/chat/completions`);
-      if (host !== apex) urls.add(`https://${host}/v1/chat/completions`);
+      bases.add(`https://api.${apex}`);
+      bases.add(`https://${apex}`);
+      if (host !== apex) bases.add(`https://${host}`);
     } catch { /* malformed portal URL — skip domain-derived guesses */ }
   }
-  return [...urls].slice(0, 5);
+  const urls = new Set<string>();
+  for (const base of bases) for (const suffix of PATH_SUFFIXES) urls.add(`${base}${suffix}`);
+  return [...urls].slice(0, 8);
 }
 
 /** Ranks how convincingly a response looks like a genuine OpenAI-compatible completions endpoint, without
- *  knowing a real model id to test with (a "hit" doesn't have to succeed — a structured "model not found" is
- *  just as strong a signal that we reached the right host and path as a real completion would be). */
+ *  knowing a real model id to test with. A generic JSON 404 from an unrelated route or gateway is common and
+ *  must NOT count as a hit just for being JSON-shaped — it only counts when the body actually references the
+ *  probe model (the real "model not found" rejection every OpenAI-compatible API gives for an unknown id), or
+ *  when the status itself is a strong signal on its own (a real completion, or an auth layer engaging at all). */
 function scoreResponse(status: number, body: unknown): { hit: boolean; detail: string } {
-  if (body && typeof body === "object") {
-    const record = body as Record<string, unknown>;
-    if (Array.isArray(record.choices)) return { hit: true, detail: `HTTP ${status} · returned a real completion` };
-    if (typeof record.error === "string" || (record.error && typeof record.error === "object") || typeof record.message === "string" || typeof record.detail === "string") {
-      return { hit: true, detail: `HTTP ${status} · structured API error (expected — the probe model id isn't real)` };
+  const record = body && typeof body === "object" ? (body as Record<string, unknown>) : null;
+  if (record && Array.isArray(record.choices)) return { hit: true, detail: `HTTP ${status} · returned a real completion` };
+  if (status === 401 || status === 403) return record ? { hit: true, detail: `HTTP ${status} · reached a real auth layer` } : { hit: false, detail: `HTTP ${status} · not JSON — likely a generic gateway rejection, not this API` };
+  if (record) {
+    const text = JSON.stringify(record).toLowerCase();
+    if (text.includes("__ratllm_autodetect_probe__") || (text.includes("model") && (status === 400 || status === 404 || status === 422))) {
+      return { hit: true, detail: `HTTP ${status} · structured "model not found" rejection (expected — the probe model id isn't real)` };
     }
   }
-  return { hit: false, detail: `HTTP ${status} · not a recognizable API response` };
+  return { hit: false, detail: `HTTP ${status} · doesn't reference the probe — likely the wrong path even if JSON-shaped` };
 }
 
 /** Tries each candidate with a live, minimal chat-completions request using the provider's real saved credential.
