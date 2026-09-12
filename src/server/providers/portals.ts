@@ -37,27 +37,25 @@ const providerPortals: Readonly<Record<string, ProviderPortal>> = {
   pollinations: { url: "https://enter.pollinations.ai/keys", label: "Generate API key" },
   wandb: { url: "https://wandb.ai/authorize", label: "Generate API key" },
   typhoon: { url: "https://playground.opentyphoon.ai/api-key", label: "Generate API key" },
+  siliconflow: { url: "https://cloud.siliconflow.cn/account/ak", label: "Generate API key" },
+  novita: { url: "https://novita.ai/settings/key-management", label: "Generate API key" },
+  fireworks: { url: "https://fireworks.ai/account/api-keys", label: "Generate API key" },
+  featherless: { url: "https://featherless.ai/account/api-keys", label: "Generate API key" },
+  hyperbolic: { url: "https://app.hyperbolic.xyz/settings", label: "Generate API key" },
+  nscale: { url: "https://console.nscale.com/", label: "Open provider console" },
+  "byteplus-modelark": { url: "https://console.byteplus.com/ark", label: "Open provider console" },
+  deepinfra: { url: "https://deepinfra.com/dash/api_keys", label: "Generate API key" },
+  upstage: { url: "https://console.upstage.ai/api-keys", label: "Generate API key" },
+  stepfun: { url: "https://platform.stepfun.com/", label: "Open provider console" },
+  moonshot: { url: "https://platform.moonshot.ai/console/api-keys", label: "Generate API key" },
+  ai21: { url: "https://studio.ai21.com/account/api-key", label: "Generate API key" },
+  baseten: { url: "https://app.baseten.co/settings/api_keys", label: "Generate API key" },
+  yi: { url: "https://platform.01.ai/apikeys", label: "Generate API key" },
 };
 
 export function getProviderPortal(slug: string): ProviderPortal | null {
   return providerPortals[slug] ?? null;
 }
-
-const providerAliases: Readonly<Record<string,string>> = {
-  gemini: "google-ai-studio",
-  google: "google-ai-studio",
-  google_ai_studio: "google-ai-studio",
-  nvidia_nim: "nvidia",
-  huggingface: "hugging-face",
-  hugging_face: "hugging-face",
-  cloudflare: "cloudflare-workers-ai",
-  cloudflare_ai: "cloudflare-workers-ai",
-  watsonx: "ibm-watsonx",
-  watsonx_ai: "ibm-watsonx",
-  zai: "zhipu",
-  zhipuai: "zhipu",
-  vercel_ai_gateway: "vercel-ai-gateway",
-};
 
 export function getCandidateProviderPortal(source:string,providerName:string|null,modelRef:string):ProviderPortal|null {
   if(source==="openrouter")return getProviderPortal("openrouter");

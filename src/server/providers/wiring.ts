@@ -87,6 +87,22 @@ export const providerWiring: Readonly<Record<string, ProviderWiring>> = {
   // `api-subscription-key` header and standard `Authorization: Bearer` work — no models-listing endpoint is
   // confirmed public, so (like Kilo) this relies on the completions call itself as verification.
   sarvam: { completions: "https://api.sarvam.ai/v1/chat/completions" },
+
+  // Added 2026-09-11, new providers from docs/models_source.md's watchlist audit — all confirmed base URL, bearer
+  // auth, and a genuine (if sometimes trial/promotional) free tier this pass.
+  siliconflow: { check: { url: "https://api.siliconflow.cn/v1/models", auth: "bearer" }, completions: "https://api.siliconflow.cn/v1/chat/completions" }, // 3 specific models fully free, no card, no usage limit
+  novita: { check: { url: "https://api.novita.ai/openai/v1/models", auth: "bearer" }, completions: "https://api.novita.ai/openai/v1/chat/completions" }, // $0.50 trial credit
+  fireworks: { check: { url: "https://api.fireworks.ai/inference/v1/models", auth: "bearer" }, completions: "https://api.fireworks.ai/inference/v1/chat/completions" }, // $1 trial credit
+  featherless: { check: { url: "https://api.featherless.ai/v1/models", auth: "bearer" }, completions: "https://api.featherless.ai/v1/chat/completions" }, // 100,000 trial tokens on signup, no card
+  hyperbolic: { check: { url: "https://api.hyperbolic.xyz/v1/models", auth: "bearer" }, completions: "https://api.hyperbolic.xyz/v1/chat/completions" }, // genuinely free Basic tier, no deposit
+  nscale: { check: { url: "https://inference.api.nscale.com/v1/models", auth: "bearer" }, completions: "https://inference.api.nscale.com/v1/chat/completions" }, // $5 free credit on signup
+  "byteplus-modelark": { check: { url: "https://ark.ap-southeast.bytepluses.com/api/v3/models", auth: "bearer" }, completions: "https://ark.ap-southeast.bytepluses.com/api/v3/chat/completions" }, // has an explicit "Free Tokens Only" mode, like Alibaba's
+  deepinfra: { check: { url: "https://api.deepinfra.com/v1/openai/models", auth: "bearer" }, completions: "https://api.deepinfra.com/v1/openai/chat/completions" }, // trial/promotional balance, not a guaranteed durable free tier
+  upstage: { check: { url: "https://api.upstage.ai/v1/models", auth: "bearer" }, completions: "https://api.upstage.ai/v1/chat/completions" }, // ~$10 credit valid 3 months
+  stepfun: { check: { url: "https://api.stepfun.ai/v1/models", auth: "bearer" }, completions: "https://api.stepfun.ai/v1/chat/completions" }, // first month free on their Open Platform, then paid
+  // Confirmed NOT free (needs a >=$1 recharge before any use) — wired for correctness/paid-lane routing, but
+  // candidates from this provider must never be classified as a free model.
+  moonshot: { check: { url: "https://api.moonshot.ai/v1/models", auth: "bearer" }, completions: "https://api.moonshot.ai/v1/chat/completions" },
 };
 
 /** Providers this app expects to be automatable (catalog adapterCapability AUTOMATED/PARTIAL) that are
@@ -95,6 +111,9 @@ export const providerWiring: Readonly<Record<string, ProviderWiring>> = {
  *  or listed here. */
 export const WIRING_PENDING: Readonly<Record<string, string>> = {
   "cloudflare-workers-ai": "completions endpoint is account-scoped — the user sets Base URL on the provider page",
+  ai21: "Endpoint shape not independently confirmed this pass (partial OpenAI-compatible surface, own Jamba-specific API too) — needs verification before wiring a check/completions pair",
+  baseten: "Free/trial access looked possibly sales-gated this pass, not a confirmed frictionless signup — needs verification before wiring",
+  yi: "OpenAI-compatible surface unconfirmed and no documented free tier found this pass — needs research before wiring",
 };
 
 /** No cloud API to wire at all — a user-supplied Base URL is the entire connection. Not a gap: this is correct,
