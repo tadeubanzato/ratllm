@@ -12,8 +12,11 @@ export async function saveProviderCredential(providerId: string, input: {apiKey?
   const db = getDb();
   const provider = (await db.select().from(providers).where(eq(providers.id, providerId)).limit(1))[0];
   if (!provider) throw new ProviderNotFoundError("Provider not found");
-  if (!input.apiKey && !process.env[input.environmentVariable]) throw new EnvironmentCredentialMissingError("That environment reference is not available to the server");
-  const encryptedValue = input.apiKey ? encryptCredential(input.apiKey) : null;
+  // Trim before storing: a copy-pasted key with a trailing newline/space encrypts and stores fine, then fails
+  // every auth check forever with no visible difference from a genuinely wrong key.
+  const apiKey = input.apiKey?.trim() || undefined;
+  if (!apiKey && !process.env[input.environmentVariable]) throw new EnvironmentCredentialMissingError("That environment reference is not available to the server");
+  const encryptedValue = apiKey ? encryptCredential(apiKey) : null;
   // Extra config (e.g. a workspace ID) is merged onto whatever's already stored rather than replaced outright —
   // rotating just the API key shouldn't silently wipe out a previously-set workspace ID the user isn't re-typing.
   const existing = (await db.select({config: providerCredentialReferences.config}).from(providerCredentialReferences).where(and(eq(providerCredentialReferences.providerId, providerId), eq(providerCredentialReferences.environmentVariable, input.environmentVariable))).limit(1))[0];
