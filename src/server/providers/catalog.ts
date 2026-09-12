@@ -18,10 +18,16 @@ export const providerDefinitions:readonly ProviderDefinition[]=[
   // Confirmed NOT free this pass (Moonshot needs a >=$1 recharge before use at all) — still worth wiring/cataloging
   // for completeness and future paid-lane routing, just never treat as a free-model source.
   {slug:"moonshot",name:"Moonshot AI (Kimi)",adapterKey:"openai-compatible",adapterCapability:"PARTIAL"},
+  // Moved from WIRING_PENDING 2026-09-12: re-researched against each provider's own current docs. AI21's Jamba
+  // API is the real (only) endpoint, OpenAI-message-shaped, $10/3-month credit, no card required — it just has no
+  // separate /models list, so (like Kilo/Sarvam) the completions call itself is the verification. Baseten's
+  // "Model APIs" product is a genuine shared, self-serve, OpenAI-compatible surface with free signup credit,
+  // distinct from its bring-your-own-model Truss deployment product this repo isn't wiring.
+  {slug:"ai21",name:"AI21",adapterKey:"openai-compatible",adapterCapability:"PARTIAL"},{slug:"baseten",name:"Baseten",adapterKey:"openai-compatible",adapterCapability:"PARTIAL"},
   // Lower confidence: endpoint shape/free-tier access not independently confirmed this pass. Catalogued (visible,
   // portal-linked) but deliberately NOT wired — see WIRING_PENDING in wiring.ts for the specific reason each needs
   // verification before a check/completions pair is added.
-  {slug:"ai21",name:"AI21",adapterKey:"manual",adapterCapability:"MANUAL"},{slug:"baseten",name:"Baseten",adapterKey:"manual",adapterCapability:"MANUAL"},{slug:"yi",name:"01.AI / Yi",adapterKey:"manual",adapterCapability:"MANUAL"},
+  {slug:"yi",name:"01.AI / Yi",adapterKey:"manual",adapterCapability:"MANUAL"},
 ] as const;
 const bySlug=new Map(providerDefinitions.map(item=>[item.slug,item]));
 const aliases:Readonly<Record<string,string>>={gemini:"google-ai-studio",google:"google-ai-studio",google_ai_studio:"google-ai-studio",google_gemini:"google-ai-studio",nvidia_nim:"nvidia",huggingface:"hugging-face",hugging_face:"hugging-face",cloudflare:"cloudflare-workers-ai",cloudflare_ai:"cloudflare-workers-ai",watsonx:"ibm-watsonx",watsonx_ai:"ibm-watsonx",zai:"zhipu",zhipuai:"zhipu",z_ai:"zhipu",zai_glm:"zhipu",codestral:"mistral",together_ai:"together-ai",publicai:"public-ai",volcengine:"volcengine-ark",vertex_ai:"vertex-ai",vertex_ai_llama_models:"vertex-ai",vercel_ai_gateway:"vercel-ai-gateway",ollama_cloud:"ollama-cloud",wandb_inference:"wandb",byteplus:"byteplus-modelark",modelark:"byteplus-modelark",kimi:"moonshot",moonshot_ai:"moonshot","01_ai":"yi","01ai":"yi",zero_one_ai:"yi",lingyiwanwu:"yi",fireworks_ai:"fireworks",featherless_ai:"featherless"};

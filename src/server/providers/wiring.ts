@@ -103,6 +103,17 @@ export const providerWiring: Readonly<Record<string, ProviderWiring>> = {
   // Confirmed NOT free (needs a >=$1 recharge before any use) — wired for correctness/paid-lane routing, but
   // candidates from this provider must never be classified as a free model.
   moonshot: { check: { url: "https://api.moonshot.ai/v1/models", auth: "bearer" }, completions: "https://api.moonshot.ai/v1/chat/completions" },
+
+  // Moved out of WIRING_PENDING 2026-09-12 after re-verification against each provider's own docs.
+  // AI21: studio/v1/chat/completions is AI21's real (only) endpoint, not a separate proprietary API — its request/
+  // response shape is OpenAI-message-compatible per AI21's own reference. No public /models list is documented, so
+  // (like Kilo/Sarvam) there's no `check`: the completions call itself is the credential verification. $10 credit,
+  // valid 3 months, no card required to start.
+  ai21: { completions: "https://api.ai21.com/studio/v1/chat/completions" },
+  // Baseten: "Model APIs" is a genuine shared, multi-tenant, self-serve product (distinct from Baseten's
+  // bring-your-own-model Truss deployment product, which this app isn't wiring) — confirmed fully OpenAI-compatible
+  // per Baseten's own API reference/changelog, with free signup credit and no card required.
+  baseten: { check: { url: "https://inference.baseten.co/v1/models", auth: "bearer" }, completions: "https://inference.baseten.co/v1/chat/completions" },
 };
 
 /** Providers this app expects to be automatable (catalog adapterCapability AUTOMATED/PARTIAL) that are
@@ -111,9 +122,11 @@ export const providerWiring: Readonly<Record<string, ProviderWiring>> = {
  *  or listed here. */
 export const WIRING_PENDING: Readonly<Record<string, string>> = {
   "cloudflare-workers-ai": "completions endpoint is account-scoped — the user sets Base URL on the provider page",
-  ai21: "Endpoint shape not independently confirmed this pass (partial OpenAI-compatible surface, own Jamba-specific API too) — needs verification before wiring a check/completions pair",
-  baseten: "Free/trial access looked possibly sales-gated this pass, not a confirmed frictionless signup — needs verification before wiring",
-  yi: "OpenAI-compatible surface unconfirmed and no documented free tier found this pass — needs research before wiring",
+  // Re-researched 2026-09-12: a real OpenAI-compatible base URL (api.lingyiwanwu.com/v1) shows up consistently
+  // across third-party integration configs, but platform.01.ai / platform.lingyiwanwu.com's own docs are
+  // JS-rendered and couldn't be independently confirmed, and no free tier/trial credit was found anywhere
+  // (billing reads as prepay-only) — still not enough to wire a check/completions pair with confidence.
+  yi: "OpenAI-compatible surface plausible (api.lingyiwanwu.com/v1 per third-party integrations) but unconfirmed from 01.AI's own docs, and no free tier found — needs further research before wiring",
 };
 
 /** No cloud API to wire at all — a user-supplied Base URL is the entire connection. Not a gap: this is correct,
