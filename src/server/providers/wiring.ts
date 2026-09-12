@@ -21,6 +21,10 @@ export interface ProviderWiring {
   /** POST chat-completions URL. Omit when the provider needs an account/project-scoped or self-hosted Base URL
    *  instead (Cloudflare, Vertex AI, Local, custom providers) — those are configured per-provider, not here. */
   completions?: string;
+  /** True when the provider is fully reachable with zero credential (confirmed against its own docs — llm7 and
+   *  Pollinations both serve a free/anonymous tier with no key at all). Distinct from Kilo-style "no check" above:
+   *  those two DO have a working check endpoint, it's just optional to use. */
+  credentialOptional?: boolean;
 }
 
 export const providerWiring: Readonly<Record<string, ProviderWiring>> = {
@@ -31,8 +35,13 @@ export const providerWiring: Readonly<Record<string, ProviderWiring>> = {
   openrouter: { check: { url: "https://openrouter.ai/api/v1/auth/key", auth: "bearer" }, completions: "https://openrouter.ai/api/v1/chat/completions" },
   mistral: { check: { url: "https://api.mistral.ai/v1/models", auth: "bearer" }, completions: "https://api.mistral.ai/v1/chat/completions" },
   sambanova: { check: { url: "https://api.sambanova.ai/v1/models", auth: "bearer" }, completions: "https://api.sambanova.ai/v1/chat/completions" },
-  "alibaba-model-studio": { check: { url: "https://dashscope.aliyuncs.com/compatible-mode/v1/models", auth: "bearer" }, completions: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions" },
-  zhipu: { check: { url: "https://open.bigmodel.cn/api/paas/v4/models", auth: "bearer" }, completions: "https://open.bigmodel.cn/api/paas/v4/chat/completions" },
+  // Fixed 2026-09-11: check and completions were pointed at two different regional hosts (China vs. international)
+  // — a key issued for one account region could pass/fail the check against the wrong host entirely. Both now use
+  // the international endpoint, since that's the one a non-China-verified account signs up against.
+  "alibaba-model-studio": { check: { url: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models", auth: "bearer" }, completions: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions" },
+  // Fixed 2026-09-11: was hardcoded to the China-legacy open.bigmodel.cn host, which requires a China-phone-verified
+  // account. api.z.ai is Z.AI's international host with a plain email signup and free-tier GLM access.
+  zhipu: { check: { url: "https://api.z.ai/api/paas/v4/models", auth: "bearer" }, completions: "https://api.z.ai/api/paas/v4/chat/completions" },
   deepseek: { check: { url: "https://api.deepseek.com/models", auth: "bearer" }, completions: "https://api.deepseek.com/chat/completions" },
   "public-ai": { check: { url: "https://api.publicai.co/v1/models", auth: "bearer" }, completions: "https://api.publicai.co/v1/chat/completions" },
 
@@ -41,10 +50,14 @@ export const providerWiring: Readonly<Record<string, ProviderWiring>> = {
   // provider's own current documentation, not memory.
   "hugging-face": { check: { url: "https://huggingface.co/api/whoami-v2", auth: "bearer" }, completions: "https://router.huggingface.co/v1/chat/completions" },
   "opencode-zen": { check: { url: "https://opencode.ai/zen/v1/models", auth: "bearer" }, completions: "https://opencode.ai/zen/v1/chat/completions" },
-  llm7: { check: { url: "https://api.llm7.io/v1/models", auth: "bearer" }, completions: "https://api.llm7.io/v1/chat/completions" },
+  // llm7 and Pollinations both confirmed (own docs) to serve a free/anonymous tier requiring no credential at all —
+  // a key only raises rate limits. credentialOptional lets Integration status report these as usable today instead
+  // of permanently "blocked on a credential" that was never actually required.
+  llm7: { check: { url: "https://api.llm7.io/v1/models", auth: "bearer" }, completions: "https://api.llm7.io/v1/chat/completions", credentialOptional: true },
   minimax: { check: { url: "https://api.minimax.io/v1/models", auth: "bearer" }, completions: "https://api.minimax.io/v1/chat/completions" },
-  pollinations: { check: { url: "https://gen.pollinations.ai/v1/models", auth: "bearer" }, completions: "https://gen.pollinations.ai/v1/chat/completions" },
-  cohere: { check: { url: "https://api.cohere.com/v1/models", auth: "bearer" }, completions: "https://api.cohere.ai/compatibility/v1/chat/completions" },
+  pollinations: { check: { url: "https://gen.pollinations.ai/v1/models", auth: "bearer" }, completions: "https://gen.pollinations.ai/v1/chat/completions", credentialOptional: true },
+  // Fixed 2026-09-11: was on Cohere's v1 models path; v2 is their current documented surface.
+  cohere: { check: { url: "https://api.cohere.com/v2/models", auth: "bearer" }, completions: "https://api.cohere.ai/compatibility/v1/chat/completions" },
 
   // Fixed 2026-09-11: the reverse gap — had a completions entry but no credential check, so a correct credential
   // could never be marked verified and every candidate was permanently stuck on "credential unverified" instead.
@@ -64,10 +77,16 @@ export const providerWiring: Readonly<Record<string, ProviderWiring>> = {
   "ollama-cloud": { check: { url: "https://ollama.com/v1/models", auth: "bearer" }, completions: "https://ollama.com/v1/chat/completions" },
   "vercel-ai-gateway": { check: { url: "https://ai-gateway.vercel.sh/v1/models", auth: "bearer" }, completions: "https://ai-gateway.vercel.sh/v1/chat/completions" },
   // Kilo's /models really is public/unauthenticated (confirmed in its own API reference) — no check is possible,
-  // so this one relies entirely on the gate fallthrough: the real completions call is the only verification available.
-  kilo: { completions: "https://api.kilo.ai/api/gateway/chat/completions" },
+  // so this one relies entirely on the gate fallthrough: the real completions call is the only verification
+  // available. Its free lane (kilo-auto/free and named free models) also genuinely needs no credential at all.
+  kilo: { completions: "https://api.kilo.ai/api/gateway/chat/completions", credentialOptional: true },
 
   "cloudflare-workers-ai": { check: { url: "https://api.cloudflare.com/client/v4/user/tokens/verify", auth: "bearer" } }, // completions needs the account-scoped Base URL set on the provider page
+
+  // Added 2026-09-11: had zero wiring (portal link only). Sarvam's own docs confirm both its native
+  // `api-subscription-key` header and standard `Authorization: Bearer` work — no models-listing endpoint is
+  // confirmed public, so (like Kilo) this relies on the completions call itself as verification.
+  sarvam: { completions: "https://api.sarvam.ai/v1/chat/completions" },
 };
 
 /** Providers this app expects to be automatable (catalog adapterCapability AUTOMATED/PARTIAL) that are
@@ -76,6 +95,20 @@ export const providerWiring: Readonly<Record<string, ProviderWiring>> = {
  *  or listed here. */
 export const WIRING_PENDING: Readonly<Record<string, string>> = {
   "cloudflare-workers-ai": "completions endpoint is account-scoped — the user sets Base URL on the provider page",
+};
+
+/** No cloud API to wire at all — a user-supplied Base URL is the entire connection. Not a gap: this is correct,
+ *  intentional behavior, and Integration status should say so rather than imply something's broken or missing. */
+export const SELF_HOSTED_PROVIDERS: ReadonlySet<string> = new Set(["lemonade", "local"]);
+
+/** Providers whose real auth model can't be represented as this app's single static bearer/query credential —
+ *  each needs its own token-exchange adapter and extra non-secret config (project/region/space ID) that don't
+ *  exist yet. Tracked here (with the reason) so Integration status reports an honest "needs custom adapter" gap
+ *  instead of a misleading generic "not wired", and so promotion never dangles a "Set base URL" fix that can't work. */
+export const CUSTOM_ADAPTER_PROVIDERS: Readonly<Record<string, string>> = {
+  "vertex-ai": "Needs OAuth service-account token exchange plus a project/region — not yet supported",
+  "ibm-watsonx": "Needs IBM IAM token exchange plus a project/space ID — not yet supported",
+  gigachat: "Needs OAuth2 client-credentials exchange (30-minute token expiry) — not yet supported",
 };
 
 export function supportsCredentialTest(slug: string): boolean {
@@ -91,4 +124,37 @@ export function resolveCheck(slug: string): ProviderCheck | null {
 export function resolveCompletionsEndpoint(slug: string, baseUrl: string | null): string | null {
   if (baseUrl) return `${baseUrl.replace(/\/$/, "").replace(/\/v1$/, "")}/v1/chat/completions`;
   return providerWiring[slug]?.completions ?? null;
+}
+
+/**
+ * What the Providers/Settings pages should actually say about a provider's integration — derived from this file's
+ * wiring map, not the stale, unenforced `adapterCapability` label in catalog.ts. One source of truth, so a provider
+ * can never again look "manual" in the UI while being fully wired underneath (or vice versa).
+ */
+export type IntegrationStatus = "LIVE" | "READY" | "NO_CREDENTIAL_NEEDED" | "SELF_HOSTED" | "NEEDS_CUSTOM_ADAPTER" | "NOT_WIRED";
+
+export const integrationStatusLabels: Readonly<Record<IntegrationStatus, string>> = {
+  LIVE: "Live", READY: "Ready", NO_CREDENTIAL_NEEDED: "No credential needed",
+  SELF_HOSTED: "Self-hosted", NEEDS_CUSTOM_ADAPTER: "Needs custom adapter", NOT_WIRED: "Not wired",
+};
+
+export const integrationStatusTone: Readonly<Record<IntegrationStatus, "good" | "warn" | "bad" | "neutral">> = {
+  LIVE: "good", NO_CREDENTIAL_NEEDED: "good", READY: "warn", NEEDS_CUSTOM_ADAPTER: "warn", SELF_HOSTED: "neutral", NOT_WIRED: "bad",
+};
+
+export function getIntegrationStatus(slug: string, credential: {configured: boolean; verified: boolean}, hasLiveDeployments = false): IntegrationStatus {
+  if (SELF_HOSTED_PROVIDERS.has(slug)) return "SELF_HOSTED";
+  if (slug in CUSTOM_ADAPTER_PROVIDERS) return "NEEDS_CUSTOM_ADAPTER";
+  const wiring = providerWiring[slug];
+  // A provider outside every static registry (added ad hoc via "Add provider" in Settings, e.g. a custom
+  // OpenAI-compatible endpoint) can still be demonstrably working — LiteLLM already has live deployments for it —
+  // which is stronger, more current evidence than "not in our catalog" implies. Only report NOT_WIRED when there's
+  // truly no sign it works.
+  if (!wiring) return hasLiveDeployments ? "LIVE" : "NOT_WIRED";
+  // Only an explicit credentialOptional flag means no key is required — the earlier `!wiring.check` fallback
+  // wrongly swept in providers (like Sarvam) that DO need a credential but just have no safe check endpoint to
+  // pre-validate it against; those should still read as READY, not falsely "no credential needed".
+  if (wiring.credentialOptional) return "NO_CREDENTIAL_NEEDED";
+  if (credential.verified) return "LIVE";
+  return "READY";
 }

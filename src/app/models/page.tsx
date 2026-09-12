@@ -58,7 +58,7 @@ export default async function ModelsPage(){
         : promotionBlocker(row);
     return <tr key={row.id}>
       <td><strong>{row.displayName}</strong><br/><span className="mono truncate" title={row.modelRef} style={{maxWidth:220}}>{row.modelRef}</span></td>
-      <td>{row.providerName??"Unresolved"}<br/><StatusPill value={row.credentialVerified?"Credential verified":row.credentialConfigured?"Credential unverified":"Credential missing"}/></td>
+      <td>{row.providerName??"Unresolved"}<br/><StatusPill value={!row.credentialRequired?"No credential needed":row.credentialVerified?"Credential verified":row.credentialConfigured?"Credential unverified":"Credential missing"}/></td>
       <td><span className="mono" style={{fontSize:9.5}}>{row.contextWindow?.toLocaleString()??"—"} ctx</span><br/><StatusPill value={row.verifiedFree?row.freeType:"UNVERIFIED"}/></td>
       <td>
         <UptimeBar items={points} label={`${row.displayName} availability checks`} count={12} compact/>

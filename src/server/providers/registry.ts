@@ -1,7 +1,7 @@
 import "server-only";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
-import { providerCredentialReferences, providers } from "@/server/db/schema";
+import { modelDeployments, providerCredentialReferences, providers } from "@/server/db/schema";
 import { getProviderPortal } from "@/server/providers/portals";
 import { supportsCredentialTest } from "@/server/providers/verify";
 import { saveProviderCredential } from "@/server/providers/credentials";
@@ -11,15 +11,17 @@ export class DuplicateProviderError extends Error {}
 
 export interface ProviderSettingsRow {
   id: string; slug: string; name: string; enabled: boolean; credentialState: "MISSING" | "CONFIGURED" | "INVALID" | "UNKNOWN";
-  lastValidatedAt: Date | null; environmentVariable: string; testSupported: boolean; portal: {url: string; label: string} | null;
+  lastValidatedAt: Date | null; environmentVariable: string; testSupported: boolean; portal: {url: string; label: string} | null; modelCount: number;
 }
 
 export async function listProviderSettings(): Promise<ProviderSettingsRow[]> {
   const db = getDb();
-  const [rows, credentials] = await Promise.all([
+  const [rows, credentials, deploymentCounts] = await Promise.all([
     db.select().from(providers).orderBy(providers.name),
     db.select().from(providerCredentialReferences),
+    db.select({providerId: modelDeployments.providerId, count: sql<number>`count(*)::int`}).from(modelDeployments).groupBy(modelDeployments.providerId),
   ]);
+  const modelCountByProvider = new Map(deploymentCounts.map(row => [row.providerId, row.count]));
   return rows.map(provider => {
     const refs = credentials.filter(ref => ref.providerId === provider.id && !ref.disabled);
     const available = refs.filter(ref => ref.encryptedValue || process.env[ref.environmentVariable]);
@@ -28,7 +30,7 @@ export async function listProviderSettings(): Promise<ProviderSettingsRow[]> {
     return {
       id: provider.id, slug: provider.slug, name: provider.name, enabled: provider.enabled, credentialState,
       lastValidatedAt: latest ?? null, environmentVariable: refs[0]?.environmentVariable ?? `${provider.slug.toUpperCase().replaceAll("-", "_")}_API_KEY`,
-      testSupported: supportsCredentialTest(provider.slug), portal: getProviderPortal(provider.slug),
+      testSupported: supportsCredentialTest(provider.slug), portal: getProviderPortal(provider.slug), modelCount: modelCountByProvider.get(provider.id) ?? 0,
     };
   });
 }

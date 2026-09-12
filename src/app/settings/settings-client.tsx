@@ -9,10 +9,11 @@ import { StatusPill } from "@/components/status-pill";
 import { Modal } from "@/components/modal";
 import { cronToSchedule, scheduleToCron, scheduleUnits, type ScheduleUnit } from "@/lib/schedule";
 import { sourceRegistry } from "@/server/discovery/registry";
+import { getIntegrationStatus, integrationStatusLabels, integrationStatusTone, CUSTOM_ADAPTER_PROVIDERS } from "@/server/providers/wiring";
 
 const tabs = ["General", "LiteLLM", "Providers", "Automation", "Free Model Sources", "Safety"] as const;
 type Tab = (typeof tabs)[number];
-type Provider = {id: string; name: string; slug: string; enabled: boolean; credentialState: string; lastValidatedAt: string | null; environmentVariable: string; testSupported: boolean; portal: {url: string; label: string} | null};
+type Provider = {id: string; name: string; slug: string; enabled: boolean; credentialState: string; lastValidatedAt: string | null; environmentVariable: string; testSupported: boolean; portal: {url: string; label: string} | null; modelCount: number};
 type Job = {type: string; enabled: boolean; schedule: string; customSchedule: boolean; defaultSchedule: string | null; timezone: string; status: string; lastRunAt: string | null; nextRunAt: string | null; durationMs: number | null; failureCount: number; lastError: string | null};
 
 const jobTypeLabels: Record<string, string> = {
@@ -191,18 +192,23 @@ export function SettingsClient({environment, lanes, laneOverview, initialHistory
 
     {active === "LiteLLM" && <div className="settings-grid"><LiteLLMConnectionForm/><LiteLLMManagementForm/><LiteLLMLaneSetupPanel lanes={laneOverview}/></div>}
 
-    {active === "Providers" && <Card title="Provider credentials" aside={<button className="button primary" type="button" onClick={() => setAddProviderModal(true)}>Add provider</button>}><div className="settings-table-wrap"><table className="data-table settings-table"><thead><tr><th>Provider</th><th>Enabled</th><th>Credential</th><th>Last credential test</th><th>Actions</th></tr></thead><tbody>
-      {providers.map(provider => <tr key={provider.id}>
+    {active === "Providers" && <Card title="Provider credentials" aside={<button className="button primary" type="button" onClick={() => setAddProviderModal(true)}>Add provider</button>}><div className="settings-table-wrap"><table className="data-table settings-table"><thead><tr><th>Provider</th><th>Enabled</th><th>Credential</th><th>Integration</th><th>Last credential test</th><th>Actions</th></tr></thead><tbody>
+      {providers.map(provider => {
+        const integration = getIntegrationStatus(provider.slug, {configured: provider.credentialState !== "MISSING", verified: provider.credentialState === "CONFIGURED"}, provider.modelCount > 0);
+        const needsCustomAdapter = integration === "NEEDS_CUSTOM_ADAPTER";
+        return <tr key={provider.id}>
         <td><strong>{provider.name}</strong></td>
         <td><input type="checkbox" aria-label={`Enable ${provider.name}`} checked={provider.enabled} disabled={busy} onChange={event => void act(() => request("/api/settings/providers", {method: "PATCH", body: JSON.stringify({id: provider.id, enabled: event.target.checked})}))}/></td>
         <td><StatusPill value={provider.credentialState}/></td>
+        <td><span className={`status-pill status-${integrationStatusTone[integration]}`}>{integrationStatusLabels[integration]}</span>{needsCustomAdapter && <br/>}{needsCustomAdapter && <small className="settings-help">{CUSTOM_ADAPTER_PROVIDERS[provider.slug]}</small>}</td>
         <td>{stamp(provider.lastValidatedAt)}</td>
         <td><div className="settings-actions">
-          <button className="button" type="button" onClick={() => setEditing(editing === provider.id ? null : provider.id)}>Configure credential</button>
-          {provider.testSupported ? <button className="button" type="button" disabled={busy || !provider.enabled || provider.credentialState === "MISSING"} onClick={() => void act(async () => { await request(`/api/providers/${provider.id}/verify`, {method: "POST"}); })}>Test credential</button> : <span className="settings-help">API test unavailable</span>}
+          {needsCustomAdapter ? <span className="settings-help">Not yet supported for automated verification</span> : <button className="button" type="button" onClick={() => setEditing(editing === provider.id ? null : provider.id)}>Configure credential</button>}
+          {provider.testSupported ? <button className="button" type="button" disabled={busy || !provider.enabled || provider.credentialState === "MISSING"} onClick={() => void act(async () => { await request(`/api/providers/${provider.id}/verify`, {method: "POST"}); })}>Test credential</button> : !needsCustomAdapter && <span className="settings-help">API test unavailable</span>}
           {provider.enabled && <button className="button small" type="button" disabled={busy} onClick={() => setDeletingProvider(provider.id)}>Delete</button>}
         </div></td>
-      </tr>)}
+      </tr>;
+      })}
     </tbody></table></div>
     </Card>}
     <Modal open={editing !== null} title={`${providers.find(p => p.id === editing)?.name ?? ""} credential`} onClose={() => setEditing(null)}>
