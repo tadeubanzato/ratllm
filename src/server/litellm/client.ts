@@ -80,8 +80,8 @@ export class HttpLiteLLMAdapter implements LiteLLMAdapter {
     }
   }
 
-  async addDeployment(input:{modelName:string;model:string;apiKey:string;apiBase?:string;metadata:Record<string,unknown>}) {
-    const response=await this.request("/model/new",{method:"POST",body:JSON.stringify({model_name:input.modelName,litellm_params:{model:input.model,api_key:input.apiKey,...(input.apiBase?{api_base:input.apiBase}:{})},model_info:input.metadata})});
+  async addDeployment(input:{modelName:string;model:string;apiKey:string;apiBase?:string;extraHeaders?:Record<string,string>;metadata:Record<string,unknown>}) {
+    const response=await this.request("/model/new",{method:"POST",body:JSON.stringify({model_name:input.modelName,litellm_params:{model:input.model,api_key:input.apiKey,...(input.apiBase?{api_base:input.apiBase}:{}),...(input.extraHeaders&&Object.keys(input.extraHeaders).length?{extra_headers:input.extraHeaders}:{})},model_info:input.metadata})});
     const body=await response.json().catch(()=>({})) as {model_info?:{id?:string};id?:string}; return {id:body.model_info?.id??body.id};
   }
 

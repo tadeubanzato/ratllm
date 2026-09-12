@@ -63,7 +63,7 @@ export function BaseUrlForm({providerId, slug, baseUrl}: {providerId: string; sl
 
   return <div style={{display: "grid", gap: 8}}>
     <form onSubmit={submit} style={{display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap"}}>
-      <input ref={inputRef} className="input" name="baseUrl" type="url" defaultValue={baseUrl ?? ""} placeholder="Only needed for account-scoped or self-hosted endpoints" style={{minWidth: 280}}/>
+      <input ref={inputRef} className="input" name="baseUrl" type="url" defaultValue={baseUrl ?? ""} placeholder="Full path incl. any provider-specific segment, e.g. .../compatible-mode/v1 — not just the bare host" style={{minWidth: 280}}/>
       <button className="button small" type="submit" disabled={busy}>{busy ? "Saving…" : "Save"}</button>
       {isCloudflare
         ? <button className="button small" type="button" disabled={cfBusy} onClick={() => void findCloudflareAccount()}>{cfBusy ? "Looking up…" : "Find my Cloudflare account"}</button>

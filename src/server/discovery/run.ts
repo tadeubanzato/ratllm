@@ -1,10 +1,11 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
-import { eq,and } from "drizzle-orm";
+import { eq,and,inArray } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
 import { auditEvents,modelCandidates,providers,syncRuns } from "@/server/db/schema";
 import { discoverySources } from "./sources";
-import { ensureModelSources, getEnabledAdapterIds, recordSourceSync } from "./model-sources";
+import { sourceRegistry } from "./registry";
+import { ensureModelSources, getEnabledAdapterIds, getEnabledSourceLastSync, recordSourceSync } from "./model-sources";
 import { resolveProvider } from "@/server/providers/catalog";
 import { bareModelKey } from "./model-key";
 import { consolidateModelCandidates } from "./consolidate";
@@ -19,10 +20,20 @@ async function findDuplicateCandidate(db:ReturnType<typeof getDb>,providerName:s
 export async function runDiscovery(){
   await ensureModelSources();
   const enabledIds = await getEnabledAdapterIds();
-  const activeSources = discoverySources.filter(source => enabledIds.has(source.id));
+  const lastSyncById = await getEnabledSourceLastSync();
+  const registryById = new Map(sourceRegistry.map(source => [source.id, source]));
+  const activeSources = discoverySources.filter(source => {
+    if (!enabledIds.has(source.id)) return false;
+    const refreshHours = registryById.get(source.id)?.refreshHours;
+    if (!refreshHours) return true;
+    const lastSyncAt = lastSyncById.get(source.id);
+    if (!lastSyncAt) return true;
+    return Date.now() - lastSyncAt.getTime() >= refreshHours * 60 * 60 * 1000;
+  });
   const db=getDb();const correlationId=randomUUID();const[run]=await db.insert(syncRuns).values({type:"MODEL_DISCOVERY",status:"RUNNING",correlationId,startedAt:new Date()}).returning();
+  const providerIdBySlug=new Map((await db.select({slug:providers.slug,id:providers.id}).from(providers)).map(row=>[row.slug,row.id]));
   const results=await Promise.allSettled(activeSources.map(async source=>{try{const items=await source.discover();return {sourceId:source.id,ok:true as const,items}}catch(error){return {sourceId:source.id,ok:false as const,error:error instanceof Error?error.message:"Unknown source error"}}}));
-  let discovered=0;const sources=[];
+  let discovered=0;const sources=[];const touchedProviderIds=new Set<string>();
   for(const result of results){
     if(result.status!=="fulfilled")continue; // try/catch inside the mapper means this branch shouldn't occur, but stay defensive
     const outcome=result.value;
@@ -31,15 +42,23 @@ export async function runDiscovery(){
     sources.push({source,status:"succeeded",count:items.length});
     await recordSourceSync(source,{ok:true,count:items.length});
     for(const item of items){
-      const provider=resolveProvider(item.providerName,item.modelRef);if(provider){await db.insert(providers).values(provider).onConflictDoNothing();item.providerName=provider.name;}
+      const provider=resolveProvider(item.providerName,item.modelRef);
+      if(provider){
+        await db.insert(providers).values(provider).onConflictDoNothing();
+        item.providerName=provider.name;
+        if(!providerIdBySlug.has(provider.slug)){const[row]=await db.select({id:providers.id}).from(providers).where(eq(providers.slug,provider.slug)).limit(1);if(row)providerIdBySlug.set(provider.slug,row.id);}
+      }
+      const providerId=provider?providerIdBySlug.get(provider.slug)??null:null;
+      if(providerId)touchedProviderIds.add(providerId);
       const existing=(await db.select({id:modelCandidates.id,evidence:modelCandidates.evidence}).from(modelCandidates).where(and(eq(modelCandidates.source,item.source),eq(modelCandidates.modelRef,item.modelRef))).limit(1))[0];
-      if(existing){const values={displayName:item.displayName,providerName:item.providerName??null,lifecycle:"DISCOVERED" as const,freeType:item.freeType,verifiedFree:item.verifiedFree,contextWindow:item.contextWindow??null,maxOutputTokens:item.maxOutputTokens??null,supportsVision:item.supportsVision??null,supportsTools:item.supportsTools??null,supportsReasoning:item.supportsReasoning??null,sourceUrl:item.sourceUrl,evidence:{...(existing.evidence??{}),...item.evidence},lastSeenAt:new Date(),updatedAt:new Date()};await db.update(modelCandidates).set(values).where(eq(modelCandidates.id,existing.id));discovered++;continue;}
+      if(existing){const values={displayName:item.displayName,providerName:item.providerName??null,providerId,lifecycle:"DISCOVERED" as const,freeType:item.freeType,verifiedFree:item.verifiedFree,contextWindow:item.contextWindow??null,maxOutputTokens:item.maxOutputTokens??null,supportsVision:item.supportsVision??null,supportsTools:item.supportsTools??null,supportsReasoning:item.supportsReasoning??null,sourceUrl:item.sourceUrl,evidence:{...(existing.evidence??{}),...item.evidence},lastSeenAt:new Date(),updatedAt:new Date()};await db.update(modelCandidates).set(values).where(eq(modelCandidates.id,existing.id));discovered++;continue;}
       const duplicate=provider?await findDuplicateCandidate(db,provider.name,item.modelRef):null;
-      if(duplicate){const prior=Array.isArray(duplicate.evidence.corroboratingSources)?duplicate.evidence.corroboratingSources as {source:string;sourceUrl:string}[]:[];const corroboratingSources=prior.some(c=>c.source===item.source)?prior:[...prior,{source:item.source,sourceUrl:item.sourceUrl}];await db.update(modelCandidates).set({evidence:{...duplicate.evidence,corroboratingSources},lastSeenAt:new Date(),updatedAt:new Date()}).where(eq(modelCandidates.id,duplicate.id));discovered++;continue;}
-      await db.insert(modelCandidates).values({source:item.source,modelRef:item.modelRef,displayName:item.displayName,providerName:item.providerName??null,lifecycle:"DISCOVERED" as const,freeType:item.freeType,verifiedFree:item.verifiedFree,contextWindow:item.contextWindow??null,maxOutputTokens:item.maxOutputTokens??null,supportsVision:item.supportsVision??null,supportsTools:item.supportsTools??null,supportsReasoning:item.supportsReasoning??null,sourceUrl:item.sourceUrl,evidence:item.evidence,lastSeenAt:new Date(),updatedAt:new Date()});
+      if(duplicate){const prior=Array.isArray(duplicate.evidence.corroboratingSources)?duplicate.evidence.corroboratingSources as {source:string;sourceUrl:string}[]:[];const corroboratingSources=prior.some(c=>c.source===item.source)?prior:[...prior,{source:item.source,sourceUrl:item.sourceUrl}];await db.update(modelCandidates).set({providerId,evidence:{...duplicate.evidence,corroboratingSources},lastSeenAt:new Date(),updatedAt:new Date()}).where(eq(modelCandidates.id,duplicate.id));discovered++;continue;}
+      await db.insert(modelCandidates).values({source:item.source,modelRef:item.modelRef,displayName:item.displayName,providerName:item.providerName??null,providerId,lifecycle:"DISCOVERED" as const,freeType:item.freeType,verifiedFree:item.verifiedFree,contextWindow:item.contextWindow??null,maxOutputTokens:item.maxOutputTokens??null,supportsVision:item.supportsVision??null,supportsTools:item.supportsTools??null,supportsReasoning:item.supportsReasoning??null,sourceUrl:item.sourceUrl,evidence:item.evidence,lastSeenAt:new Date(),updatedAt:new Date()});
       discovered++;
     }
   }
+  if(touchedProviderIds.size)await db.update(providers).set({lastDiscoveryAt:new Date(),updatedAt:new Date()}).where(inArray(providers.id,[...touchedProviderIds]));
   const consolidation=await consolidateModelCandidates();
   const failed=sources.filter(s=>s.status==="failed").length;const summary={discovered,sources,consolidation};
   await db.update(syncRuns).set({status:activeSources.length&&failed===activeSources.length?"FAILED":"SUCCEEDED",summary,finishedAt:new Date(),updatedAt:new Date()}).where(eq(syncRuns.id,run.id));

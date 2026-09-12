@@ -7,11 +7,12 @@ import { auditEvents, laneAssignments, lanes, modelCandidates, providerCredentia
 import { HttpLiteLLMAdapter, LiteLLMError } from "@/server/litellm/client";
 import { syncLiteLLM } from "@/server/litellm/sync";
 import { resolveProvider } from "@/server/providers/catalog";
+import { buildExtraHeaders } from "@/server/providers/wiring";
 import { bareModelKey } from "@/server/discovery/model-key";
 import { bareCandidateModelRef, resolveCredentialSecret, resolveVerificationEndpoint, verifyCandidateDirectly } from "@/server/discovery/verify";
 import { classifyCandidateLanes } from "./rules";
 import { syncFallbackConfig } from "./fallbacks";
-import { getDeploymentsForProvider } from "./shared";
+import { getDeploymentsForProvider, laneHasCapacity } from "./shared";
 
 const MAX_ATTEMPTS = 3;
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -95,6 +96,7 @@ async function registerTarget(ctx: PromotionContext, modelName: string, lane: La
         model: providerModelId(ctx.bareModel),
         apiKey: ctx.apiKey,
         apiBase: ctx.apiBase,
+        extraHeaders: buildExtraHeaders(ctx.definition.slug, ctx.credential.config),
         metadata: {
           managed_by: CURATOR_MANAGED_BY, curator_version: CURATOR_VERSION, source_provider: ctx.definition.name,
           source_model: ctx.candidate.modelRef, source_candidate_id: ctx.candidate.id, free_type: ctx.candidate.freeType,
@@ -132,10 +134,17 @@ export async function promoteCandidate(candidateId: string, options: PromoteOpti
 
     const classified = classifyCandidateLanes(ctx.candidate);
     const explicit = options.lanes && options.lanes.length ? options.lanes : null;
-    const laneSlugs = (explicit ?? classified.filter(match => match.recommended).map(match => match.slug))
+    const deduped = (explicit ?? classified.filter(match => match.recommended).map(match => match.slug))
       .filter((slug, index, all) => all.indexOf(slug) === index);
+    // Each lane's maxDeployments is a real cap, not just UI copy: an explicit (manual or reconcile-repair) selection
+    // is trusted as-is, but auto-selected "recommended" lanes are checked here so an unattended pass (auto-add,
+    // scheduled re-verification) can never silently overfill a lane past what the manual picker itself refuses.
+    const laneSlugs = explicit ? deduped : (await Promise.all(deduped.map(async slug => (await laneHasCapacity(slug)) ? slug : null))).filter((slug): slug is LaneId => slug !== null);
     const directAlias = options.directAlias ?? false;
-    if (!laneSlugs.length && !directAlias) throw new PromotionBlocked("No lane matched this model — pick one explicitly or enable the direct alias");
+    if (!laneSlugs.length && !directAlias) {
+      if (!explicit && deduped.length) throw new PromotionBlocked("All recommended lanes are at capacity");
+      throw new PromotionBlocked("No lane matched this model — pick one explicitly or enable the direct alias");
+    }
 
     const plan: { modelName: string; lane: LaneId | null }[] = [
       ...laneSlugs.map(slug => ({ modelName: slug as string, lane: slug })),

@@ -10,7 +10,17 @@ export const providerStatus = pgEnum("provider_status", ["ACTIVE", "DEGRADED", "
 export const adapterCapability = pgEnum("adapter_capability", ["AUTOMATED", "PARTIAL", "MANUAL", "DISABLED"]);
 export const modelLifecycle = pgEnum("model_lifecycle", ["DISCOVERED", "CANDIDATE", "ACTIVE", "DEGRADED", "QUARANTINED", "RETIRED", "REMOVED"]);
 export const deploymentHealth = pgEnum("deployment_health", ["HEALTHY", "DEGRADED", "RATE_LIMITED", "UNAVAILABLE", "AUTH_ERROR", "UNKNOWN"]);
-export const freeType = pgEnum("free_type", ["PERMANENT_FREE", "RECURRING_DAILY", "RECURRING_MONTHLY", "FREE_TIER", "TRIAL_CREDIT", "PROMOTIONAL", "UNKNOWN", "PAID"]);
+// Was tracked only as a `rawMetadata.lifecycle` string (ACTIVE/DEACTIVATED/REMOVED/AUTO_REMOVED) — untyped, so no
+// query could filter or select on it. Promoted to a real column so the Discovered Models page can show a deployment
+// that was deactivated or deleted straight in LiteLLM instead of leaving a stale "Added to LiteLLM" badge. AUTO_REMOVED
+// folds into REMOVED here (same user-facing state); the distinguishing reason still lives in rawMetadata.removedReason.
+export const deploymentLifecycle = pgEnum("deployment_lifecycle", ["ACTIVE", "DEACTIVATED", "REMOVED"]);
+// RECURRING_CREDIT/TRIAL_QUOTA/OPEN_WEIGHT_SELF_HOSTED/PROVIDER_SPECIFIC_FREE added 2026-09-11 per docs/models_source.md's
+// free_type taxonomy — a recurring dollar credit (Vercel), a token quota that expires (Alibaba's 90-day per-model
+// grant), a self-hosted open-weight model (no provider "free" claim applies at all), and a named-model-specific
+// free list (Z.AI's GLM-Flash line) each need their own bucket; folding them into TRIAL_CREDIT/FREE_TIER/PERMANENT_FREE
+// was actively misleading.
+export const freeType = pgEnum("free_type", ["PERMANENT_FREE", "RECURRING_DAILY", "RECURRING_MONTHLY", "RECURRING_CREDIT", "FREE_TIER", "TRIAL_CREDIT", "TRIAL_QUOTA", "PROMOTIONAL", "OPEN_WEIGHT_SELF_HOSTED", "PROVIDER_SPECIFIC_FREE", "UNKNOWN", "PAID"]);
 export const confidence = pgEnum("confidence", ["UNKNOWN", "LOW", "MEDIUM", "HIGH"]);
 export const limitSource = pgEnum("limit_source", ["DOCUMENTED", "OBSERVED", "ESTIMATED", "MANUAL", "UNKNOWN"]);
 export const runStatus = pgEnum("run_status", ["PENDING", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED", "ROLLED_BACK"]);
@@ -37,6 +47,9 @@ export const providerCredentialReferences = pgTable("provider_credential_referen
   environmentVariable: text("environment_variable").notNull(),
   encryptedValue: text("encrypted_value"),
   valueHint: text("value_hint"),
+  /** Non-secret, provider-specific extra fields a bearer key alone can't express (e.g. Alibaba Model Studio's
+   *  optional workspace ID) — see EXTRA_CREDENTIAL_FIELDS in providers/wiring.ts for which providers use which keys. */
+  config: jsonb("config").$type<Record<string, string>>().notNull().default({}),
   lastValidatedAt: timestamp("last_validated_at", { withTimezone: true }),
   valid: boolean("valid"),
   disabled: boolean("disabled").notNull().default(false),
@@ -61,6 +74,10 @@ export const modelCandidates = pgTable("model_candidates", {
   modelRef: text("model_ref").notNull(),
   displayName: text("display_name").notNull(),
   providerName: text("provider_name"),
+  /** Resolved once at write time (discovery/consolidation), via the same catalog matching `providerName` used to
+   *  fall back on — reads trust this column directly instead of re-guessing the match on every query. Null means
+   *  genuinely unresolved (no known provider matches), not "not yet looked up". */
+  providerId: uuid("provider_id").references(() => providers.id, { onDelete: "set null" }),
   lifecycle: modelLifecycle("lifecycle").notNull().default("DISCOVERED"),
   freeType: freeType("free_type").notNull().default("UNKNOWN"),
   verifiedFree: boolean("verified_free").notNull().default(false),
@@ -74,7 +91,7 @@ export const modelCandidates = pgTable("model_candidates", {
   firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
   lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
   ...timestamps,
-}, (table) => [uniqueIndex("candidate_source_model_uidx").on(table.source, table.modelRef),index("candidate_lifecycle_idx").on(table.lifecycle),index("candidate_free_idx").on(table.freeType,table.verifiedFree)]);
+}, (table) => [uniqueIndex("candidate_source_model_uidx").on(table.source, table.modelRef),index("candidate_lifecycle_idx").on(table.lifecycle),index("candidate_free_idx").on(table.freeType,table.verifiedFree),index("candidate_provider_idx").on(table.providerId)]);
 
 export const candidateChecks = pgTable("candidate_checks", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -94,6 +111,7 @@ export const modelDeployments = pgTable("model_deployments", {
   managedBy: text("managed_by"),
   curatorVersion: text("curator_version"),
   health: deploymentHealth("health").notNull().default("UNKNOWN"),
+  lifecycle: deploymentLifecycle("lifecycle").notNull().default("ACTIVE"),
   freeType: freeType("free_type").notNull().default("UNKNOWN"),
   score: doublePrecision("score"),
   apiBase: text("api_base"),

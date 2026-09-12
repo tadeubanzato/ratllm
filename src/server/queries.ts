@@ -5,10 +5,13 @@ import { candidateChecks, canonicalModels, laneAssignments, lanes, modelCandidat
 import { providerSlug, resolveProvider } from "./providers/catalog";
 import { matchDeployment, matchDeployments } from "./discovery/model-key";
 import { resolveVerificationEndpoint } from "./discovery/verify";
+import { providerWiring, CUSTOM_ADAPTER_PROVIDERS } from "./providers/wiring";
+import { sourceRegistry } from "./discovery/registry";
 import { laneStatus, type LaneStatus } from "./status";
 
-export interface ProviderRow { id: string; slug: string; name: string; status: string; adapterCapability: string; modelCount: number; healthyCount: number; credentialConfigured: boolean; credentialVerified?: boolean; enabled?: boolean; credentialState?: string; lastDiscoveryAt: Date | null }
-export interface DeploymentRow { id: string; slug: string; modelName: string; providerModelId: string; litellmModelName: string; litellmDeploymentId: string | null; providerName: string; managed: boolean; health: string; score: number | null; freeType: string; contextWindow: number | null; rpmLimit: number | null; tpmLimit: number | null; safeRpm: number | null; safeTpm: number | null; confidence: string; lastTestedAt: Date | null; benchmarkRunCount: number; lastBenchmarkStatus: string | null; apiBase?: string | null; backend?: string | null; host?: string | null; rateLimitProfileId: string | null; observedRpm: number | null; observedTpm: number | null; manualRpm: number | null; manualTpm: number | null; lastProbeAt: Date | null }
+export interface ProviderRow { id: string; slug: string; name: string; status: string; adapterCapability: string; modelCount: number; healthyCount: number; knownCount: number; verifiedCount: number; credentialConfigured: boolean; credentialVerified?: boolean; enabled?: boolean; credentialState?: string; lastDiscoveryAt: Date | null }
+export interface ProviderSourceBreakdown { source: string; tier: string; count: number }
+export interface DeploymentRow { id: string; slug: string; modelName: string; providerModelId: string; litellmModelName: string; litellmDeploymentId: string | null; providerName: string; managed: boolean; health: string; score: number | null; freeType: string; contextWindow: number | null; rpmLimit: number | null; tpmLimit: number | null; safeRpm: number | null; safeTpm: number | null; confidence: string; lastTestedAt: Date | null; benchmarkRunCount: number; lastBenchmarkStatus: string | null; apiBase?: string | null; backend?: string | null; host?: string | null; rateLimitProfileId: string | null; observedRpm: number | null; observedTpm: number | null; manualRpm: number | null; manualTpm: number | null; lastProbeAt: Date | null; avgLatencyMs: number | null; avgFirstTokenMs: number | null; latencySampleCount: number }
 export interface LaneSummary { id: string; slug: string; name: string; enabled: boolean; healthy: number; total: number; minimumHealthy: number; status: LaneStatus; confidence: string }
 export interface RunRow { id: string; type: string; status: string; createdAt: Date; durationMs: number | null; summary: Record<string, unknown> }
 export interface DashboardData {
@@ -25,8 +28,13 @@ export async function getProviders(): Promise<ProviderRow[]> {
     id: providers.id, slug: providers.slug, name: providers.name, status: providers.status, adapterCapability: providers.adapterCapability,
     enabled: providers.enabled, modelCount: sql<number>`count(distinct ${modelDeployments.id})::int`,
     healthyCount: sql<number>`count(distinct ${modelDeployments.id}) filter (where ${modelDeployments.health} = 'HEALTHY')`,
+    // "Known" and "verified" cover the discovery pipeline upstream of promotion — a provider can have real, discovered
+    // leads sitting here well before (or instead of) anything reaching modelDeployments, which is what previously
+    // made "0 models" indistinguishable between "nothing known" and "known but never promoted".
+    knownCount: sql<number>`count(distinct ${modelCandidates.id})::int`,
+    verifiedCount: sql<number>`count(distinct ${modelCandidates.id}) filter (where ${modelCandidates.verifiedFree} = true)::int`,
     credentialConfigured: sql<boolean>`count(${providerCredentialReferences.id}) filter (where ${providerCredentialReferences.disabled} = false) > 0`,credentialVerified:sql<boolean>`coalesce(bool_or(${providerCredentialReferences.valid}) filter (where ${providerCredentialReferences.disabled} = false),false)`, lastDiscoveryAt: providers.lastDiscoveryAt,
-  }).from(providers).leftJoin(modelDeployments, eq(providers.id, modelDeployments.providerId)).leftJoin(providerCredentialReferences, eq(providers.id, providerCredentialReferences.providerId)).groupBy(providers.id).orderBy(providers.name);
+  }).from(providers).leftJoin(modelDeployments, eq(providers.id, modelDeployments.providerId)).leftJoin(providerCredentialReferences, eq(providers.id, providerCredentialReferences.providerId)).leftJoin(modelCandidates, eq(providers.id, modelCandidates.providerId)).groupBy(providers.id).orderBy(providers.name);
   const refs = await db.select().from(providerCredentialReferences);
   return rows.map(row => {
     const available = refs.filter(ref => ref.providerId === row.id && !ref.disabled && (ref.encryptedValue || process.env[ref.environmentVariable]));
@@ -34,13 +42,36 @@ export async function getProviders(): Promise<ProviderRow[]> {
   });
 }
 
+const tierRank: Record<string, number> = {A1: 0, A2: 1, B: 2, C: 3};
+
+/** Per-provider breakdown of which discovery sources (and their trust tier) contributed its known candidates —
+ *  the provenance the Providers page surfaces so "0 live" is legible as "nothing known" vs. "known, stuck upstream". */
+export async function getProviderSourceBreakdown(): Promise<Map<string, ProviderSourceBreakdown[]>> {
+  const rows = await getDb().select({providerId: modelCandidates.providerId, source: modelCandidates.source, count: sql<number>`count(*)::int`})
+    .from(modelCandidates).where(isNotNull(modelCandidates.providerId)).groupBy(modelCandidates.providerId, modelCandidates.source);
+  const map = new Map<string, ProviderSourceBreakdown[]>();
+  for (const row of rows) {
+    if (!row.providerId) continue;
+    const list = map.get(row.providerId) ?? [];
+    const source = sourceRegistry.find(item => item.id === row.source);
+    list.push({source: source?.name ?? row.source, tier: source?.tier ?? "C", count: row.count});
+    map.set(row.providerId, list);
+  }
+  for (const list of map.values()) list.sort((a, b) => (tierRank[a.tier] ?? 4) - (tierRank[b.tier] ?? 4) || b.count - a.count);
+  return map;
+}
+
 export async function getProvider(id: string) {
   const db=getDb(); const provider=(await db.select().from(providers).where(eq(providers.id,id)).limit(1))[0];
   if(!provider)return null;
-  const credentials=await db.select({environmentVariable:providerCredentialReferences.environmentVariable,valueHint:providerCredentialReferences.valueHint,valid:providerCredentialReferences.valid,lastValidatedAt:providerCredentialReferences.lastValidatedAt}).from(providerCredentialReferences).where(eq(providerCredentialReferences.providerId,id));
+  const credentials=await db.select({environmentVariable:providerCredentialReferences.environmentVariable,valueHint:providerCredentialReferences.valueHint,valid:providerCredentialReferences.valid,lastValidatedAt:providerCredentialReferences.lastValidatedAt,config:providerCredentialReferences.config}).from(providerCredentialReferences).where(eq(providerCredentialReferences.providerId,id));
   const deployments=await getDeployments();
   return {provider,credentials,deployments:deployments.filter(item=>item.providerName===provider.name)};
 }
+
+// How many recent PASSED checks the LiteLLM page's response-time columns average over — enough to smooth out one
+// slow/fast outlier without the number going stale for minutes given the health monitor's ~10-minute cadence.
+const LATENCY_SAMPLE_SIZE = 10;
 
 export async function getDeployments(): Promise<DeploymentRow[]> {
   const rows = await getDb().select({
@@ -53,6 +84,12 @@ export async function getDeployments(): Promise<DeploymentRow[]> {
     manualRpm: rateLimitProfiles.manualRpm, manualTpm: rateLimitProfiles.manualTpm, lastProbeAt: rateLimitProfiles.lastProbeAt,
     benchmarkRunCount: sql<number>`(select count(*)::int from smoke_tests where smoke_tests.deployment_id = ${modelDeployments.id})`,
     lastBenchmarkStatus: sql<string | null>`(select status::text from smoke_tests where smoke_tests.deployment_id = ${modelDeployments.id} order by created_at desc limit 1)`,
+    // Averaged over the last LATENCY_SAMPLE_SIZE PASSED checks only — a failed check's latency (a fast 401, a
+    // 30s timeout) says nothing about how fast the model actually responds, and first_token_ms is never even
+    // recorded for one (see HttpLiteLLMAdapter.smokeTest).
+    avgLatencyMs: sql<number | null>`(select round(avg(recent.latency_ms))::int from (select latency_ms from smoke_tests where smoke_tests.deployment_id = ${modelDeployments.id} and status = 'PASSED' order by created_at desc limit ${LATENCY_SAMPLE_SIZE}) recent)`,
+    avgFirstTokenMs: sql<number | null>`(select round(avg(recent.first_token_ms))::int from (select first_token_ms from smoke_tests where smoke_tests.deployment_id = ${modelDeployments.id} and status = 'PASSED' order by created_at desc limit ${LATENCY_SAMPLE_SIZE}) recent)`,
+    latencySampleCount: sql<number>`(select count(*)::int from (select 1 from smoke_tests where smoke_tests.deployment_id = ${modelDeployments.id} and status = 'PASSED' order by created_at desc limit ${LATENCY_SAMPLE_SIZE}) recent)`,
     apiBase:modelDeployments.apiBase,rawMetadata:modelDeployments.rawMetadata,
   }).from(modelDeployments).innerJoin(canonicalModels, eq(modelDeployments.canonicalModelId, canonicalModels.id)).innerJoin(providers, eq(modelDeployments.providerId, providers.id)).leftJoin(rateLimitProfiles, eq(modelDeployments.id, rateLimitProfiles.deploymentId)).orderBy(desc(modelDeployments.managed), providers.name, canonicalModels.name);
   return rows.map(({rawMetadata,...row}) => {const info=rawMetadata&&typeof rawMetadata.model_info==="object"?rawMetadata.model_info as Record<string,unknown>:{};return {...row,confidence:row.confidence??"UNKNOWN",backend:typeof info.backend==="string"?info.backend:null,host:typeof info.host==="string"?info.host:null};});
@@ -63,27 +100,89 @@ export async function getDeployment(id: string) {
   return rows.find(row => row.id === id) ?? null;
 }
 
+export interface SourceYield { source: string; discovered: number; verifiedFree: number; promoted: number; providers: string[] }
+
+/** Per-source track record — how many candidates it ever surfaced, how many turned out verified-free, how many
+ *  reached a live LiteLLM deployment, and which providers it actually touched. Turns each discovery source's tier
+ *  (an editorial trust claim) into a measured outcome, and lets the Providers page show provenance back to here. */
+export async function getSourceYield(): Promise<Map<string, SourceYield>> {
+  const db=getDb();
+  const [rows,providerRows,deploymentRows]=await Promise.all([
+    db.select({source:modelCandidates.source,providerId:modelCandidates.providerId,providerName:modelCandidates.providerName,modelRef:modelCandidates.modelRef,verifiedFree:modelCandidates.verifiedFree}).from(modelCandidates),
+    db.select({id:providers.id,name:providers.name}).from(providers),
+    db.select({id:modelDeployments.id,providerId:modelDeployments.providerId,providerModelId:modelDeployments.providerModelId,health:modelDeployments.health,managed:modelDeployments.managed,litellmModelName:modelDeployments.litellmModelName,lifecycle:modelDeployments.lifecycle}).from(modelDeployments),
+  ]);
+  const providerNameById=new Map(providerRows.map(p=>[p.id,p.name]));
+  const working=new Map<string,SourceYield&{providerSet:Set<string>}>();
+  for(const row of rows){
+    const entry=working.get(row.source)??{source:row.source,discovered:0,verifiedFree:0,promoted:0,providers:[],providerSet:new Set<string>()};
+    entry.discovered++;
+    if(row.verifiedFree)entry.verifiedFree++;
+    // A deployment that's since been deactivated/removed in LiteLLM isn't a durable "promoted" outcome any more —
+    // counting it would make this measured track record just as stale as the editorial tier claims it replaced.
+    if(row.providerId&&matchDeployments(deploymentRows,row.providerId,row.modelRef).some(item=>item.lifecycle==="ACTIVE"))entry.promoted++;
+    const name=row.providerId?providerNameById.get(row.providerId):row.providerName??undefined;
+    if(name)entry.providerSet.add(name);
+    working.set(row.source,entry);
+  }
+  const result=new Map<string,SourceYield>();
+  for(const[key,value]of working)result.set(key,{source:value.source,discovered:value.discovered,verifiedFree:value.verifiedFree,promoted:value.promoted,providers:[...value.providerSet].sort()});
+  return result;
+}
+
+export interface SourceHistoryPoint { at: string; status: "succeeded" | "failed"; detail: string }
+
+/** Per-source outcome across recent MODEL_DISCOVERY runs, mined from each run's own summary.sources array — the
+ *  only place a built-in source's pass/fail is recorded run-over-run (model_sources itself only ever keeps the
+ *  latest status). Without this, the Free Model Sources "History" strip had at most one real point to show, ever,
+ *  no matter how many times discovery had actually run — everything else was grey "not run yet" padding. */
+export async function getSourceRunHistory(limit = 30): Promise<Map<string, SourceHistoryPoint[]>> {
+  const runs = await getDb().select({ summary: syncRuns.summary, createdAt: syncRuns.createdAt }).from(syncRuns)
+    .where(eq(syncRuns.type, "MODEL_DISCOVERY")).orderBy(desc(syncRuns.createdAt)).limit(limit);
+  const bySource = new Map<string, SourceHistoryPoint[]>();
+  for (const run of runs) {
+    const sources = Array.isArray(run.summary.sources) ? run.summary.sources as Array<Record<string, unknown>> : [];
+    for (const entry of sources) {
+      if (typeof entry.source !== "string") continue;
+      const status: SourceHistoryPoint["status"] = entry.status === "succeeded" ? "succeeded" : "failed";
+      const detail = typeof entry.count === "number" ? `${entry.count} found` : typeof entry.error === "string" ? entry.error : "";
+      const list = bySource.get(entry.source) ?? [];
+      list.push({ at: run.createdAt.toISOString(), status, detail });
+      bySource.set(entry.source, list);
+    }
+  }
+  return bySource;
+}
+
 export async function getModelCandidates(){
   const db=getDb();const [rows,providerRows,credentialRows,deploymentRows,laneRows]=await Promise.all([
     db.select().from(modelCandidates).orderBy(desc(modelCandidates.verifiedFree),modelCandidates.source,modelCandidates.displayName),
     db.select({id:providers.id,slug:providers.slug,name:providers.name,baseUrl:providers.baseUrl}).from(providers),
     db.select({providerId:providerCredentialReferences.providerId,valid:providerCredentialReferences.valid}).from(providerCredentialReferences),
-    db.select({id:modelDeployments.id,providerId:modelDeployments.providerId,providerModelId:modelDeployments.providerModelId,health:modelDeployments.health,managed:modelDeployments.managed,litellmModelName:modelDeployments.litellmModelName}).from(modelDeployments),
+    db.select({id:modelDeployments.id,providerId:modelDeployments.providerId,providerModelId:modelDeployments.providerModelId,health:modelDeployments.health,managed:modelDeployments.managed,litellmModelName:modelDeployments.litellmModelName,lifecycle:modelDeployments.lifecycle}).from(modelDeployments),
     db.select({deploymentId:laneAssignments.deploymentId,slug:lanes.slug,excluded:laneAssignments.excluded}).from(laneAssignments).innerJoin(lanes,eq(laneAssignments.laneId,lanes.id)),
   ]);
   return rows.map(row=>{
-    const slug=row.source==="openrouter"?"openrouter":providerSlug(row.providerName,row.modelRef);
-    const provider=providerRows.find(item=>item.slug===slug||item.name.toLowerCase()===String(row.providerName??"").toLowerCase());
+    // providerId is resolved and stored at write time (runDiscovery/consolidateModelCandidates); only fall back to
+    // re-guessing from text here for rows a backfill pass hasn't reached yet (self-heals on the next discovery run).
+    const provider=row.providerId
+      ? providerRows.find(item=>item.id===row.providerId)
+      : (() => {const slug=row.source==="openrouter"?"openrouter":providerSlug(row.providerName,row.modelRef);return providerRows.find(item=>item.slug===slug||item.name.toLowerCase()===String(row.providerName??"").toLowerCase());})();
     const credentials=provider?credentialRows.filter(item=>item.providerId===provider.id):[];
     const credentialVerified=credentials.some(item=>item.valid===true);
+    // Some providers (llm7, Pollinations, Kilo) are confirmed reachable with zero credential — a missing/unverified
+    // key there isn't a real blocker, so promotion shouldn't gate on it the way it does for everyone else.
+    const wiring=provider?providerWiring[provider.slug]:undefined;
+    const credentialRequired=Boolean(wiring?.check)&&!wiring?.credentialOptional;
     const deployments=provider?matchDeployments(deploymentRows,provider.id,row.modelRef):[];
     const deployment=provider?matchDeployment(deploymentRows,provider.id,row.modelRef):null;
     const deploymentIds=new Set(deployments.map(item=>item.id));
     const laneMemberships=laneRows.filter(lane=>!lane.excluded&&deploymentIds.has(lane.deploymentId)).map(lane=>({slug:lane.slug,health:deployments.find(item=>item.id===lane.deploymentId)?.health??"UNKNOWN"}));
     const definition=resolveProvider(row.source==="openrouter"?"openrouter":row.providerName,row.modelRef);
     const endpoint=definition?resolveVerificationEndpoint(definition,provider?.baseUrl??null):null;
-    const promotableReason=!provider?"Provider not resolved":!credentialVerified?"Credential not verified":!endpoint?"No known endpoint for this provider":null;
-    return {...row,providerId:provider?.id??null,credentialConfigured:credentials.length>0,credentialVerified,liteLLMDeploymentId:deployment?.id??null,liteLLMHealth:deployment?.health??null,liteLLMManaged:deployment?.managed??null,laneMemberships,promotable:promotableReason===null,promotableReason};
+    const promotableReason=!provider?"Provider not resolved"
+      :CUSTOM_ADAPTER_PROVIDERS[provider.slug]??(credentialRequired&&!credentialVerified?"Credential not verified":!endpoint?"No known endpoint for this provider":null);
+    return {...row,providerId:provider?.id??null,credentialConfigured:credentials.length>0,credentialVerified,credentialRequired,liteLLMDeploymentId:deployment?.id??null,liteLLMHealth:deployment?.health??null,liteLLMManaged:deployment?.managed??null,liteLLMLifecycle:deployment?.lifecycle??null,laneMemberships,promotable:promotableReason===null,promotableReason};
   });
 }
 

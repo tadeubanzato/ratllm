@@ -27,11 +27,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const adapter = new HttpLiteLLMAdapter();
     if (parsed.data.action === "delete") {
       await adapter.removeDeployment(deployment.litellmDeploymentId);
-      await db.update(modelDeployments).set({ litellmDeploymentId: null, health: "UNAVAILABLE", rawMetadata: { ...deployment.rawMetadata, lifecycle: "REMOVED", removedAt: new Date().toISOString() }, updatedAt: new Date() }).where(eq(modelDeployments.id, id));
+      await db.update(modelDeployments).set({ litellmDeploymentId: null, health: "UNAVAILABLE", lifecycle: "REMOVED", rawMetadata: { ...deployment.rawMetadata, removedAt: new Date().toISOString() }, updatedAt: new Date() }).where(eq(modelDeployments.id, id));
     } else {
       const blocked = parsed.data.action === "deactivate";
       await adapter.setDeploymentBlocked(deployment.litellmDeploymentId, blocked);
-      await db.update(modelDeployments).set({ health: blocked ? "UNAVAILABLE" : "UNKNOWN", rawMetadata: { ...deployment.rawMetadata, lifecycle: blocked ? "DEACTIVATED" : "ACTIVE", blocked }, updatedAt: new Date() }).where(eq(modelDeployments.id, id));
+      await db.update(modelDeployments).set({ health: blocked ? "UNAVAILABLE" : "UNKNOWN", lifecycle: blocked ? "DEACTIVATED" : "ACTIVE", rawMetadata: { ...deployment.rawMetadata, blocked }, updatedAt: new Date() }).where(eq(modelDeployments.id, id));
     }
     await db.insert(auditEvents).values({ actor: "admin", action: `litellm.deployment.${parsed.data.action}`, entityType: "model_deployment", entityId: id, before, after: { alias: deployment.litellmModelName }, correlationId: correlation });
     return NextResponse.json({ ok: true, action: parsed.data.action, correlationId: correlation });

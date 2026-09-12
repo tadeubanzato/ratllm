@@ -9,10 +9,11 @@ import { StatusPill } from "@/components/status-pill";
 import { Modal } from "@/components/modal";
 import { cronToSchedule, scheduleToCron, scheduleUnits, type ScheduleUnit } from "@/lib/schedule";
 import { sourceRegistry } from "@/server/discovery/registry";
+import { getIntegrationStatus, integrationStatusLabels, integrationStatusTone, CUSTOM_ADAPTER_PROVIDERS } from "@/server/providers/wiring";
 
 const tabs = ["General", "LiteLLM", "Providers", "Automation", "Free Model Sources", "Safety"] as const;
 type Tab = (typeof tabs)[number];
-type Provider = {id: string; name: string; slug: string; enabled: boolean; credentialState: string; lastValidatedAt: string | null; environmentVariable: string; testSupported: boolean; portal: {url: string; label: string} | null};
+type Provider = {id: string; name: string; slug: string; enabled: boolean; credentialState: string; lastValidatedAt: string | null; environmentVariable: string; testSupported: boolean; portal: {url: string; label: string} | null; modelCount: number; config: Record<string, string>};
 type Job = {type: string; enabled: boolean; schedule: string; customSchedule: boolean; defaultSchedule: string | null; timezone: string; status: string; lastRunAt: string | null; nextRunAt: string | null; durationMs: number | null; failureCount: number; lastError: string | null};
 
 const jobTypeLabels: Record<string, string> = {
@@ -37,9 +38,14 @@ const jobTypeDescriptions: Record<string, string> = {
   LANE_RECONCILE: "Re-adds any smart-* lane member missing from LiteLLM and re-pushes the cross-lane fallback chains.",
   MAINTENANCE: "Cleans up expired leases and stale internal state.",
 };
-type Source = {id: string; name: string; type: string; providerId: string | null; url: string | null; enabled: boolean; priority: number; status: string; discoveredModelCount: number; lastSyncAt: string | null; adapterReference: string | null; credentialReference: string | null};
+type SourceYield = {source: string; discovered: number; verifiedFree: number; promoted: number; providers: string[]};
+type SourceHistoryPoint = {at: string; status: "succeeded" | "failed"; detail: string};
+type Source = {id: string; name: string; type: string; providerId: string | null; url: string | null; enabled: boolean; priority: number; status: string; discoveredModelCount: number; lastSyncAt: string | null; adapterReference: string | null; credentialReference: string | null; tier: "A1" | "A2" | "B" | "C" | null; yield: SourceYield | null; history: SourceHistoryPoint[]};
+const tierRank: Record<string, number> = {A1: 0, A2: 1, B: 2, C: 3};
+const tierTone: Record<string, string> = {A1: "good", A2: "info", B: "warn", C: "neutral"};
 
-const builtinSourceDescriptions: Record<string, string> = Object.fromEntries(sourceRegistry.map(source => [source.id, `${source.description} (Tier ${source.tier}${source.candidateOnly ? " · candidate-only" : ""})`]));
+const builtinSourceDescriptions: Record<string, string> = Object.fromEntries(sourceRegistry.map(source => [source.id, source.description]));
+const candidateOnlyByAdapterReference: Record<string, boolean> = Object.fromEntries(sourceRegistry.map(source => [source.id, Boolean(source.candidateOnly)]));
 type Lane = {slug: string; minimumHealthy: number};
 
 const stamp = (value: string | null | undefined) => value ? new Date(value).toLocaleString() : "—";
@@ -170,7 +176,11 @@ export function SettingsClient({environment, lanes, laneOverview, initialHistory
     finally { setBusy(false); }
   }
 
-  const sourceHistory = (source: Source) => source.lastSyncAt ? [{at: source.lastSyncAt, status: source.status, label: source.name, detail: `${source.discoveredModelCount} discovered models`}] : [];
+  // Real per-run history (mined from past MODEL_DISCOVERY runs) when there is any; a source with no adapterReference
+  // (a custom source, not fed by the Model Discovery job) or one that's never actually run yet falls back to a
+  // single point synthesized from its current status, same as before.
+  const sourceHistory = (source: Source) => source.history.length ? source.history
+    : source.lastSyncAt ? [{at: source.lastSyncAt, status: source.status, label: source.name, detail: `${source.discoveredModelCount} discovered models`}] : [];
 
   return <div className="settings-control-center">
     <nav className="settings-tabs" aria-label="Settings sections">{tabs.map(tab => <button type="button" key={tab} aria-current={active === tab ? "page" : undefined} className={active === tab ? "active" : ""} onClick={() => changeTab(tab)}>{tab}</button>)}</nav>
@@ -191,23 +201,28 @@ export function SettingsClient({environment, lanes, laneOverview, initialHistory
 
     {active === "LiteLLM" && <div className="settings-grid"><LiteLLMConnectionForm/><LiteLLMManagementForm/><LiteLLMLaneSetupPanel lanes={laneOverview}/></div>}
 
-    {active === "Providers" && <Card title="Provider credentials" aside={<button className="button primary" type="button" onClick={() => setAddProviderModal(true)}>Add provider</button>}><div className="settings-table-wrap"><table className="data-table settings-table"><thead><tr><th>Provider</th><th>Enabled</th><th>Credential</th><th>Last credential test</th><th>Actions</th></tr></thead><tbody>
-      {providers.map(provider => <tr key={provider.id}>
+    {active === "Providers" && <Card title="Provider credentials" aside={<button className="button primary" type="button" onClick={() => setAddProviderModal(true)}>Add provider</button>}><div className="settings-table-wrap"><table className="data-table settings-table"><thead><tr><th>Provider</th><th>Enabled</th><th>Credential</th><th>Integration</th><th>Last credential test</th><th>Actions</th></tr></thead><tbody>
+      {providers.map(provider => {
+        const integration = getIntegrationStatus(provider.slug, {configured: provider.credentialState !== "MISSING", verified: provider.credentialState === "CONFIGURED"}, provider.modelCount > 0);
+        const needsCustomAdapter = integration === "NEEDS_CUSTOM_ADAPTER";
+        return <tr key={provider.id}>
         <td><strong>{provider.name}</strong></td>
         <td><input type="checkbox" aria-label={`Enable ${provider.name}`} checked={provider.enabled} disabled={busy} onChange={event => void act(() => request("/api/settings/providers", {method: "PATCH", body: JSON.stringify({id: provider.id, enabled: event.target.checked})}))}/></td>
         <td><StatusPill value={provider.credentialState}/></td>
+        <td><span className={`status-pill status-${integrationStatusTone[integration]}`}>{integrationStatusLabels[integration]}</span>{needsCustomAdapter && <br/>}{needsCustomAdapter && <small className="settings-help">{CUSTOM_ADAPTER_PROVIDERS[provider.slug]}</small>}</td>
         <td>{stamp(provider.lastValidatedAt)}</td>
         <td><div className="settings-actions">
-          <button className="button" type="button" onClick={() => setEditing(editing === provider.id ? null : provider.id)}>Configure credential</button>
-          {provider.testSupported ? <button className="button" type="button" disabled={busy || !provider.enabled || provider.credentialState === "MISSING"} onClick={() => void act(async () => { await request(`/api/providers/${provider.id}/verify`, {method: "POST"}); })}>Test credential</button> : <span className="settings-help">API test unavailable</span>}
+          {needsCustomAdapter ? <span className="settings-help">Not yet supported for automated verification</span> : <button className="button" type="button" onClick={() => setEditing(editing === provider.id ? null : provider.id)}>Configure credential</button>}
+          {provider.testSupported ? <button className="button" type="button" disabled={busy || !provider.enabled || provider.credentialState === "MISSING"} onClick={() => void act(async () => { await request(`/api/providers/${provider.id}/verify`, {method: "POST"}); })}>Test credential</button> : !needsCustomAdapter && <span className="settings-help">API test unavailable</span>}
           {provider.enabled && <button className="button small" type="button" disabled={busy} onClick={() => setDeletingProvider(provider.id)}>Delete</button>}
         </div></td>
-      </tr>)}
+      </tr>;
+      })}
     </tbody></table></div>
     </Card>}
     <Modal open={editing !== null} title={`${providers.find(p => p.id === editing)?.name ?? ""} credential`} onClose={() => setEditing(null)}>
       {editing && providers.find(p => p.id === editing)?.portal && <p className="settings-help"><a href={providers.find(p => p.id === editing)!.portal!.url} target="_blank" rel="noopener noreferrer">{providers.find(p => p.id === editing)!.portal!.label} on {providers.find(p => p.id === editing)?.name} ↗</a></p>}
-      {editing && <CredentialForm providerId={editing} defaultEnv={providers.find(p => p.id === editing)!.environmentVariable}/>}
+      {editing && <CredentialForm providerId={editing} defaultEnv={providers.find(p => p.id === editing)!.environmentVariable} slug={providers.find(p => p.id === editing)!.slug} defaultConfig={providers.find(p => p.id === editing)!.config}/>}
     </Modal>
     <Modal open={deletingProvider !== null} title={`Delete ${providers.find(p => p.id === deletingProvider)?.name ?? ""}`} onClose={() => setDeletingProvider(null)}>
       <p className="settings-help">This deactivates the provider — it stops appearing as available for discovery and verification, but its credential, deployments, and history stay in the database. You can re-enable it any time from the Enabled column.</p>
@@ -265,14 +280,22 @@ export function SettingsClient({environment, lanes, laneOverview, initialHistory
     </Card>}
 
     {active === "Free Model Sources" && <Card title="Free model sources" aside={<button className="button primary" type="button" onClick={() => setSourceModal({mode: "add"})}>Add source</button>}>
-      <p className="settings-help">The built-in sources below are what the Model Discovery job actually scouts — disabling one here skips it on the next run. Custom sources you add are tested independently and do not yet feed discovery automatically.</p>
-      <div className="settings-table-wrap"><table className="data-table settings-table"><thead><tr><th>Source</th><th>Type</th><th>Enabled</th><th>Status</th><th>Last sync / models</th><th>History</th><th></th></tr></thead><tbody>
-        {sources.map(source => <tr key={source.id}>
-          <td><button type="button" className="settings-link-button" onClick={() => setSourceModal({mode: "edit", source})}>{source.name}</button>{source.adapterReference && <span className="settings-help" style={{marginLeft: 6}}>Built-in</span>}<br/><small>{source.adapterReference ? builtinSourceDescriptions[source.adapterReference] ?? source.url : source.url ?? "Manual source"}</small></td>
+      <p className="settings-help">The built-in sources below are what the Model Discovery job actually scouts — disabling one here skips it on the next run. Custom sources you add are tested independently and do not yet feed discovery automatically. Sorted by trust tier: A1 (official live API) down to C (community list) — a source&apos;s Yield column is its actual track record, not just its tier&apos;s editorial claim.</p>
+      <div className="settings-table-wrap"><table className="data-table settings-table"><thead><tr><th>Tier</th><th>Source</th><th>Type</th><th>Enabled</th><th>Status</th><th>Last sync</th><th>Yield</th><th>History</th><th></th></tr></thead><tbody>
+        {[...sources].sort((a, b) => (tierRank[a.tier ?? "C"] ?? 4) - (tierRank[b.tier ?? "C"] ?? 4)).map(source => <tr key={source.id}>
+          <td>{source.tier ? <span className={`status-pill status-${tierTone[source.tier]}`}>{source.tier}</span> : <span className="settings-help">custom</span>}</td>
+          <td><button type="button" className="settings-link-button" onClick={() => setSourceModal({mode: "edit", source})}>{source.name}</button>{source.adapterReference && <span className="settings-help" style={{marginLeft: 6}}>Built-in{candidateOnlyByAdapterReference[source.adapterReference] && " · candidate-only"}</span>}<br/><small>{source.adapterReference ? builtinSourceDescriptions[source.adapterReference] ?? source.url : source.url ?? "Manual source"}</small></td>
           <td>{source.type.replaceAll("_", " ")}</td>
           <td><input aria-label={`${source.name} enabled`} type="checkbox" checked={source.enabled} disabled={busy} onChange={event => void act(() => request("/api/settings/model-sources", {method: "POST", body: JSON.stringify({...source, enabled: event.target.checked})}))}/></td>
           <td><StatusPill value={source.status}/>{source.status==="DEGRADED"&&<><br/><small>0 models found</small></>}</td>
-          <td>{stamp(source.lastSyncAt)}<br/>{source.discoveredModelCount} models</td>
+          <td>{stamp(source.lastSyncAt)}</td>
+          <td>{source.yield ? <div>
+            <div className="mono" style={{fontSize:11,whiteSpace:"nowrap"}}>{source.yield.discovered} found <span style={{color:"var(--faint)"}}>→</span> {source.yield.verifiedFree} verified <span style={{color:"var(--faint)"}}>→</span> {source.yield.promoted} promoted</div>
+            {source.yield.providers.length>0 && <details style={{marginTop:3}}>
+              <summary style={{cursor:"pointer",fontSize:10,color:"var(--faint)"}}>{source.yield.providers.length} provider{source.yield.providers.length===1?"":"s"} touched</summary>
+              <p style={{margin:"4px 0 0",fontSize:10,color:"var(--faint)"}}>{source.yield.providers.join(", ")}</p>
+            </details>}
+          </div> : <span className="settings-help">no candidates yet</span>}</td>
           <td><StatusHistoryStrip label={`${source.name} sync history`} items={sourceHistory(source)}/></td>
           <td style={{textAlign: "right"}}>{!source.adapterReference && <button className="button small" type="button" disabled={busy} onClick={() => void act(() => request(`/api/settings/model-sources?id=${source.id}`, {method: "DELETE"}))}>Delete</button>}</td>
         </tr>)}

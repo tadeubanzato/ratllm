@@ -57,6 +57,34 @@
       "when": 1789088475000,
       "tag": "0007_automation_schedule_heal",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1789183177078,
+      "tag": "0008_secret_ben_grimm",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1789183185123,
+      "tag": "0009_spicy_patch",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1789185495904,
+      "tag": "0010_adorable_sentinel",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1789235910674,
+      "tag": "0011_add_deployment_lifecycle",
+      "breakpoints": true
     }
   ]
 }

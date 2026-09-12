@@ -61,7 +61,12 @@ export async function syncLiteLLM(options: { dryRun?: boolean } = {}, adapter = 
       const managedFlag = isManagedDeployment(item);
       if (managedFlag) managed += 1; else unmanaged += 1;
       const existing = (await db.select().from(modelDeployments).where(eq(modelDeployments.litellmDeploymentId, identity.deploymentId)).limit(1))[0];
-      const values = { canonicalModelId: model.id, providerId: provider.id, providerModelId: identity.providerModelId, litellmDeploymentId: identity.deploymentId, litellmModelName: item.model_name, managed: managedFlag, managedBy: managedFlag ? String(item.model_info.managed_by) : null, curatorVersion: managedFlag ? String(item.model_info.curator_version ?? CURATOR_VERSION) : null, apiBase: typeof item.litellm_params.api_base === "string" ? item.litellm_params.api_base : null, rawMetadata: sanitizedMetadata(item), lastSeenAt: new Date() };
+      // LiteLLM's /v1/model/info doesn't expose the `blocked` flag this app sets on deactivate, so a deactivated
+      // deployment still turning up here can't be told apart from a genuinely active one — preserve DEACTIVATED
+      // across a sync rather than silently clearing it. Anything else present in the router (including a row
+      // previously marked REMOVED that's reappeared) is treated as active again.
+      const lifecycle = existing?.lifecycle === "DEACTIVATED" ? "DEACTIVATED" as const : "ACTIVE" as const;
+      const values = { canonicalModelId: model.id, providerId: provider.id, providerModelId: identity.providerModelId, litellmDeploymentId: identity.deploymentId, litellmModelName: item.model_name, managed: managedFlag, managedBy: managedFlag ? String(item.model_info.managed_by) : null, curatorVersion: managedFlag ? String(item.model_info.curator_version ?? CURATOR_VERSION) : null, apiBase: typeof item.litellm_params.api_base === "string" ? item.litellm_params.api_base : null, rawMetadata: sanitizedMetadata(item), lastSeenAt: new Date(), lifecycle };
       let deploymentRowId: string;
       if (existing) { deploymentRowId = existing.id; await db.update(modelDeployments).set({ ...values, updatedAt: new Date() }).where(eq(modelDeployments.id, existing.id)); }
       else { const [inserted] = await db.insert(modelDeployments).values(values).returning({ id: modelDeployments.id }); deploymentRowId = inserted.id; await db.insert(rateLimitProfiles).values({ deploymentId: inserted.id }); }
@@ -77,7 +82,10 @@ export async function syncLiteLLM(options: { dryRun?: boolean } = {}, adapter = 
     const missingFromRouter = remoteDeploymentIds.length
       ? and(isNotNull(modelDeployments.litellmDeploymentId), notInArray(modelDeployments.litellmDeploymentId, remoteDeploymentIds))
       : isNotNull(modelDeployments.litellmDeploymentId);
-    await db.update(modelDeployments).set({ health: "UNAVAILABLE", updatedAt: new Date() }).where(missingFromRouter);
+    // A deployment no longer in the router's own inventory is gone regardless of how it got that way (deleted
+    // directly in LiteLLM, or auto-removed elsewhere) — mark it REMOVED so the Discovered Models page stops
+    // showing it as still added, even for a row this sync never otherwise touches.
+    await db.update(modelDeployments).set({ health: "UNAVAILABLE", lifecycle: "REMOVED", updatedAt: new Date() }).where(missingFromRouter);
     const summary = { deployments: remote.length, managed, unmanaged };
     await db.update(syncRuns).set({ status: "SUCCEEDED", summary, finishedAt: new Date(), updatedAt: new Date() }).where(eq(syncRuns.id, run.id));
     await db.insert(auditEvents).values({ actor: "system", action: "litellm.inventory.synced", entityType: "sync_run", entityId: run.id, after: summary, correlationId });

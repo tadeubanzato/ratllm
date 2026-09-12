@@ -60,11 +60,11 @@ export function LiteLLMManagementForm() {
     {!data ? <p role="status">{message || "Loading…"}</p> : <div style={{display: "grid", gap: 16, marginTop: 14}}>
       <label style={{display: "flex", gap: 10, alignItems: "flex-start"}}>
         <input type="checkbox" aria-label="Auto-add candidates to LiteLLM" checked={data.autoAdd} disabled={busy} onChange={event => void toggle("autoAdd", event.target.checked)}/>
-        <span style={{display: "grid", gap: 2}}><strong style={{fontSize: 12.5}}>Auto-add</strong><span className="settings-help">Adds a discovered candidate to its recommended lanes once it has passed 5 availability checks in a row.</span></span>
+        <span style={{display: "grid", gap: 2}}><strong style={{fontSize: 12.5}}>Auto-add</strong><span className="settings-help">Adds a discovered candidate to its recommended lanes once it has passed 5 availability checks in a row, skipping any lane already at its member cap.</span></span>
       </label>
       <label style={{display: "flex", gap: 10, alignItems: "flex-start"}}>
         <input type="checkbox" aria-label="Auto-remove failing deployments from LiteLLM" checked={data.autoRemove} disabled={busy} onChange={event => void toggle("autoRemove", event.target.checked)}/>
-        <span style={{display: "grid", gap: 2}}><strong style={{fontSize: 12.5}}>Auto-remove</strong><span className="settings-help">Removes a managed deployment from LiteLLM after 5 consecutive failed health checks (timeouts, 404/410/429, and other errors) and quarantines the model.</span></span>
+        <span style={{display: "grid", gap: 2}}><strong style={{fontSize: 12.5}}>Auto-remove</strong><span className="settings-help">Removes a managed deployment from LiteLLM after 5 consecutive failed health checks (timeouts, 404/410, and other errors — a 429 rate limit never counts against it) and quarantines the model.</span></span>
       </label>
       {message && <p className="settings-feedback is-error" role="alert">{message}</p>}
     </div>}
