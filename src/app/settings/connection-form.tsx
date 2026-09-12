@@ -55,7 +55,7 @@ export function LiteLLMManagementForm() {
     finally { setBusy(false); }
   }
 
-  return <section className="panel settings-card"><div className="panel-header"><h3>LiteLLM management</h3></div><div className="panel-body">
+  return <section className="panel settings-card"><div className="panel-header"><h3>LiteLLM auto pilot mode</h3></div><div className="panel-body">
     <p className="settings-help">Let ratllm keep LiteLLM&rsquo;s routing pool clean on its own, instead of adding or removing models by hand.</p>
     {!data ? <p role="status">{message || "Loading…"}</p> : <div style={{display: "grid", gap: 16, marginTop: 14}}>
       <label style={{display: "flex", gap: 10, alignItems: "flex-start"}}>
