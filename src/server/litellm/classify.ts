@@ -13,6 +13,13 @@ export function isManagedDeployment(item: LiteLLMDeployment) {
   return item.model_info.managed_by === CURATOR_MANAGED_BY;
 }
 
+/** True when the deployment has been blocked at the router (LiteLLM's PATCH /model/{id}/update {blocked:true} —
+ *  the same mechanism setDeploymentBlocked uses, so this recognizes a block regardless of whether ratllm or an
+ *  external tool applied it). A blocked deployment stays listed in /v1/model/info but is excluded from routing. */
+export function isBlockedDeployment(item: LiteLLMDeployment) {
+  return item.model_info.blocked === true;
+}
+
 export function sanitizedMetadata(item: LiteLLMDeployment): Record<string, unknown> {
   const forbidden = /key|secret|token|authorization|password/i;
   const clean = (value: unknown): unknown => {

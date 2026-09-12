@@ -43,4 +43,24 @@ describe("classifyCandidateLanes", () => {
       }
     }
   });
+
+  // A 2026-09-12 production incident: smart-general<->smart-coding and smart-deep<->smart-long each fell back to
+  // the other — a real routing loop that a same-graph "keeps fallback chains ... non-self-referential" check above
+  // does not catch, since neither pair is a *direct* self-reference. Detect any cycle of any length, not just A->A.
+  it("has no fallback cycle of any length in either chain kind", () => {
+    for (const kind of ["general", "context_window"] as const) {
+      const graph = LANE_FALLBACKS[kind];
+      for (const start of Object.keys(graph)) {
+        const seen = new Set<string>();
+        const stack = [...(graph[start as keyof typeof graph] ?? [])];
+        while (stack.length) {
+          const node = stack.pop()!;
+          expect(node, `${kind} fallback cycle: ${start} eventually falls back to itself via ${node}`).not.toBe(start);
+          if (seen.has(node)) continue;
+          seen.add(node);
+          stack.push(...(graph[node as keyof typeof graph] ?? []));
+        }
+      }
+    }
+  });
 });

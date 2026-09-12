@@ -92,16 +92,20 @@ export function classifyCandidateLanes(candidate: LaneCandidate): LaneMatch[] {
 
 export type FallbackKind = "general" | "context_window";
 
-/** Cross-lane fallback chains pushed to LiteLLM. A member of `smart-general` is therefore also the
- *  fallback pool for `smart-coding`, `smart-agent`, and (via `default_fallbacks`) everything else. */
+/** Cross-lane fallback chains pushed to LiteLLM. Deliberately acyclic — verified against a live 2026-09-12 routing
+ *  audit (external, direct against the gateway) after a real production incident: the previous topology here had
+ *  smart-general<->smart-coding and smart-deep<->smart-long each falling back to each other, a real fallback loop.
+ *  smart-deep intentionally has NO general fallback (falling back toward smart-agent/smart-general from the
+ *  "deepest" reasoning lane is exactly the loop that audit was written to eliminate) — smart-long is deep
+ *  reasoning's only escape hatch, and it goes further to smart-deep, never back. Changing this needs the same
+ *  live verification (smoke-test every affected lane, confirm no cycle) before it ships, not just a code review. */
 export const LANE_FALLBACKS: Record<FallbackKind, Partial<Record<LaneId, LaneId[]>>> = {
   general: {
-    "smart-general": ["smart-coding", "smart-deep"],
-    "smart-coding": ["smart-general", "smart-deep"],
-    "smart-agent": ["smart-general", "smart-deep"],
-    "smart-deep": ["smart-long", "smart-general"],
-    "smart-long": ["smart-deep", "smart-general"],
-    "smart-vision": ["smart-deep", "smart-general"],
+    "smart-agent": ["smart-deep"],
+    "smart-general": ["smart-agent"],
+    "smart-coding": ["smart-agent"],
+    "smart-vision": ["smart-agent"],
+    "smart-long": ["smart-deep"],
     "smart-summary": ["smart-general"],
   },
   context_window: {

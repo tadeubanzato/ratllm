@@ -28,7 +28,7 @@ describe("computeFailureStreak", () => {
 });
 
 describe("isAutoRemoveEligible", () => {
-  const managedLive = {managed: true, litellmDeploymentId: "dep-1"};
+  const managedLive = {managed: true, litellmDeploymentId: "dep-1", lifecycle: "ACTIVE"};
 
   it("allows a managed, live, cloud-provider deployment", () => {
     expect(isAutoRemoveEligible(managedLive, "groq")).toBe(true);
@@ -45,5 +45,10 @@ describe("isAutoRemoveEligible", () => {
 
   it("never allows a deployment that's already gone from LiteLLM", () => {
     expect(isAutoRemoveEligible({...managedLive, litellmDeploymentId: null}, "groq")).toBe(false);
+  });
+
+  it("never allows a deployment already blocked/deactivated or removed", () => {
+    expect(isAutoRemoveEligible({...managedLive, lifecycle: "DEACTIVATED"}, "groq")).toBe(false);
+    expect(isAutoRemoveEligible({...managedLive, lifecycle: "REMOVED"}, "groq")).toBe(false);
   });
 });

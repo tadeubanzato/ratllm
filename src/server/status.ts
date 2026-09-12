@@ -17,7 +17,9 @@ export function healthFromSmokeResult(ok: boolean, httpStatus: number, latencyMs
   if (ok) return "HEALTHY" as const;
   if (httpStatus === 401 || httpStatus === 403) return "AUTH_ERROR" as const;
   if (httpStatus === 429) return "RATE_LIMITED" as const;
-  if (httpStatus >= 500 || httpStatus === 0 || /timeout|connect|malformed/i.test(error ?? "")) return "UNAVAILABLE" as const;
+  // 404/410 (model retired/gone) are permanent, not a transient blip — the same distinction that already keeps
+  // this bucket separate from RATE_LIMITED and AUTH_ERROR, just for "this model doesn't exist any more" instead.
+  if (httpStatus >= 500 || httpStatus === 404 || httpStatus === 410 || httpStatus === 0 || /timeout|connect|malformed/i.test(error ?? "")) return "UNAVAILABLE" as const;
   if (latencyMs > 10_000) return "DEGRADED" as const;
   return "DEGRADED" as const;
 }

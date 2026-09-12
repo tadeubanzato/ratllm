@@ -15,6 +15,8 @@ describe("smoke-test health", () => {
     expect(healthFromSmokeResult(false, 429)).toBe("RATE_LIMITED");
     expect(healthFromSmokeResult(false, 401)).toBe("AUTH_ERROR");
     expect(healthFromSmokeResult(false, 503)).toBe("UNAVAILABLE");
+    expect(healthFromSmokeResult(false, 410)).toBe("UNAVAILABLE");
+    expect(healthFromSmokeResult(false, 404)).toBe("UNAVAILABLE");
     expect(healthFromSmokeResult(true, 200)).toBe("HEALTHY");
   });
 });
