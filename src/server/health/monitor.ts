@@ -8,16 +8,17 @@ import { recordLaneSnapshots } from "@/server/lanes/snapshots";
 import { recordConnection } from "@/server/settings/connections";
 import { getLiteLLMManagementSettings } from "@/server/settings/litellm-management";
 import { healthFromSmokeResult } from "@/server/status";
+import { AUTO_REMOVE_AFTER_FAILURES, computeFailureStreak } from "./failure-streak";
 import { randomUUID } from "node:crypto";
 
-const AUTO_REMOVE_AFTER_FAILURES = 5;
+// Looks back further than AUTO_REMOVE_AFTER_FAILURES so a run of rate-limited checks (skipped, never counted —
+// see computeFailureStreak) doesn't leave too few rows for 5 genuine failures to actually be found.
+const LOOKBACK_MULTIPLIER = 4;
 
 async function consecutiveFailureCount(deploymentId: string): Promise<number> {
-  const recent = await getDb().select({ status: smokeTests.status }).from(smokeTests)
-    .where(eq(smokeTests.deploymentId, deploymentId)).orderBy(desc(smokeTests.createdAt)).limit(AUTO_REMOVE_AFTER_FAILURES);
-  let streak = 0;
-  for (const row of recent) { if (row.status !== "FAILED") break; streak++; }
-  return streak;
+  const recent = await getDb().select({ status: smokeTests.status, errorCode: smokeTests.errorCode }).from(smokeTests)
+    .where(eq(smokeTests.deploymentId, deploymentId)).orderBy(desc(smokeTests.createdAt)).limit(AUTO_REMOVE_AFTER_FAILURES * LOOKBACK_MULTIPLIER);
+  return computeFailureStreak(recent);
 }
 
 /**
