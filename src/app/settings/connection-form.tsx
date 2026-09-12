@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { StatusPill } from "@/components/status-pill";
+import { MASKED_SECRET_PLACEHOLDER } from "@/lib/utils";
 export async function request(url: string, init?: RequestInit) {
   const response = await fetch(url, {...init, headers: {"content-type": "application/json", ...init?.headers}});
   const body = await response.json().catch(() => null);
@@ -31,7 +32,7 @@ export function LiteLLMConnectionForm() {
   return <section className="panel settings-card"><div className="panel-header"><h3>LiteLLM connection</h3>{data && <StatusPill value={data.status}/>}</div><div className="panel-body">
     {!data ? <p role="status">{message || "Loading connection settings…"}</p> : <form onSubmit={submit} className="settings-form">
       <label>Base URL<input className="input" name="baseUrl" type="url" required defaultValue={data.baseUrl} placeholder="http://litellm:4000"/></label>
-      <label>Master key<input className="input" name="secret" type="password" minLength={8} autoComplete="new-password" placeholder={data.configured ? "Configured · leave blank to keep" : "Enter credential"}/><small>Encrypted on the server. Stored credentials are never returned.</small></label>
+      <label>Master key<input className="input" name="secret" type="password" minLength={8} autoComplete="new-password" placeholder={data.configured ? MASKED_SECRET_PLACEHOLDER : "Enter credential"}/><small>Encrypted on the server. Stored credentials are never returned{data.configured ? " — leave this field blank to keep the current one" : ""}.</small></label>
       <div className="settings-actions"><button className="button primary" disabled={busy} type="submit" value="save">Save settings</button><button className="button" disabled={busy} type="submit" value="test">{busy ? "Working…" : "Test connection"}</button></div>
       <dl className="definition-list"><dt>Credential</dt><dd>{data.configured ? "Configured" : "Missing"}</dd><dt>Last successful connection</dt><dd>{data.lastSuccess ? new Date(data.lastSuccess).toLocaleString() : "No successful test recorded"}</dd><dt>Last test</dt><dd>{data.lastTestAt ? new Date(data.lastTestAt).toLocaleString() : "Not tested"}</dd><dt>Available deployments</dt><dd>{data.deploymentCount ?? "Not retrieved"}</dd></dl>
       {(message || data.error) && <p className={`settings-feedback ${failed || data.error ? "is-error" : ""}`} role={failed ? "alert" : "status"}>{message || data.error}</p>}
