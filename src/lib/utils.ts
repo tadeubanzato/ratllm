@@ -2,6 +2,12 @@ export function cn(...values: Array<string | false | null | undefined>) {
   return values.filter(Boolean).join(" ");
 }
 
+/** Placeholder for an already-configured secret field — reads as a masked value sitting there (like a password
+ *  manager) instead of an empty-looking box with a sentence explaining it isn't. Never the real secret or its
+ *  real length: the server never returns stored credentials at all, so this is a fixed-width stand-in, not a hint
+ *  about what's actually stored. */
+export const MASKED_SECRET_PLACEHOLDER = "•".repeat(16);
+
 export function timeAgo(value: Date | string | null | undefined) {
   if (!value) return "Never";
   const date = typeof value === "string" ? new Date(value) : value;
