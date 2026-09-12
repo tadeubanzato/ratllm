@@ -43,10 +43,15 @@ export async function setProviderEnabled(id: string, enabled: boolean) {
 
 /** Some catalog providers (Cloudflare Workers AI's account-scoped endpoint, a self-hosted gateway, etc.) need a
  *  base URL before their models can actually be called — this is the same field resolveVerificationEndpoint and
- *  the promotion flow already check first, before falling back to any hardcoded default for that provider slug. */
+ *  the promotion flow already check first, before falling back to any hardcoded default for that provider slug.
+ *  A credential "VERIFIED" against the old host stops meaning anything once the target host changes, so this
+ *  clears `valid` back to unverified the same way rotating the API key already does — otherwise the badge would
+ *  keep showing green against a host it was never actually tested against. */
 export async function setProviderBaseUrl(id: string, baseUrl: string | null) {
-  const [row] = await getDb().update(providers).set({baseUrl, updatedAt: new Date()}).where(eq(providers.id, id)).returning({id: providers.id, baseUrl: providers.baseUrl});
+  const db = getDb();
+  const [row] = await db.update(providers).set({baseUrl, updatedAt: new Date()}).where(eq(providers.id, id)).returning({id: providers.id, baseUrl: providers.baseUrl});
   if (!row) throw new ProviderNotFoundError("Provider not found");
+  await db.update(providerCredentialReferences).set({valid: null, lastValidatedAt: null, updatedAt: new Date()}).where(eq(providerCredentialReferences.providerId, id));
   return row;
 }
 
