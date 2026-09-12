@@ -24,7 +24,7 @@ async function bearerHeaders(config: SourceConfig): Promise<Record<string, strin
   if (!config.authEnv) return {};
   const envKey = process.env[config.authEnv];
   if (envKey) return {authorization: `Bearer ${envKey}`};
-  const provider = resolveProvider(config.id, "");
+  const provider = resolveProvider(config.providerHint ?? config.id, "");
   if (!provider) return {};
   const db = getDb();
   const providerRow = (await db.select({id: providers.id}).from(providers).where(eq(providers.slug, provider.slug)).limit(1))[0];
@@ -72,7 +72,10 @@ class LiteLLMCostMapSource implements DiscoverySource {
   }
 }
 
-/** Generic OpenAI-compatible /models listing (Cerebras, Gemini, DeepSeek, MiniMax, ...). Presence proves the model is live, never that it's free — every candidate needs separate free-plan verification. */
+/** Generic OpenAI-compatible /models listing (Cerebras, Gemini, DeepSeek, MiniMax, Vercel AI Gateway, Cohere,
+ *  Mistral, ...). Presence proves the model is live, never that it's free — every candidate needs separate
+ *  free-plan verification. `listKey`/`idField` accommodate a provider whose list shape diverges from the OpenAI
+ *  convention (Cohere returns `{models:[{name,...}]}`, not `{data:[{id,...}]}`). */
 class OpenAICompatibleModelsSource implements DiscoverySource {
   constructor(private config: SourceConfig) {}
   get id() { return this.config.id; }
@@ -80,14 +83,16 @@ class OpenAICompatibleModelsSource implements DiscoverySource {
     const headers = await bearerHeaders(this.config);
     if (this.config.authEnv && !this.config.authOptional && !headers.authorization) return [];
     const body = await getJson(this.config.url, headers) as Record<string, unknown>;
-    const data = Array.isArray(body.data) ? body.data : Array.isArray(body) ? body : [];
+    const listKey = this.config.listKey ?? "data";
+    const data = Array.isArray(body[listKey]) ? body[listKey] as unknown[] : Array.isArray(body) ? body : [];
     const out: DiscoveredCandidate[] = [];
     for (const entry of data) {
       if (!entry || typeof entry !== "object") continue;
       const model = entry as Record<string, unknown>;
-      const id = typeof model.id === "string" ? model.id : typeof model.name === "string" ? model.name : null;
+      const idField = this.config.idField;
+      const id = (idField && typeof model[idField] === "string" ? model[idField] as string : null) ?? (typeof model.id === "string" ? model.id : typeof model.name === "string" ? model.name : null);
       if (!id) continue;
-      out.push({source: this.id, modelRef: id, displayName: typeof model.name === "string" ? model.name : id, providerName: this.config.id, freeType: "UNKNOWN", verifiedFree: false, contextWindow: numberValue(model.context_length), sourceUrl: this.config.url, evidence: {presenceOnly: true, ownedBy: model.owned_by ?? null}});
+      out.push({source: this.id, modelRef: id, displayName: typeof model.name === "string" ? model.name : id, providerName: this.config.providerHint ?? this.config.id, freeType: this.config.defaultFreeType ?? "UNKNOWN", verifiedFree: false, contextWindow: numberValue(model.context_length), sourceUrl: this.config.url, evidence: {presenceOnly: true, ownedBy: model.owned_by ?? null}});
     }
     return out;
   }
@@ -122,7 +127,11 @@ class HuggingFaceProviderSource implements DiscoverySource {
 }
 
 /** Generalized HTML/Markdown text scraper for official tables (Groq, NVIDIA, Alibaba, Z.AI, Kilo) and curated/community lists. Every hit is a lead, never a confirmed fact — candidateOnly sources are explicitly excluded from auto-promotion elsewhere in the pipeline. */
-const MODEL_TOKEN_PATTERN = /(?:[a-z0-9._-]+\/(?:qwen|deepseek|glm|kimi|minimax|mimo|stepfun|hunyuan|doubao|ernie|longcat|baichuan|internlm|yi-|gpt-oss|llama|mistral|codestral|command|gemini|phi)[a-z0-9._:+-]*|(?:qwen|tongyi|deepseek|glm|zhipu|kimi|minimax|mimo|stepfun|hunyuan|doubao|ernie|longcat|baichuan|internlm|yi-|gpt-oss|llama|mistral|codestral|command|gemini|phi)[a-z0-9._:+-]*)/gi;
+// The leading `@cf\/vendor\/model` alternative is Cloudflare Workers AI's own id convention (developers.cloudflare.com/workers-ai/models/)
+// — it needs to win the match outright (full id, vendor included) rather than falling through to the generic
+// family-word alternative below, which would still partially match "vendor/llama-..." but silently drop the "@cf/" prefix
+// that's the only thing distinguishing it from any other provider's same model name.
+const MODEL_TOKEN_PATTERN = /(?:@cf\/[a-z0-9_-]+\/[a-z0-9._-]+|[a-z0-9._-]+\/(?:qwen|deepseek|glm|kimi|minimax|mimo|stepfun|hunyuan|doubao|ernie|longcat|baichuan|internlm|yi-|gpt-oss|llama|mistral|codestral|command|gemini|phi)[a-z0-9._:+-]*|(?:qwen|tongyi|deepseek|glm|zhipu|kimi|minimax|mimo|stepfun|hunyuan|doubao|ernie|longcat|baichuan|internlm|yi-|gpt-oss|llama|mistral|codestral|command|gemini|phi)[a-z0-9._:+-]*)/gi;
 const FREE_WORDS = ["free", "免费", "$0", "no credit card", "free tier", "free quota", "trial credit", "free endpoint", "free plan"];
 /** README convention for collapsible "paid pricing" tables — duplicates the free-tier model names next to their paid cost, which reads as free-signal noise if left in. */
 const DETAILS_BLOCK_PATTERN = /<details[^>]*>[\s\S]*?<\/details>/gi;
@@ -144,7 +153,12 @@ class TextCandidateSource implements DiscoverySource {
       if (result.status !== "fulfilled") continue;
       const {url, text} = result.value;
       const withoutPaidTables = text.replace(DETAILS_BLOCK_PATTERN, " ");
-      const visible = withoutPaidTables.includes("<") && withoutPaidTables.includes(">") ? withoutPaidTables.replace(/<[^>]+>/g, " ") : withoutPaidTables;
+      const stripped = withoutPaidTables.includes("<") && withoutPaidTables.includes(">") ? withoutPaidTables.replace(/<[^>]+>/g, " ") : withoutPaidTables;
+      // Some pages (Cloudflare's models catalog) only carry model ids inside data-* attributes of a client-side
+      // search widget, not in rendered text — tag-stripping would discard exactly what we're looking for. Opt-in
+      // per source (scanRawHtml) rather than a blanket change, since scanning raw markup for every other source
+      // risks matching class names/attributes that merely resemble a model id.
+      const visible = this.config.scanRawHtml ? withoutPaidTables : stripped;
       for (const [index, line] of visible.split("\n").entries()) {
         const focusHit = this.config.focusTerms ? this.config.focusTerms.some(term => line.toLowerCase().includes(term.toLowerCase())) : true;
         const freeHit = FREE_WORDS.some(word => line.toLowerCase().includes(word));
@@ -156,7 +170,7 @@ class TextCandidateSource implements DiscoverySource {
           const lo = Math.max(0, match.index! - 200); const hi = Math.min(visible.length, match.index! + token.length + 200);
           const evidence = visible.slice(lo, hi).replace(/\s+/g, " ").trim().slice(0, 500);
           const provider = resolveProvider(this.config.providerHint ?? null, token);
-          out.push({source: this.id, modelRef: token, displayName: token, providerName: provider?.name, freeType: "UNKNOWN", verifiedFree: false, sourceUrl: url, evidence: {line: index + 1, excerpt: evidence, freeLead: freeHit, providerResolution: provider ? {slug: provider.slug, method: "model-family"} : undefined}});
+          out.push({source: this.id, modelRef: token, displayName: token, providerName: provider?.name, freeType: this.config.defaultFreeType ?? "UNKNOWN", verifiedFree: false, sourceUrl: url, evidence: {line: index + 1, excerpt: evidence, freeLead: freeHit, providerResolution: provider ? {slug: provider.slug, method: "model-family"} : undefined}});
         }
       }
     }
@@ -186,6 +200,41 @@ class ProviderDatasetSource implements DiscoverySource {
   }
 }
 
+/** models.dev's combined catalog: an object keyed by provider slug, each holding a nested object of models keyed by
+ *  model id (never a flat list) — the one shape none of the other adapters can parse. No auth, no observed rate
+ *  limit. `cost.input === 0 && cost.output === 0` is the free signal; absent `cost` means unknown, not free. */
+class ModelsDevSource implements DiscoverySource {
+  constructor(private config: SourceConfig) {}
+  get id() { return this.config.id; }
+  async discover(): Promise<DiscoveredCandidate[]> {
+    const body = await getJson(this.config.url) as Record<string, unknown>;
+    const out: DiscoveredCandidate[] = [];
+    for (const providerEntry of Object.values(body)) {
+      if (!providerEntry || typeof providerEntry !== "object") continue;
+      const providerRaw = providerEntry as Record<string, unknown>;
+      const providerName = typeof providerRaw.name === "string" ? providerRaw.name : typeof providerRaw.id === "string" ? providerRaw.id : undefined;
+      const models = providerRaw.models && typeof providerRaw.models === "object" ? providerRaw.models as Record<string, unknown> : {};
+      for (const [modelId, modelEntry] of Object.entries(models)) {
+        if (!modelEntry || typeof modelEntry !== "object") continue;
+        const model = modelEntry as Record<string, unknown>;
+        const cost = model.cost && typeof model.cost === "object" ? model.cost as Record<string, unknown> : undefined;
+        const free = cost !== undefined && Number(cost.input) === 0 && Number(cost.output) === 0;
+        const limit = model.limit && typeof model.limit === "object" ? model.limit as Record<string, unknown> : {};
+        const modalities = model.modalities && typeof model.modalities === "object" ? model.modalities as Record<string, unknown> : {};
+        const inputModalities = Array.isArray(modalities.input) ? modalities.input as unknown[] : [];
+        out.push({
+          source: this.id, modelRef: modelId, displayName: typeof model.name === "string" ? model.name : modelId, providerName,
+          freeType: free ? "FREE_TIER" : "UNKNOWN", verifiedFree: free,
+          contextWindow: numberValue(limit.context), maxOutputTokens: numberValue(limit.output),
+          supportsVision: inputModalities.includes("image"), supportsTools: Boolean(model.tool_call), supportsReasoning: Boolean(model.reasoning),
+          sourceUrl: this.config.url, evidence: {family: model.family ?? null, openWeights: Boolean(model.open_weights), costZero: free, catalogEntry: true},
+        });
+      }
+    }
+    return out;
+  }
+}
+
 function buildSource(config: SourceConfig): DiscoverySource {
   switch (config.adapter) {
     case "openrouter": return new OpenRouterSource(config);
@@ -194,6 +243,7 @@ function buildSource(config: SourceConfig): DiscoverySource {
     case "huggingface": return new HuggingFaceProviderSource(config);
     case "text_candidates": return new TextCandidateSource(config);
     case "provider_dataset": return new ProviderDatasetSource(config);
+    case "models_dev": return new ModelsDevSource(config);
   }
 }
 

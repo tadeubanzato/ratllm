@@ -3,7 +3,7 @@ export interface DiscoveredCandidate {
   modelRef: string;
   displayName: string;
   providerName?: string;
-  freeType: "FREE_TIER" | "UNKNOWN";
+  freeType: "FREE_TIER" | "UNKNOWN" | "RECURRING_CREDIT" | "TRIAL_QUOTA" | "PROVIDER_SPECIFIC_FREE";
   verifiedFree: boolean;
   contextWindow?: number;
   maxOutputTokens?: number;
