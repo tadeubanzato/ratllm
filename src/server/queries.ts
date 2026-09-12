@@ -100,7 +100,7 @@ export async function getSourceYield(): Promise<Map<string, SourceYield>> {
   const [rows,providerRows,deploymentRows]=await Promise.all([
     db.select({source:modelCandidates.source,providerId:modelCandidates.providerId,providerName:modelCandidates.providerName,modelRef:modelCandidates.modelRef,verifiedFree:modelCandidates.verifiedFree}).from(modelCandidates),
     db.select({id:providers.id,name:providers.name}).from(providers),
-    db.select({id:modelDeployments.id,providerId:modelDeployments.providerId,providerModelId:modelDeployments.providerModelId,health:modelDeployments.health,managed:modelDeployments.managed,litellmModelName:modelDeployments.litellmModelName}).from(modelDeployments),
+    db.select({id:modelDeployments.id,providerId:modelDeployments.providerId,providerModelId:modelDeployments.providerModelId,health:modelDeployments.health,managed:modelDeployments.managed,litellmModelName:modelDeployments.litellmModelName,lifecycle:modelDeployments.lifecycle}).from(modelDeployments),
   ]);
   const providerNameById=new Map(providerRows.map(p=>[p.id,p.name]));
   const working=new Map<string,SourceYield&{providerSet:Set<string>}>();
@@ -108,7 +108,9 @@ export async function getSourceYield(): Promise<Map<string, SourceYield>> {
     const entry=working.get(row.source)??{source:row.source,discovered:0,verifiedFree:0,promoted:0,providers:[],providerSet:new Set<string>()};
     entry.discovered++;
     if(row.verifiedFree)entry.verifiedFree++;
-    if(row.providerId&&matchDeployments(deploymentRows,row.providerId,row.modelRef).length)entry.promoted++;
+    // A deployment that's since been deactivated/removed in LiteLLM isn't a durable "promoted" outcome any more —
+    // counting it would make this measured track record just as stale as the editorial tier claims it replaced.
+    if(row.providerId&&matchDeployments(deploymentRows,row.providerId,row.modelRef).some(item=>item.lifecycle==="ACTIVE"))entry.promoted++;
     const name=row.providerId?providerNameById.get(row.providerId):row.providerName??undefined;
     if(name)entry.providerSet.add(name);
     working.set(row.source,entry);
@@ -123,7 +125,7 @@ export async function getModelCandidates(){
     db.select().from(modelCandidates).orderBy(desc(modelCandidates.verifiedFree),modelCandidates.source,modelCandidates.displayName),
     db.select({id:providers.id,slug:providers.slug,name:providers.name,baseUrl:providers.baseUrl}).from(providers),
     db.select({providerId:providerCredentialReferences.providerId,valid:providerCredentialReferences.valid}).from(providerCredentialReferences),
-    db.select({id:modelDeployments.id,providerId:modelDeployments.providerId,providerModelId:modelDeployments.providerModelId,health:modelDeployments.health,managed:modelDeployments.managed,litellmModelName:modelDeployments.litellmModelName}).from(modelDeployments),
+    db.select({id:modelDeployments.id,providerId:modelDeployments.providerId,providerModelId:modelDeployments.providerModelId,health:modelDeployments.health,managed:modelDeployments.managed,litellmModelName:modelDeployments.litellmModelName,lifecycle:modelDeployments.lifecycle}).from(modelDeployments),
     db.select({deploymentId:laneAssignments.deploymentId,slug:lanes.slug,excluded:laneAssignments.excluded}).from(laneAssignments).innerJoin(lanes,eq(laneAssignments.laneId,lanes.id)),
   ]);
   return rows.map(row=>{
@@ -146,7 +148,7 @@ export async function getModelCandidates(){
     const endpoint=definition?resolveVerificationEndpoint(definition,provider?.baseUrl??null):null;
     const promotableReason=!provider?"Provider not resolved"
       :CUSTOM_ADAPTER_PROVIDERS[provider.slug]??(credentialRequired&&!credentialVerified?"Credential not verified":!endpoint?"No known endpoint for this provider":null);
-    return {...row,providerId:provider?.id??null,credentialConfigured:credentials.length>0,credentialVerified,credentialRequired,liteLLMDeploymentId:deployment?.id??null,liteLLMHealth:deployment?.health??null,liteLLMManaged:deployment?.managed??null,laneMemberships,promotable:promotableReason===null,promotableReason};
+    return {...row,providerId:provider?.id??null,credentialConfigured:credentials.length>0,credentialVerified,credentialRequired,liteLLMDeploymentId:deployment?.id??null,liteLLMHealth:deployment?.health??null,liteLLMManaged:deployment?.managed??null,liteLLMLifecycle:deployment?.lifecycle??null,laneMemberships,promotable:promotableReason===null,promotableReason};
   });
 }
 

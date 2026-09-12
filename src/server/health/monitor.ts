@@ -40,8 +40,8 @@ async function autoRemoveIfFailing(deployment: typeof modelDeployments.$inferSel
     return false;
   }
   await db.update(modelDeployments).set({
-    litellmDeploymentId: null, health: "UNAVAILABLE",
-    rawMetadata: { ...deployment.rawMetadata, lifecycle: "AUTO_REMOVED", removedAt: new Date().toISOString(), removedReason: `${AUTO_REMOVE_AFTER_FAILURES} consecutive failed health checks` },
+    litellmDeploymentId: null, health: "UNAVAILABLE", lifecycle: "REMOVED",
+    rawMetadata: { ...deployment.rawMetadata, removedAt: new Date().toISOString(), removedReason: `${AUTO_REMOVE_AFTER_FAILURES} consecutive failed health checks` },
     updatedAt: new Date(),
   }).where(eq(modelDeployments.id, deployment.id));
   await db.update(laneAssignments).set({

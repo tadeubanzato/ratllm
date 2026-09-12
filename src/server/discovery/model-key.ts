@@ -19,7 +19,11 @@ export function matchDeployments<T extends {providerId: string; providerModelId:
   return deployments.filter(deployment => deployment.providerId === providerId && bareModelKey(deployment.providerModelId) === key);
 }
 
-/** Finds the LiteLLM deployment (if any) a discovery candidate already corresponds to, so the UI/promotion flow never depends on having written a link back at add-time. */
-export function matchDeployment<T extends {providerId: string; providerModelId: string}>(deployments: readonly T[], providerId: string, modelRef: string): T | null {
-  return matchDeployments(deployments, providerId, modelRef)[0] ?? null;
+/** Finds the LiteLLM deployment (if any) a discovery candidate already corresponds to, so the UI/promotion flow never
+ *  depends on having written a link back at add-time. A candidate can match more than one deployment row (e.g.
+ *  re-added under a new LiteLLM entry after the old one was removed) — an ACTIVE match always wins over a stale
+ *  DEACTIVATED/REMOVED one when a `lifecycle` field is present, so callers see the live deployment, not history. */
+export function matchDeployment<T extends {providerId: string; providerModelId: string; lifecycle?: string}>(deployments: readonly T[], providerId: string, modelRef: string): T | null {
+  const matches = matchDeployments(deployments, providerId, modelRef);
+  return matches.find(deployment => deployment.lifecycle === "ACTIVE") ?? matches[0] ?? null;
 }

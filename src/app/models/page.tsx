@@ -51,11 +51,18 @@ export default async function ModelsPage(){
     const points=candidateHistoryItems(candidateHistory.get(row.id)??[]);
     // Already in LiteLLM (whether via a lane or a direct alias) collapses to one small "Added" badge — the exact lane
     // membership and routing details live on the LiteLLM page, so repeating them here just added width for nothing.
-    const litellmCell=row.liteLLMDeploymentId
-      ? <span className="status-pill status-good">Added to LiteLLM</span>
-      : row.promotable
-        ? <AddToLiteLLMButton candidateId={row.id}/>
-        : promotionBlocker(row);
+    // Lifecycle takes priority over the raw "does a deployment row exist" check: a row survives deactivation/removal
+    // in LiteLLM (deliberately, so history/health aren't lost), so without this a candidate would show "Added"
+    // forever even after it's gone.
+    const litellmCell=row.liteLLMLifecycle==="DEACTIVATED"
+      ? <span className="status-pill status-warn">Deactivated in LiteLLM</span>
+      : row.liteLLMLifecycle==="REMOVED"
+        ? <span className="status-pill status-bad">Deleted from LiteLLM</span>
+        : row.liteLLMDeploymentId
+          ? <span className="status-pill status-good">Added to LiteLLM</span>
+          : row.promotable
+            ? <AddToLiteLLMButton candidateId={row.id}/>
+            : promotionBlocker(row);
     return <tr key={row.id}>
       <td><strong>{row.displayName}</strong><br/><span className="mono truncate" title={row.modelRef} style={{maxWidth:220}}>{row.modelRef}</span></td>
       <td>{row.providerName??"Unresolved"}<br/><StatusPill value={!row.credentialRequired?"No credential needed":row.credentialVerified?"Credential verified":row.credentialConfigured?"Credential unverified":"Credential missing"}/></td>

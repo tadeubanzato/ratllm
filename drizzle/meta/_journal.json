@@ -78,6 +78,13 @@
       "when": 1789185495904,
       "tag": "0010_adorable_sentinel",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1789235910674,
+      "tag": "0011_add_deployment_lifecycle",
+      "breakpoints": true
     }
   ]
 }

@@ -10,6 +10,11 @@ export const providerStatus = pgEnum("provider_status", ["ACTIVE", "DEGRADED", "
 export const adapterCapability = pgEnum("adapter_capability", ["AUTOMATED", "PARTIAL", "MANUAL", "DISABLED"]);
 export const modelLifecycle = pgEnum("model_lifecycle", ["DISCOVERED", "CANDIDATE", "ACTIVE", "DEGRADED", "QUARANTINED", "RETIRED", "REMOVED"]);
 export const deploymentHealth = pgEnum("deployment_health", ["HEALTHY", "DEGRADED", "RATE_LIMITED", "UNAVAILABLE", "AUTH_ERROR", "UNKNOWN"]);
+// Was tracked only as a `rawMetadata.lifecycle` string (ACTIVE/DEACTIVATED/REMOVED/AUTO_REMOVED) — untyped, so no
+// query could filter or select on it. Promoted to a real column so the Discovered Models page can show a deployment
+// that was deactivated or deleted straight in LiteLLM instead of leaving a stale "Added to LiteLLM" badge. AUTO_REMOVED
+// folds into REMOVED here (same user-facing state); the distinguishing reason still lives in rawMetadata.removedReason.
+export const deploymentLifecycle = pgEnum("deployment_lifecycle", ["ACTIVE", "DEACTIVATED", "REMOVED"]);
 // RECURRING_CREDIT/TRIAL_QUOTA/OPEN_WEIGHT_SELF_HOSTED/PROVIDER_SPECIFIC_FREE added 2026-09-11 per docs/models_source.md's
 // free_type taxonomy — a recurring dollar credit (Vercel), a token quota that expires (Alibaba's 90-day per-model
 // grant), a self-hosted open-weight model (no provider "free" claim applies at all), and a named-model-specific
@@ -106,6 +111,7 @@ export const modelDeployments = pgTable("model_deployments", {
   managedBy: text("managed_by"),
   curatorVersion: text("curator_version"),
   health: deploymentHealth("health").notNull().default("UNKNOWN"),
+  lifecycle: deploymentLifecycle("lifecycle").notNull().default("ACTIVE"),
   freeType: freeType("free_type").notNull().default("UNKNOWN"),
   score: doublePrecision("score"),
   apiBase: text("api_base"),

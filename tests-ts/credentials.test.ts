@@ -7,7 +7,7 @@ const state = vi.hoisted(() => ({ existingConfig: {} as Record<string, string>, 
 vi.mock("@/server/db/schema", () => ({ providers: "providers", providerCredentialReferences: "providerCredentialReferences", auditEvents: "auditEvents" }));
 vi.mock("@/server/db/client", () => ({
   getDb: () => ({
-    select: (fields?: unknown) => ({
+    select: () => ({
       from: (table: string) => ({
         where: () => ({
           limit: async () => (table === "providers" ? [{ id: "provider-1" }] : [{ config: state.existingConfig }]),
