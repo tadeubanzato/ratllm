@@ -5,7 +5,7 @@ import { getDb } from "@/server/db/client";
 import { modelSources } from "@/server/db/schema";
 import { apiError, correlationId } from "@/server/http";
 import { ensureModelSources } from "@/server/discovery/model-sources";
-import { getSourceYield } from "@/server/queries";
+import { getSourceRunHistory, getSourceYield } from "@/server/queries";
 import { sourceRegistry } from "@/server/discovery/registry";
 
 const input = z.object({id: z.string().uuid().optional(), name: z.string().min(1).max(120), type: z.enum(["PROVIDER_API", "OPENAI_COMPATIBLE", "JSON_FEED", "MANUAL", "CUSTOM_ADAPTER"]), providerId: z.string().uuid().nullable().optional(), url: z.string().url().nullable().optional(), enabled: z.boolean().default(true), priority: z.number().int().min(0).max(10000).default(100), credentialReference: z.string().max(120).nullable().optional(), adapterReference: z.string().max(200).nullable().optional()});
@@ -14,11 +14,12 @@ const tierByAdapterReference=new Map(sourceRegistry.map(source=>[source.id,sourc
 
 export async function GET() {
   await ensureModelSources();
-  const [rows,yields]=await Promise.all([getDb().select().from(modelSources).orderBy(modelSources.priority, desc(modelSources.createdAt)),getSourceYield()]);
+  const [rows,yields,history]=await Promise.all([getDb().select().from(modelSources).orderBy(modelSources.priority, desc(modelSources.createdAt)),getSourceYield(),getSourceRunHistory()]);
   return NextResponse.json(rows.map(row=>({
     ...row,
     tier:row.adapterReference?tierByAdapterReference.get(row.adapterReference)??null:null,
     yield:row.adapterReference?yields.get(row.adapterReference)??null:null,
+    history:row.adapterReference?history.get(row.adapterReference)??[]:[],
   })));
 }
 

@@ -120,6 +120,30 @@ export async function getSourceYield(): Promise<Map<string, SourceYield>> {
   return result;
 }
 
+export interface SourceHistoryPoint { at: string; status: "succeeded" | "failed"; detail: string }
+
+/** Per-source outcome across recent MODEL_DISCOVERY runs, mined from each run's own summary.sources array — the
+ *  only place a built-in source's pass/fail is recorded run-over-run (model_sources itself only ever keeps the
+ *  latest status). Without this, the Free Model Sources "History" strip had at most one real point to show, ever,
+ *  no matter how many times discovery had actually run — everything else was grey "not run yet" padding. */
+export async function getSourceRunHistory(limit = 30): Promise<Map<string, SourceHistoryPoint[]>> {
+  const runs = await getDb().select({ summary: syncRuns.summary, createdAt: syncRuns.createdAt }).from(syncRuns)
+    .where(eq(syncRuns.type, "MODEL_DISCOVERY")).orderBy(desc(syncRuns.createdAt)).limit(limit);
+  const bySource = new Map<string, SourceHistoryPoint[]>();
+  for (const run of runs) {
+    const sources = Array.isArray(run.summary.sources) ? run.summary.sources as Array<Record<string, unknown>> : [];
+    for (const entry of sources) {
+      if (typeof entry.source !== "string") continue;
+      const status: SourceHistoryPoint["status"] = entry.status === "succeeded" ? "succeeded" : "failed";
+      const detail = typeof entry.count === "number" ? `${entry.count} found` : typeof entry.error === "string" ? entry.error : "";
+      const list = bySource.get(entry.source) ?? [];
+      list.push({ at: run.createdAt.toISOString(), status, detail });
+      bySource.set(entry.source, list);
+    }
+  }
+  return bySource;
+}
+
 export async function getModelCandidates(){
   const db=getDb();const [rows,providerRows,credentialRows,deploymentRows,laneRows]=await Promise.all([
     db.select().from(modelCandidates).orderBy(desc(modelCandidates.verifiedFree),modelCandidates.source,modelCandidates.displayName),

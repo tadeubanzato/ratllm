@@ -39,7 +39,8 @@ const jobTypeDescriptions: Record<string, string> = {
   MAINTENANCE: "Cleans up expired leases and stale internal state.",
 };
 type SourceYield = {source: string; discovered: number; verifiedFree: number; promoted: number; providers: string[]};
-type Source = {id: string; name: string; type: string; providerId: string | null; url: string | null; enabled: boolean; priority: number; status: string; discoveredModelCount: number; lastSyncAt: string | null; adapterReference: string | null; credentialReference: string | null; tier: "A1" | "A2" | "B" | "C" | null; yield: SourceYield | null};
+type SourceHistoryPoint = {at: string; status: "succeeded" | "failed"; detail: string};
+type Source = {id: string; name: string; type: string; providerId: string | null; url: string | null; enabled: boolean; priority: number; status: string; discoveredModelCount: number; lastSyncAt: string | null; adapterReference: string | null; credentialReference: string | null; tier: "A1" | "A2" | "B" | "C" | null; yield: SourceYield | null; history: SourceHistoryPoint[]};
 const tierRank: Record<string, number> = {A1: 0, A2: 1, B: 2, C: 3};
 const tierTone: Record<string, string> = {A1: "good", A2: "info", B: "warn", C: "neutral"};
 
@@ -175,7 +176,11 @@ export function SettingsClient({environment, lanes, laneOverview, initialHistory
     finally { setBusy(false); }
   }
 
-  const sourceHistory = (source: Source) => source.lastSyncAt ? [{at: source.lastSyncAt, status: source.status, label: source.name, detail: `${source.discoveredModelCount} discovered models`}] : [];
+  // Real per-run history (mined from past MODEL_DISCOVERY runs) when there is any; a source with no adapterReference
+  // (a custom source, not fed by the Model Discovery job) or one that's never actually run yet falls back to a
+  // single point synthesized from its current status, same as before.
+  const sourceHistory = (source: Source) => source.history.length ? source.history
+    : source.lastSyncAt ? [{at: source.lastSyncAt, status: source.status, label: source.name, detail: `${source.discoveredModelCount} discovered models`}] : [];
 
   return <div className="settings-control-center">
     <nav className="settings-tabs" aria-label="Settings sections">{tabs.map(tab => <button type="button" key={tab} aria-current={active === tab ? "page" : undefined} className={active === tab ? "active" : ""} onClick={() => changeTab(tab)}>{tab}</button>)}</nav>
