@@ -21,6 +21,7 @@ export async function runDiscovery(){
   const enabledIds = await getEnabledAdapterIds();
   const activeSources = discoverySources.filter(source => enabledIds.has(source.id));
   const db=getDb();const correlationId=randomUUID();const[run]=await db.insert(syncRuns).values({type:"MODEL_DISCOVERY",status:"RUNNING",correlationId,startedAt:new Date()}).returning();
+  const providerIdBySlug=new Map((await db.select({slug:providers.slug,id:providers.id}).from(providers)).map(row=>[row.slug,row.id]));
   const results=await Promise.allSettled(activeSources.map(async source=>{try{const items=await source.discover();return {sourceId:source.id,ok:true as const,items}}catch(error){return {sourceId:source.id,ok:false as const,error:error instanceof Error?error.message:"Unknown source error"}}}));
   let discovered=0;const sources=[];
   for(const result of results){
@@ -31,12 +32,18 @@ export async function runDiscovery(){
     sources.push({source,status:"succeeded",count:items.length});
     await recordSourceSync(source,{ok:true,count:items.length});
     for(const item of items){
-      const provider=resolveProvider(item.providerName,item.modelRef);if(provider){await db.insert(providers).values(provider).onConflictDoNothing();item.providerName=provider.name;}
+      const provider=resolveProvider(item.providerName,item.modelRef);
+      if(provider){
+        await db.insert(providers).values(provider).onConflictDoNothing();
+        item.providerName=provider.name;
+        if(!providerIdBySlug.has(provider.slug)){const[row]=await db.select({id:providers.id}).from(providers).where(eq(providers.slug,provider.slug)).limit(1);if(row)providerIdBySlug.set(provider.slug,row.id);}
+      }
+      const providerId=provider?providerIdBySlug.get(provider.slug)??null:null;
       const existing=(await db.select({id:modelCandidates.id,evidence:modelCandidates.evidence}).from(modelCandidates).where(and(eq(modelCandidates.source,item.source),eq(modelCandidates.modelRef,item.modelRef))).limit(1))[0];
-      if(existing){const values={displayName:item.displayName,providerName:item.providerName??null,lifecycle:"DISCOVERED" as const,freeType:item.freeType,verifiedFree:item.verifiedFree,contextWindow:item.contextWindow??null,maxOutputTokens:item.maxOutputTokens??null,supportsVision:item.supportsVision??null,supportsTools:item.supportsTools??null,supportsReasoning:item.supportsReasoning??null,sourceUrl:item.sourceUrl,evidence:{...(existing.evidence??{}),...item.evidence},lastSeenAt:new Date(),updatedAt:new Date()};await db.update(modelCandidates).set(values).where(eq(modelCandidates.id,existing.id));discovered++;continue;}
+      if(existing){const values={displayName:item.displayName,providerName:item.providerName??null,providerId,lifecycle:"DISCOVERED" as const,freeType:item.freeType,verifiedFree:item.verifiedFree,contextWindow:item.contextWindow??null,maxOutputTokens:item.maxOutputTokens??null,supportsVision:item.supportsVision??null,supportsTools:item.supportsTools??null,supportsReasoning:item.supportsReasoning??null,sourceUrl:item.sourceUrl,evidence:{...(existing.evidence??{}),...item.evidence},lastSeenAt:new Date(),updatedAt:new Date()};await db.update(modelCandidates).set(values).where(eq(modelCandidates.id,existing.id));discovered++;continue;}
       const duplicate=provider?await findDuplicateCandidate(db,provider.name,item.modelRef):null;
-      if(duplicate){const prior=Array.isArray(duplicate.evidence.corroboratingSources)?duplicate.evidence.corroboratingSources as {source:string;sourceUrl:string}[]:[];const corroboratingSources=prior.some(c=>c.source===item.source)?prior:[...prior,{source:item.source,sourceUrl:item.sourceUrl}];await db.update(modelCandidates).set({evidence:{...duplicate.evidence,corroboratingSources},lastSeenAt:new Date(),updatedAt:new Date()}).where(eq(modelCandidates.id,duplicate.id));discovered++;continue;}
-      await db.insert(modelCandidates).values({source:item.source,modelRef:item.modelRef,displayName:item.displayName,providerName:item.providerName??null,lifecycle:"DISCOVERED" as const,freeType:item.freeType,verifiedFree:item.verifiedFree,contextWindow:item.contextWindow??null,maxOutputTokens:item.maxOutputTokens??null,supportsVision:item.supportsVision??null,supportsTools:item.supportsTools??null,supportsReasoning:item.supportsReasoning??null,sourceUrl:item.sourceUrl,evidence:item.evidence,lastSeenAt:new Date(),updatedAt:new Date()});
+      if(duplicate){const prior=Array.isArray(duplicate.evidence.corroboratingSources)?duplicate.evidence.corroboratingSources as {source:string;sourceUrl:string}[]:[];const corroboratingSources=prior.some(c=>c.source===item.source)?prior:[...prior,{source:item.source,sourceUrl:item.sourceUrl}];await db.update(modelCandidates).set({providerId,evidence:{...duplicate.evidence,corroboratingSources},lastSeenAt:new Date(),updatedAt:new Date()}).where(eq(modelCandidates.id,duplicate.id));discovered++;continue;}
+      await db.insert(modelCandidates).values({source:item.source,modelRef:item.modelRef,displayName:item.displayName,providerName:item.providerName??null,providerId,lifecycle:"DISCOVERED" as const,freeType:item.freeType,verifiedFree:item.verifiedFree,contextWindow:item.contextWindow??null,maxOutputTokens:item.maxOutputTokens??null,supportsVision:item.supportsVision??null,supportsTools:item.supportsTools??null,supportsReasoning:item.supportsReasoning??null,sourceUrl:item.sourceUrl,evidence:item.evidence,lastSeenAt:new Date(),updatedAt:new Date()});
       discovered++;
     }
   }

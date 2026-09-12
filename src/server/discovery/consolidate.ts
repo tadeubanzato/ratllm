@@ -1,7 +1,7 @@
 import "server-only";
 import { eq, inArray } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
-import { candidateChecks, modelCandidates } from "@/server/db/schema";
+import { candidateChecks, modelCandidates, providers } from "@/server/db/schema";
 import { resolveProvider } from "@/server/providers/catalog";
 import { bareModelKey } from "./model-key";
 import { sourceRegistry } from "./registry";
@@ -34,6 +34,20 @@ export async function consolidateModelCandidates() {
 
   const junkIds = new Set(junk.map(row => row.id));
   const survivors = live.filter(row => !junkIds.has(row.id));
+
+  // Self-healing backfill: re-resolve every survivor's provider on each pass (same catalog matching used at
+  // write time in runDiscovery) and correct providerId where it's stale or was never set — covers rows written
+  // before this column existed, and rows whose providerName text was edited/re-normalized since.
+  const providerIdBySlug = new Map((await db.select({slug: providers.slug, id: providers.id}).from(providers)).map(row => [row.slug, row.id]));
+  const resolvedProviderId = new Map<string, string | null>();
+  let providerIdBackfilled = 0;
+  for (const row of survivors) {
+    const provider = resolveProvider(row.providerName, row.modelRef);
+    const id = provider ? providerIdBySlug.get(provider.slug) ?? null : null;
+    resolvedProviderId.set(row.id, id);
+    if (id !== row.providerId) { await db.update(modelCandidates).set({providerId: id, updatedAt: new Date()}).where(eq(modelCandidates.id, row.id)); providerIdBackfilled++; }
+  }
+
   const groups = new Map<string, CandidateRow[]>();
   for (const row of survivors) {
     const provider = resolveProvider(row.providerName, row.modelRef);
@@ -61,10 +75,10 @@ export async function consolidateModelCandidates() {
     for (const loser of losers) if (!seen.has(loser.source)) { corroboratingSources.push({source: loser.source, sourceUrl: loser.sourceUrl ?? ""}); seen.add(loser.source); }
     const loserIds = losers.map(loser => loser.id);
     await db.update(candidateChecks).set({candidateId: winner.id}).where(inArray(candidateChecks.candidateId, loserIds));
-    await db.update(modelCandidates).set({evidence: {...winner.evidence, corroboratingSources}, updatedAt: new Date()}).where(eq(modelCandidates.id, winner.id));
+    await db.update(modelCandidates).set({providerId: resolvedProviderId.get(winner.id) ?? null, evidence: {...winner.evidence, corroboratingSources}, updatedAt: new Date()}).where(eq(modelCandidates.id, winner.id));
     await db.delete(modelCandidates).where(inArray(modelCandidates.id, loserIds));
     merged += losers.length; groupsMerged += 1;
   }
 
-  return {orphanedRemoved: orphaned.length, junkRemoved: junk.length, duplicatesMerged: merged, groupsMerged};
+  return {orphanedRemoved: orphaned.length, junkRemoved: junk.length, duplicatesMerged: merged, groupsMerged, providerIdBackfilled};
 }

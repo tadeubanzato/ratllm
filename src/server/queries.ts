@@ -72,8 +72,11 @@ export async function getModelCandidates(){
     db.select({deploymentId:laneAssignments.deploymentId,slug:lanes.slug,excluded:laneAssignments.excluded}).from(laneAssignments).innerJoin(lanes,eq(laneAssignments.laneId,lanes.id)),
   ]);
   return rows.map(row=>{
-    const slug=row.source==="openrouter"?"openrouter":providerSlug(row.providerName,row.modelRef);
-    const provider=providerRows.find(item=>item.slug===slug||item.name.toLowerCase()===String(row.providerName??"").toLowerCase());
+    // providerId is resolved and stored at write time (runDiscovery/consolidateModelCandidates); only fall back to
+    // re-guessing from text here for rows a backfill pass hasn't reached yet (self-heals on the next discovery run).
+    const provider=row.providerId
+      ? providerRows.find(item=>item.id===row.providerId)
+      : (() => {const slug=row.source==="openrouter"?"openrouter":providerSlug(row.providerName,row.modelRef);return providerRows.find(item=>item.slug===slug||item.name.toLowerCase()===String(row.providerName??"").toLowerCase());})();
     const credentials=provider?credentialRows.filter(item=>item.providerId===provider.id):[];
     const credentialVerified=credentials.some(item=>item.valid===true);
     const deployments=provider?matchDeployments(deploymentRows,provider.id,row.modelRef):[];

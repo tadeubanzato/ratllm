@@ -61,6 +61,10 @@ export const modelCandidates = pgTable("model_candidates", {
   modelRef: text("model_ref").notNull(),
   displayName: text("display_name").notNull(),
   providerName: text("provider_name"),
+  /** Resolved once at write time (discovery/consolidation), via the same catalog matching `providerName` used to
+   *  fall back on — reads trust this column directly instead of re-guessing the match on every query. Null means
+   *  genuinely unresolved (no known provider matches), not "not yet looked up". */
+  providerId: uuid("provider_id").references(() => providers.id, { onDelete: "set null" }),
   lifecycle: modelLifecycle("lifecycle").notNull().default("DISCOVERED"),
   freeType: freeType("free_type").notNull().default("UNKNOWN"),
   verifiedFree: boolean("verified_free").notNull().default(false),
@@ -74,7 +78,7 @@ export const modelCandidates = pgTable("model_candidates", {
   firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
   lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
   ...timestamps,
-}, (table) => [uniqueIndex("candidate_source_model_uidx").on(table.source, table.modelRef),index("candidate_lifecycle_idx").on(table.lifecycle),index("candidate_free_idx").on(table.freeType,table.verifiedFree)]);
+}, (table) => [uniqueIndex("candidate_source_model_uidx").on(table.source, table.modelRef),index("candidate_lifecycle_idx").on(table.lifecycle),index("candidate_free_idx").on(table.freeType,table.verifiedFree),index("candidate_provider_idx").on(table.providerId)]);
 
 export const candidateChecks = pgTable("candidate_checks", {
   id: uuid("id").primaryKey().defaultRandom(),
