@@ -38,9 +38,13 @@ const jobTypeDescriptions: Record<string, string> = {
   LANE_RECONCILE: "Re-adds any smart-* lane member missing from LiteLLM and re-pushes the cross-lane fallback chains.",
   MAINTENANCE: "Cleans up expired leases and stale internal state.",
 };
-type Source = {id: string; name: string; type: string; providerId: string | null; url: string | null; enabled: boolean; priority: number; status: string; discoveredModelCount: number; lastSyncAt: string | null; adapterReference: string | null; credentialReference: string | null};
+type SourceYield = {source: string; discovered: number; verifiedFree: number; promoted: number; providers: string[]};
+type Source = {id: string; name: string; type: string; providerId: string | null; url: string | null; enabled: boolean; priority: number; status: string; discoveredModelCount: number; lastSyncAt: string | null; adapterReference: string | null; credentialReference: string | null; tier: "A1" | "A2" | "B" | "C" | null; yield: SourceYield | null};
+const tierRank: Record<string, number> = {A1: 0, A2: 1, B: 2, C: 3};
+const tierTone: Record<string, string> = {A1: "good", A2: "info", B: "warn", C: "neutral"};
 
-const builtinSourceDescriptions: Record<string, string> = Object.fromEntries(sourceRegistry.map(source => [source.id, `${source.description} (Tier ${source.tier}${source.candidateOnly ? " · candidate-only" : ""})`]));
+const builtinSourceDescriptions: Record<string, string> = Object.fromEntries(sourceRegistry.map(source => [source.id, source.description]));
+const candidateOnlyByAdapterReference: Record<string, boolean> = Object.fromEntries(sourceRegistry.map(source => [source.id, Boolean(source.candidateOnly)]));
 type Lane = {slug: string; minimumHealthy: number};
 
 const stamp = (value: string | null | undefined) => value ? new Date(value).toLocaleString() : "—";
@@ -271,14 +275,22 @@ export function SettingsClient({environment, lanes, laneOverview, initialHistory
     </Card>}
 
     {active === "Free Model Sources" && <Card title="Free model sources" aside={<button className="button primary" type="button" onClick={() => setSourceModal({mode: "add"})}>Add source</button>}>
-      <p className="settings-help">The built-in sources below are what the Model Discovery job actually scouts — disabling one here skips it on the next run. Custom sources you add are tested independently and do not yet feed discovery automatically.</p>
-      <div className="settings-table-wrap"><table className="data-table settings-table"><thead><tr><th>Source</th><th>Type</th><th>Enabled</th><th>Status</th><th>Last sync / models</th><th>History</th><th></th></tr></thead><tbody>
-        {sources.map(source => <tr key={source.id}>
-          <td><button type="button" className="settings-link-button" onClick={() => setSourceModal({mode: "edit", source})}>{source.name}</button>{source.adapterReference && <span className="settings-help" style={{marginLeft: 6}}>Built-in</span>}<br/><small>{source.adapterReference ? builtinSourceDescriptions[source.adapterReference] ?? source.url : source.url ?? "Manual source"}</small></td>
+      <p className="settings-help">The built-in sources below are what the Model Discovery job actually scouts — disabling one here skips it on the next run. Custom sources you add are tested independently and do not yet feed discovery automatically. Sorted by trust tier: A1 (official live API) down to C (community list) — a source&apos;s Yield column is its actual track record, not just its tier&apos;s editorial claim.</p>
+      <div className="settings-table-wrap"><table className="data-table settings-table"><thead><tr><th>Tier</th><th>Source</th><th>Type</th><th>Enabled</th><th>Status</th><th>Last sync</th><th>Yield</th><th>History</th><th></th></tr></thead><tbody>
+        {[...sources].sort((a, b) => (tierRank[a.tier ?? "C"] ?? 4) - (tierRank[b.tier ?? "C"] ?? 4)).map(source => <tr key={source.id}>
+          <td>{source.tier ? <span className={`status-pill status-${tierTone[source.tier]}`}>{source.tier}</span> : <span className="settings-help">custom</span>}</td>
+          <td><button type="button" className="settings-link-button" onClick={() => setSourceModal({mode: "edit", source})}>{source.name}</button>{source.adapterReference && <span className="settings-help" style={{marginLeft: 6}}>Built-in{candidateOnlyByAdapterReference[source.adapterReference] && " · candidate-only"}</span>}<br/><small>{source.adapterReference ? builtinSourceDescriptions[source.adapterReference] ?? source.url : source.url ?? "Manual source"}</small></td>
           <td>{source.type.replaceAll("_", " ")}</td>
           <td><input aria-label={`${source.name} enabled`} type="checkbox" checked={source.enabled} disabled={busy} onChange={event => void act(() => request("/api/settings/model-sources", {method: "POST", body: JSON.stringify({...source, enabled: event.target.checked})}))}/></td>
           <td><StatusPill value={source.status}/>{source.status==="DEGRADED"&&<><br/><small>0 models found</small></>}</td>
-          <td>{stamp(source.lastSyncAt)}<br/>{source.discoveredModelCount} models</td>
+          <td>{stamp(source.lastSyncAt)}</td>
+          <td>{source.yield ? <div>
+            <div className="mono" style={{fontSize:11,whiteSpace:"nowrap"}}>{source.yield.discovered} found <span style={{color:"var(--faint)"}}>→</span> {source.yield.verifiedFree} verified <span style={{color:"var(--faint)"}}>→</span> {source.yield.promoted} promoted</div>
+            {source.yield.providers.length>0 && <details style={{marginTop:3}}>
+              <summary style={{cursor:"pointer",fontSize:10,color:"var(--faint)"}}>{source.yield.providers.length} provider{source.yield.providers.length===1?"":"s"} touched</summary>
+              <p style={{margin:"4px 0 0",fontSize:10,color:"var(--faint)"}}>{source.yield.providers.join(", ")}</p>
+            </details>}
+          </div> : <span className="settings-help">no candidates yet</span>}</td>
           <td><StatusHistoryStrip label={`${source.name} sync history`} items={sourceHistory(source)}/></td>
           <td style={{textAlign: "right"}}>{!source.adapterReference && <button className="button small" type="button" disabled={busy} onClick={() => void act(() => request(`/api/settings/model-sources?id=${source.id}`, {method: "DELETE"}))}>Delete</button>}</td>
         </tr>)}

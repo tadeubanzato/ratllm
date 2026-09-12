@@ -90,6 +90,34 @@ export async function getDeployment(id: string) {
   return rows.find(row => row.id === id) ?? null;
 }
 
+export interface SourceYield { source: string; discovered: number; verifiedFree: number; promoted: number; providers: string[] }
+
+/** Per-source track record — how many candidates it ever surfaced, how many turned out verified-free, how many
+ *  reached a live LiteLLM deployment, and which providers it actually touched. Turns each discovery source's tier
+ *  (an editorial trust claim) into a measured outcome, and lets the Providers page show provenance back to here. */
+export async function getSourceYield(): Promise<Map<string, SourceYield>> {
+  const db=getDb();
+  const [rows,providerRows,deploymentRows]=await Promise.all([
+    db.select({source:modelCandidates.source,providerId:modelCandidates.providerId,providerName:modelCandidates.providerName,modelRef:modelCandidates.modelRef,verifiedFree:modelCandidates.verifiedFree}).from(modelCandidates),
+    db.select({id:providers.id,name:providers.name}).from(providers),
+    db.select({id:modelDeployments.id,providerId:modelDeployments.providerId,providerModelId:modelDeployments.providerModelId,health:modelDeployments.health,managed:modelDeployments.managed,litellmModelName:modelDeployments.litellmModelName}).from(modelDeployments),
+  ]);
+  const providerNameById=new Map(providerRows.map(p=>[p.id,p.name]));
+  const working=new Map<string,SourceYield&{providerSet:Set<string>}>();
+  for(const row of rows){
+    const entry=working.get(row.source)??{source:row.source,discovered:0,verifiedFree:0,promoted:0,providers:[],providerSet:new Set<string>()};
+    entry.discovered++;
+    if(row.verifiedFree)entry.verifiedFree++;
+    if(row.providerId&&matchDeployments(deploymentRows,row.providerId,row.modelRef).length)entry.promoted++;
+    const name=row.providerId?providerNameById.get(row.providerId):row.providerName??undefined;
+    if(name)entry.providerSet.add(name);
+    working.set(row.source,entry);
+  }
+  const result=new Map<string,SourceYield>();
+  for(const[key,value]of working)result.set(key,{source:value.source,discovered:value.discovered,verifiedFree:value.verifiedFree,promoted:value.promoted,providers:[...value.providerSet].sort()});
+  return result;
+}
+
 export async function getModelCandidates(){
   const db=getDb();const [rows,providerRows,credentialRows,deploymentRows,laneRows]=await Promise.all([
     db.select().from(modelCandidates).orderBy(desc(modelCandidates.verifiedFree),modelCandidates.source,modelCandidates.displayName),
