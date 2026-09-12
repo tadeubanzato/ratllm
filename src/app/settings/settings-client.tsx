@@ -337,7 +337,7 @@ export function SettingsClient({environment, lanes, laneOverview, initialHistory
             <dt>Type</dt><dd>{source.type.replaceAll("_", " ")}{registryEntry && ` · Tier ${registryEntry.tier}${registryEntry.candidateOnly ? " (candidate-only)" : ""}`}</dd>
             {registryEntry?.authEnv && <><dt>Authentication</dt><dd>{registryEntry.authEnv} environment variable{registryEntry.authOptional ? " (optional — works unauthenticated too)" : " (required)"}</dd></>}
             {registryEntry?.registrationUrl && <><dt>Get credential</dt><dd><a href={registryEntry.registrationUrl} target="_blank" rel="noopener noreferrer">{registryEntry.registrationUrl} ↗</a></dd></>}
-            <dt>Status</dt><dd>{source.status}</dd>
+            <dt>Status</dt><dd><StatusPill value={source.status}/></dd>
             <dt>Last sync</dt><dd>{stamp(source.lastSyncAt)}</dd>
             <dt>Discovered models</dt><dd>{source.discoveredModelCount}</dd>
           </dl>
