@@ -7,7 +7,7 @@ import { auditEvents, canonicalModels, laneAssignments, lanes, modelDeployments,
 import { log } from "@/server/logging";
 import { resolveProvider } from "@/server/providers/catalog";
 import { connectionError, recordConnection } from "@/server/settings/connections";
-import { deploymentIdentity, isManagedDeployment, sanitizedMetadata } from "./classify";
+import { deploymentIdentity, isBlockedDeployment, isManagedDeployment, sanitizedMetadata } from "./classify";
 import { HttpLiteLLMAdapter } from "./client";
 
 function privateApiBase(value: unknown) { return typeof value === "string" && /localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|host\.docker/i.test(value); }
@@ -61,11 +61,11 @@ export async function syncLiteLLM(options: { dryRun?: boolean } = {}, adapter = 
       const managedFlag = isManagedDeployment(item);
       if (managedFlag) managed += 1; else unmanaged += 1;
       const existing = (await db.select().from(modelDeployments).where(eq(modelDeployments.litellmDeploymentId, identity.deploymentId)).limit(1))[0];
-      // LiteLLM's /v1/model/info doesn't expose the `blocked` flag this app sets on deactivate, so a deactivated
-      // deployment still turning up here can't be told apart from a genuinely active one — preserve DEACTIVATED
-      // across a sync rather than silently clearing it. Anything else present in the router (including a row
-      // previously marked REMOVED that's reappeared) is treated as active again.
-      const lifecycle = existing?.lifecycle === "DEACTIVATED" ? "DEACTIVATED" as const : "ACTIVE" as const;
+      // model_info.blocked is authoritative and comes straight from the router, whether ratllm's own deactivate
+      // action set it or an external tool (e.g. another app's admin script) blocked it directly — never override
+      // that with a guess. Falls back to preserving a prior DEACTIVATED only for the (now rare) case a deployment
+      // predates this check having ever run.
+      const lifecycle = isBlockedDeployment(item) || existing?.lifecycle === "DEACTIVATED" ? "DEACTIVATED" as const : "ACTIVE" as const;
       const values = { canonicalModelId: model.id, providerId: provider.id, providerModelId: identity.providerModelId, litellmDeploymentId: identity.deploymentId, litellmModelName: item.model_name, managed: managedFlag, managedBy: managedFlag ? String(item.model_info.managed_by) : null, curatorVersion: managedFlag ? String(item.model_info.curator_version ?? CURATOR_VERSION) : null, apiBase: typeof item.litellm_params.api_base === "string" ? item.litellm_params.api_base : null, rawMetadata: sanitizedMetadata(item), lastSeenAt: new Date(), lifecycle };
       let deploymentRowId: string;
       if (existing) { deploymentRowId = existing.id; await db.update(modelDeployments).set({ ...values, updatedAt: new Date() }).where(eq(modelDeployments.id, existing.id)); }
