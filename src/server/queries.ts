@@ -64,7 +64,7 @@ export async function getProviderSourceBreakdown(): Promise<Map<string, Provider
 export async function getProvider(id: string) {
   const db=getDb(); const provider=(await db.select().from(providers).where(eq(providers.id,id)).limit(1))[0];
   if(!provider)return null;
-  const credentials=await db.select({environmentVariable:providerCredentialReferences.environmentVariable,valueHint:providerCredentialReferences.valueHint,valid:providerCredentialReferences.valid,lastValidatedAt:providerCredentialReferences.lastValidatedAt}).from(providerCredentialReferences).where(eq(providerCredentialReferences.providerId,id));
+  const credentials=await db.select({environmentVariable:providerCredentialReferences.environmentVariable,valueHint:providerCredentialReferences.valueHint,valid:providerCredentialReferences.valid,lastValidatedAt:providerCredentialReferences.lastValidatedAt,config:providerCredentialReferences.config}).from(providerCredentialReferences).where(eq(providerCredentialReferences.providerId,id));
   const deployments=await getDeployments();
   return {provider,credentials,deployments:deployments.filter(item=>item.providerName===provider.name)};
 }

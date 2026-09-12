@@ -4,7 +4,8 @@ import { eq,and,inArray } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
 import { auditEvents,modelCandidates,providers,syncRuns } from "@/server/db/schema";
 import { discoverySources } from "./sources";
-import { ensureModelSources, getEnabledAdapterIds, recordSourceSync } from "./model-sources";
+import { sourceRegistry } from "./registry";
+import { ensureModelSources, getEnabledAdapterIds, getEnabledSourceLastSync, recordSourceSync } from "./model-sources";
 import { resolveProvider } from "@/server/providers/catalog";
 import { bareModelKey } from "./model-key";
 import { consolidateModelCandidates } from "./consolidate";
@@ -19,7 +20,16 @@ async function findDuplicateCandidate(db:ReturnType<typeof getDb>,providerName:s
 export async function runDiscovery(){
   await ensureModelSources();
   const enabledIds = await getEnabledAdapterIds();
-  const activeSources = discoverySources.filter(source => enabledIds.has(source.id));
+  const lastSyncById = await getEnabledSourceLastSync();
+  const registryById = new Map(sourceRegistry.map(source => [source.id, source]));
+  const activeSources = discoverySources.filter(source => {
+    if (!enabledIds.has(source.id)) return false;
+    const refreshHours = registryById.get(source.id)?.refreshHours;
+    if (!refreshHours) return true;
+    const lastSyncAt = lastSyncById.get(source.id);
+    if (!lastSyncAt) return true;
+    return Date.now() - lastSyncAt.getTime() >= refreshHours * 60 * 60 * 1000;
+  });
   const db=getDb();const correlationId=randomUUID();const[run]=await db.insert(syncRuns).values({type:"MODEL_DISCOVERY",status:"RUNNING",correlationId,startedAt:new Date()}).returning();
   const providerIdBySlug=new Map((await db.select({slug:providers.slug,id:providers.id}).from(providers)).map(row=>[row.slug,row.id]));
   const results=await Promise.allSettled(activeSources.map(async source=>{try{const items=await source.discover();return {sourceId:source.id,ok:true as const,items}}catch(error){return {sourceId:source.id,ok:false as const,error:error instanceof Error?error.message:"Unknown source error"}}}));

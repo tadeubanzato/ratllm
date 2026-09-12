@@ -7,6 +7,7 @@ import { auditEvents, laneAssignments, lanes, modelCandidates, providerCredentia
 import { HttpLiteLLMAdapter, LiteLLMError } from "@/server/litellm/client";
 import { syncLiteLLM } from "@/server/litellm/sync";
 import { resolveProvider } from "@/server/providers/catalog";
+import { buildExtraHeaders } from "@/server/providers/wiring";
 import { bareModelKey } from "@/server/discovery/model-key";
 import { bareCandidateModelRef, resolveCredentialSecret, resolveVerificationEndpoint, verifyCandidateDirectly } from "@/server/discovery/verify";
 import { classifyCandidateLanes } from "./rules";
@@ -95,6 +96,7 @@ async function registerTarget(ctx: PromotionContext, modelName: string, lane: La
         model: providerModelId(ctx.bareModel),
         apiKey: ctx.apiKey,
         apiBase: ctx.apiBase,
+        extraHeaders: buildExtraHeaders(ctx.definition.slug, ctx.credential.config),
         metadata: {
           managed_by: CURATOR_MANAGED_BY, curator_version: CURATOR_VERSION, source_provider: ctx.definition.name,
           source_model: ctx.candidate.modelRef, source_candidate_id: ctx.candidate.id, free_type: ctx.candidate.freeType,

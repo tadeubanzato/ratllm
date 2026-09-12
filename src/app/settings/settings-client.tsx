@@ -13,7 +13,7 @@ import { getIntegrationStatus, integrationStatusLabels, integrationStatusTone, C
 
 const tabs = ["General", "LiteLLM", "Providers", "Automation", "Free Model Sources", "Safety"] as const;
 type Tab = (typeof tabs)[number];
-type Provider = {id: string; name: string; slug: string; enabled: boolean; credentialState: string; lastValidatedAt: string | null; environmentVariable: string; testSupported: boolean; portal: {url: string; label: string} | null; modelCount: number};
+type Provider = {id: string; name: string; slug: string; enabled: boolean; credentialState: string; lastValidatedAt: string | null; environmentVariable: string; testSupported: boolean; portal: {url: string; label: string} | null; modelCount: number; config: Record<string, string>};
 type Job = {type: string; enabled: boolean; schedule: string; customSchedule: boolean; defaultSchedule: string | null; timezone: string; status: string; lastRunAt: string | null; nextRunAt: string | null; durationMs: number | null; failureCount: number; lastError: string | null};
 
 const jobTypeLabels: Record<string, string> = {
@@ -213,7 +213,7 @@ export function SettingsClient({environment, lanes, laneOverview, initialHistory
     </Card>}
     <Modal open={editing !== null} title={`${providers.find(p => p.id === editing)?.name ?? ""} credential`} onClose={() => setEditing(null)}>
       {editing && providers.find(p => p.id === editing)?.portal && <p className="settings-help"><a href={providers.find(p => p.id === editing)!.portal!.url} target="_blank" rel="noopener noreferrer">{providers.find(p => p.id === editing)!.portal!.label} on {providers.find(p => p.id === editing)?.name} ↗</a></p>}
-      {editing && <CredentialForm providerId={editing} defaultEnv={providers.find(p => p.id === editing)!.environmentVariable}/>}
+      {editing && <CredentialForm providerId={editing} defaultEnv={providers.find(p => p.id === editing)!.environmentVariable} slug={providers.find(p => p.id === editing)!.slug} defaultConfig={providers.find(p => p.id === editing)!.config}/>}
     </Modal>
     <Modal open={deletingProvider !== null} title={`Delete ${providers.find(p => p.id === deletingProvider)?.name ?? ""}`} onClose={() => setDeletingProvider(null)}>
       <p className="settings-help">This deactivates the provider — it stops appearing as available for discovery and verification, but its credential, deployments, and history stay in the database. You can re-enable it any time from the Enabled column.</p>

@@ -23,6 +23,13 @@ export async function getEnabledAdapterIds(): Promise<Set<string>> {
   return new Set(rows.map(row => row.adapterReference).filter((value): value is string => Boolean(value)));
 }
 
+/** Last-sync timestamps for enabled sources, keyed by adapter id — lets a caller decide which sources are actually
+ *  due for a refresh (per-source refreshHours) instead of always re-fetching everything on every discovery pass. */
+export async function getEnabledSourceLastSync(): Promise<Map<string, Date | null>> {
+  const rows = await getDb().select({adapterReference: modelSources.adapterReference, lastSyncAt: modelSources.lastSyncAt}).from(modelSources).where(eq(modelSources.enabled, true));
+  return new Map(rows.filter((row): row is typeof row & {adapterReference: string} => Boolean(row.adapterReference)).map(row => [row.adapterReference, row.lastSyncAt]));
+}
+
 export async function recordSourceSync(adapterReference: string, result: {ok: true; count: number} | {ok: false; error: string}) {
   await getDb().update(modelSources).set({
     status: result.ok ? (result.count > 0 ? "HEALTHY" : "DEGRADED") : "FAILED",

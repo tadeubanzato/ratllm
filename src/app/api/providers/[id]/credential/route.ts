@@ -3,7 +3,7 @@ import { z } from "zod";
 import { apiError, correlationId } from "@/server/http";
 import { CredentialNotFoundError, deleteProviderCredential, EnvironmentCredentialMissingError, ProviderNotFoundError, saveProviderCredential, setProviderCredentialDisabled } from "@/server/providers/credentials";
 
-const input = z.object({apiKey: z.string().min(8).max(10000).optional(), environmentVariable: z.string().regex(/^[A-Z][A-Z0-9_]*$/)});
+const input = z.object({apiKey: z.string().min(8).max(10000).optional(), environmentVariable: z.string().regex(/^[A-Z][A-Z0-9_]*$/), config: z.record(z.string(), z.string().max(500)).optional()});
 
 export async function PUT(request: Request, {params}: {params: Promise<{id: string}>}) {
   const correlation = correlationId(request);

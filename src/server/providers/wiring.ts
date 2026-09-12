@@ -115,8 +115,16 @@ export function supportsCredentialTest(slug: string): boolean {
   return Boolean(providerWiring[slug]?.check);
 }
 
-export function resolveCheck(slug: string): ProviderCheck | null {
-  return providerWiring[slug]?.check ?? null;
+/** An explicit Base URL swaps in for a check endpoint's host+path prefix only when that check is itself
+ *  `/models`-shaped (the OpenAI-compatible convention) — this is what fixes Alibaba-style region mismatches
+ *  ("API keys from different regions are rejected with authentication errors", per Alibaba's own docs) without
+ *  touching providers like Cloudflare whose check is a fixed, account-agnostic endpoint unrelated to their
+ *  account-scoped completions Base URL. */
+export function resolveCheck(slug: string, baseUrl?: string | null): ProviderCheck | null {
+  const wiring = providerWiring[slug];
+  if (!wiring?.check) return null;
+  if (!baseUrl || !/\/models$/.test(wiring.check.url)) return wiring.check;
+  return {...wiring.check, url: `${baseUrl.replace(/\/$/, "").replace(/\/v1$/, "")}/v1/models`};
 }
 
 /** The chat-completions URL a provider is reachable at — an explicit Base URL always wins (account-scoped or
@@ -141,6 +149,27 @@ export const integrationStatusLabels: Readonly<Record<IntegrationStatus, string>
 export const integrationStatusTone: Readonly<Record<IntegrationStatus, "good" | "warn" | "bad" | "neutral">> = {
   LIVE: "good", NO_CREDENTIAL_NEEDED: "good", READY: "warn", NEEDS_CUSTOM_ADAPTER: "warn", SELF_HOSTED: "neutral", NOT_WIRED: "bad",
 };
+
+/**
+ * Non-secret, per-provider extra credential fields a plain bearer key can't express, rendered as additional inputs
+ * on the credential form and stored in providerCredentialReferences.config. Alibaba Model Studio's optional
+ * Workspace ID is the first case: DashScope's newer workspace-scoped endpoints require it in the hostname, and
+ * some workspace-scoped API keys are rejected on the shared compatible-mode host without it declared explicitly.
+ */
+export interface ExtraCredentialField { key: string; label: string; placeholder?: string; header: string }
+export const EXTRA_CREDENTIAL_FIELDS: Readonly<Record<string, readonly ExtraCredentialField[]>> = {
+  "alibaba-model-studio": [{key: "workspaceId", label: "Workspace ID (optional)", placeholder: "llm-xxxxxxxxxxxxxxxx", header: "X-DashScope-WorkSpace"}],
+};
+
+/** Turns a credential's stored config values into the extra HTTP headers this provider's requests need — applied
+ *  to both our own check/completions calls. Unknown/empty config keys are silently ignored. */
+export function buildExtraHeaders(slug: string, config: Record<string, string> | null | undefined): Record<string, string> {
+  const fields = EXTRA_CREDENTIAL_FIELDS[slug];
+  if (!fields || !config) return {};
+  const headers: Record<string, string> = {};
+  for (const field of fields) { const value = config[field.key]; if (value) headers[field.header] = value; }
+  return headers;
+}
 
 export function getIntegrationStatus(slug: string, credential: {configured: boolean; verified: boolean}, hasLiveDeployments = false): IntegrationStatus {
   if (SELF_HOSTED_PROVIDERS.has(slug)) return "SELF_HOSTED";

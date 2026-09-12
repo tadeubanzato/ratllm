@@ -11,7 +11,7 @@ export class DuplicateProviderError extends Error {}
 
 export interface ProviderSettingsRow {
   id: string; slug: string; name: string; enabled: boolean; credentialState: "MISSING" | "CONFIGURED" | "INVALID" | "UNKNOWN";
-  lastValidatedAt: Date | null; environmentVariable: string; testSupported: boolean; portal: {url: string; label: string} | null; modelCount: number;
+  lastValidatedAt: Date | null; environmentVariable: string; testSupported: boolean; portal: {url: string; label: string} | null; modelCount: number; config: Record<string, string>;
 }
 
 export async function listProviderSettings(): Promise<ProviderSettingsRow[]> {
@@ -30,7 +30,7 @@ export async function listProviderSettings(): Promise<ProviderSettingsRow[]> {
     return {
       id: provider.id, slug: provider.slug, name: provider.name, enabled: provider.enabled, credentialState,
       lastValidatedAt: latest ?? null, environmentVariable: refs[0]?.environmentVariable ?? `${provider.slug.toUpperCase().replaceAll("-", "_")}_API_KEY`,
-      testSupported: supportsCredentialTest(provider.slug), portal: getProviderPortal(provider.slug), modelCount: modelCountByProvider.get(provider.id) ?? 0,
+      testSupported: supportsCredentialTest(provider.slug), portal: getProviderPortal(provider.slug), modelCount: modelCountByProvider.get(provider.id) ?? 0, config: refs[0]?.config ?? {},
     };
   });
 }
