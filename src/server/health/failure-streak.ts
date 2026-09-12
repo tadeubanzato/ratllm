@@ -1,4 +1,14 @@
+import { SELF_HOSTED_PROVIDERS } from "@/server/providers/wiring";
+
 export const AUTO_REMOVE_AFTER_FAILURES = 5;
+
+/** Auto-remove only ever touches a deployment this app added itself, and never a self-hosted one (local/MLX,
+ *  Lemonade) even if it were somehow managed — a laptop asleep or a LAN hiccup looks identical to N failed checks,
+ *  but it's the user's own machine being unreachable, not a dead model, and there's no discovery re-run that would
+ *  ever bring a self-hosted deployment back after a wrongful removal. */
+export function isAutoRemoveEligible(deployment: { managed: boolean; litellmDeploymentId: string | null }, providerSlug: string): boolean {
+  return deployment.managed && deployment.litellmDeploymentId !== null && !SELF_HOSTED_PROVIDERS.has(providerSlug);
+}
 
 /** Pure streak logic, kept dependency-free for unit testing: most-recent-first smoke test rows in, consecutive-
  *  genuine-failure count out. A 429 proves the provider is alive and answering — the opposite of evidence the

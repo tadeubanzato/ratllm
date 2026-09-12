@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeFailureStreak } from "../src/server/health/failure-streak";
+import { computeFailureStreak, isAutoRemoveEligible } from "../src/server/health/failure-streak";
 
 const failed = (errorCode: string | null = "UNAVAILABLE") => ({status: "FAILED", errorCode});
 const passed = () => ({status: "PASSED", errorCode: "HEALTHY"});
@@ -24,5 +24,26 @@ describe("computeFailureStreak", () => {
 
   it("caps at AUTO_REMOVE_AFTER_FAILURES even given a longer genuine streak", () => {
     expect(computeFailureStreak(Array.from({length: 10}, () => failed()))).toBe(5);
+  });
+});
+
+describe("isAutoRemoveEligible", () => {
+  const managedLive = {managed: true, litellmDeploymentId: "dep-1"};
+
+  it("allows a managed, live, cloud-provider deployment", () => {
+    expect(isAutoRemoveEligible(managedLive, "groq")).toBe(true);
+  });
+
+  it("never allows a self-hosted provider, even if somehow managed", () => {
+    expect(isAutoRemoveEligible(managedLive, "local")).toBe(false);
+    expect(isAutoRemoveEligible(managedLive, "lemonade")).toBe(false);
+  });
+
+  it("never allows an unmanaged deployment", () => {
+    expect(isAutoRemoveEligible({...managedLive, managed: false}, "groq")).toBe(false);
+  });
+
+  it("never allows a deployment that's already gone from LiteLLM", () => {
+    expect(isAutoRemoveEligible({...managedLive, litellmDeploymentId: null}, "groq")).toBe(false);
   });
 });

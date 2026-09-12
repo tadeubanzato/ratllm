@@ -8,7 +8,7 @@ import { recordLaneSnapshots } from "@/server/lanes/snapshots";
 import { recordConnection } from "@/server/settings/connections";
 import { getLiteLLMManagementSettings } from "@/server/settings/litellm-management";
 import { healthFromSmokeResult } from "@/server/status";
-import { AUTO_REMOVE_AFTER_FAILURES, computeFailureStreak } from "./failure-streak";
+import { AUTO_REMOVE_AFTER_FAILURES, computeFailureStreak, isAutoRemoveEligible } from "./failure-streak";
 import { randomUUID } from "node:crypto";
 
 // Looks back further than AUTO_REMOVE_AFTER_FAILURES so a run of rate-limited checks (skipped, never counted —
@@ -25,10 +25,12 @@ async function consecutiveFailureCount(deploymentId: string): Promise<number> {
  * A ratllm-managed deployment that has failed its last AUTO_REMOVE_AFTER_FAILURES health checks in a row is
  * pulled from LiteLLM automatically, excluded from its lanes, and its canonical model quarantined — so a dead
  * free-tier model stops clogging routing/fallbacks instead of sitting there forever showing as failing.
- * Never touches an unmanaged deployment (one this app did not add itself).
+ * See isAutoRemoveEligible for what's exempt and why.
  */
-async function autoRemoveIfFailing(deployment: typeof modelDeployments.$inferSelect, adapter: HttpLiteLLMAdapter): Promise<boolean> {
-  if (!deployment.managed || !deployment.litellmDeploymentId) return false;
+async function autoRemoveIfFailing(deployment: typeof modelDeployments.$inferSelect, providerSlug: string, adapter: HttpLiteLLMAdapter): Promise<boolean> {
+  // The trailing null check is redundant with isAutoRemoveEligible at runtime — it's here only so TypeScript can
+  // narrow litellmDeploymentId to a string for the removeDeployment call below.
+  if (!isAutoRemoveEligible(deployment, providerSlug) || !deployment.litellmDeploymentId) return false;
   const streak = await consecutiveFailureCount(deployment.id);
   if (streak < AUTO_REMOVE_AFTER_FAILURES) return false;
 
@@ -61,11 +63,13 @@ async function autoRemoveIfFailing(deployment: typeof modelDeployments.$inferSel
 /** Least-recently-tested deployments first, so a frequent limited-size run rotates through the whole inventory over time instead of getting stuck on the same rows forever. Skips deployments whose provider is marked "skip automation" in Settings → Providers. */
 export async function runHealthMonitor(options:{limit?:number}={}){
   const db=getDb();
-  const deployments=await db.select({deployment:modelDeployments}).from(modelDeployments)
+  const rows=await db.select({deployment:modelDeployments,providerSlug:providers.slug}).from(modelDeployments)
     .innerJoin(providers,eq(modelDeployments.providerId,providers.id))
     .where(and(isNotNull(modelDeployments.litellmDeploymentId),eq(providers.enabled,true)))
     .orderBy(sql`${modelDeployments.lastTestedAt} asc nulls first`)
-    .limit(options.limit??25).then(rows=>rows.map(row=>row.deployment));
+    .limit(options.limit??25);
+  const deployments=rows.map(row=>row.deployment);
+  const providerSlugById=new Map(rows.map(row=>[row.deployment.id,row.providerSlug]));
   const adapter=new HttpLiteLLMAdapter();
   const { autoRemove } = await getLiteLLMManagementSettings();
   let healthy=0; let autoRemoved=0; let reachedLiteLLM=false;
@@ -77,7 +81,7 @@ export async function runHealthMonitor(options:{limit?:number}={}){
     if(health==="HEALTHY")healthy++;
     await db.insert(smokeTests).values({deploymentId:deployment.id,status:result.ok?"PASSED":"FAILED",latencyMs:result.latencyMs,firstTokenMs:result.firstTokenMs??null,httpStatus:result.status||null,errorCode:health,error:result.error,responseExcerpt:result.content,correlationId:randomUUID()});
     await db.update(modelDeployments).set({health,lastTestedAt:new Date(),updatedAt:new Date()}).where(eq(modelDeployments.id,deployment.id));
-    if (autoRemove && !result.ok && await autoRemoveIfFailing(deployment, adapter)) autoRemoved++;
+    if (autoRemove && !result.ok && await autoRemoveIfFailing(deployment, providerSlugById.get(deployment.id)!, adapter)) autoRemoved++;
     results.push({id:deployment.id,health,status:result.status});
   }
   // The health monitor runs every few minutes — a far more frequent, real proof of LiteLLM connectivity than
