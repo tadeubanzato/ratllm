@@ -91,21 +91,29 @@ unknown
 | Rank | Source | Rating | Best for | Automation |
 |---:|---|---:|---|---|
 | 1 | **models.dev** | 5.0/5 | Canonical model/provider/lab database | Excellent |
-| 2 | **OpenRouter** | 5.0/5 | Live hosted models + explicit free variants | Excellent |
-| 3 | **Hugging Face Inference Providers** | 5.0/5 | Global model/provider graph | Excellent |
-| 4 | **LiteLLM model registry** | 4.8/5 | Normalized provider/pricing/context metadata | Excellent |
-| 5 | **Google Gemini API** | 5.0/5 | Direct recurring free tier | Excellent |
-| 6 | **GroqCloud** | 5.0/5 | Direct free inference + explicit rate limits | Excellent |
-| 7 | **Cloudflare Workers AI** | 5.0/5 | Recurring daily free compute | Very good |
-| 8 | **Mistral AI Studio** | 4.8/5 | EU provider, free API mode | Excellent |
-| 9 | **Z.AI / Zhipu AI** | 4.8/5 | Direct $0 Chinese GLM models | Very good |
-| 10 | **Alibaba Model Studio** | 4.8/5 | Large per-model trial quotas, Qwen ecosystem | Very good |
-| 11 | **Vercel AI Gateway** | 4.7/5 | Broad model/provider gateway + recurring credit | Excellent |
-| 12 | **NVIDIA NIM API Catalog** | 4.7/5 | Many free endpoints and open models | Very good |
-| 13 | **Cerebras Inference** | 4.5/5 | Fast inference, public catalog, trial credits | Excellent |
-| 14 | **Cohere** | 4.3/5 | Trial API + chat/embed/rerank | Good |
-| 15 | **free-llm-api-resources** | 4.0/5 | Provider discovery | Good, but verify |
-| 16 | **Provider watchlist** | 3.5/5 | SambaNova, SiliconFlow, Novita, etc. | Verify individually |
+| 2 | **Artificial Analysis** | 5.0/5 | Independent quality, pricing, speed, latency, provider intelligence | Excellent |
+| 3 | **Epoch AI Models Database** | 5.0/5 | Research-grade global model identity, developer, country, release/training metadata | Excellent |
+| 4 | **OpenRouter** | 5.0/5 | Live hosted models + explicit free variants | Excellent |
+| 5 | **Hugging Face Inference Providers** | 5.0/5 | Global model/provider graph | Excellent |
+| 6 | **ModelScope** | 4.9/5 | Searchable China/Asia-heavy global open-model hub | Excellent |
+| 7 | **LLM Stats / ZeroEval** | 4.8/5 | Searchable models, providers, pricing, benchmarks and rankings | Excellent |
+| 8 | **LiteLLM model registry** | 4.8/5 | Normalized provider/pricing/context metadata | Excellent |
+| 9 | **LMArena / Arena-Rank** | 4.8/5 | Human-preference rankings across frontier models | Good |
+| 10 | **OpenCompass / CompassArena** | 4.8/5 | China/global benchmark coverage + human-preference arena | Good |
+| 11 | **Stanford HELM** | 4.6/5 | Reproducible research-grade benchmark validation | Good; maintenance mode |
+| 12 | **Google Gemini API** | 5.0/5 | Direct recurring free tier | Excellent |
+| 13 | **GroqCloud** | 5.0/5 | Direct free inference + explicit rate limits | Excellent |
+| 14 | **Cloudflare Workers AI** | 5.0/5 | Recurring daily free compute | Very good |
+| 15 | **Mistral AI Studio** | 4.8/5 | EU provider, free API mode | Excellent |
+| 16 | **Z.AI / Zhipu AI** | 4.8/5 | Direct $0 Chinese GLM models | Very good |
+| 17 | **Alibaba Model Studio** | 4.8/5 | Large per-model trial quotas, Qwen ecosystem | Very good |
+| 18 | **Vercel AI Gateway** | 4.7/5 | Broad model/provider gateway + recurring credit | Excellent |
+| 19 | **NVIDIA NIM API Catalog** | 4.7/5 | Many free endpoints and open models | Very good |
+| 20 | **Cerebras Inference** | 4.5/5 | Fast inference, public catalog, trial credits | Excellent |
+| 21 | **Cohere** | 4.3/5 | Trial API + chat/embed/rerank | Good |
+| 22 | **HF Open LLM Leaderboard archive** | 3.8/5 | Historical reproducible open-model scores | Historical only |
+| 23 | **free-llm-api-resources** | 4.0/5 | Provider discovery | Good, but verify |
+| 24 | **Provider watchlist** | 3.5/5 | SambaNova, SiliconFlow, Novita, etc. | Verify individually |
 
 ---
 
@@ -458,6 +466,480 @@ jq '
 **Never interpret missing/zero LiteLLM pricing as proof that a provider is free.**
 
 A new model can temporarily lack populated pricing metadata. Use LiteLLM for normalization and routing compatibility, then confirm free status from provider documentation.
+
+---
+
+## 4.5 Artificial Analysis
+
+**Rating:** 5.0/5  
+**Role:** Independent model/provider intelligence layer  
+**Region:** Independent/global coverage  
+**Best use:** Quality, price, speed, latency, context, provider availability and cross-provider comparison.  
+**Free-status authority:** No — use provider docs for entitlement/free-tier truth.
+
+### URLs
+
+- Main site: https://artificialanalysis.ai/
+- Provider leaderboard: https://artificialanalysis.ai/leaderboards/providers
+- Data API overview: https://artificialanalysis.ai/data-api
+- API docs: https://artificialanalysis.ai/data-api/docs
+- API reference: https://artificialanalysis.ai/api-reference
+- API base: https://artificialanalysis.ai/api/v2
+
+### Why it belongs in the core stack
+
+Artificial Analysis independently measures real API endpoints rather than assuming that every provider serving the same model performs identically. It tracks model identity, pricing, intelligence/benchmark indices and median performance, and its commercial datasets add per-provider measurements and performance history.
+
+This is particularly valuable for routing because the same underlying model can differ substantially by host in:
+
+```text
+output tokens/sec
+time-to-first-token
+end-to-end latency
+context window
+price
+provider availability
+```
+
+### Free API
+
+The official API has a free access tier for public model-level data. Access requires an API key and attribution. The current free endpoint includes headline model indices, median performance and input/output pricing. API limits and available fields can change by plan, so store the returned tier and rate-limit headers.
+
+### Bash — language model catalog
+
+```bash
+curl -fsSL \
+  'https://artificialanalysis.ai/api/v2/language/models' \
+  -H "x-api-key: $ARTIFICIAL_ANALYSIS_API_KEY" \
+  | jq .
+```
+
+### Extract useful routing fields
+
+```bash
+curl -fsSL \
+  'https://artificialanalysis.ai/api/v2/language/models' \
+  -H "x-api-key: $ARTIFICIAL_ANALYSIS_API_KEY" \
+  | jq '.data[]'
+```
+
+Field names can evolve; inspect the current schema before hard-coding parsers.
+
+### Recommended role in your registry
+
+```text
+model_quality_signal      = excellent
+provider_performance      = excellent
+pricing_crosscheck        = excellent
+canonical_identity        = strong
+free_tier_verification    = no
+```
+
+### Refresh
+
+```text
+Models/price/performance: daily
+Provider performance: daily if your subscription exposes it
+```
+
+---
+
+## 4.6 Epoch AI Models Database
+
+**Rating:** 5.0/5  
+**Role:** Research-grade canonical model history/identity source  
+**Region:** Global  
+**Best use:** Developer/lab identity, country, release date, parameters, training compute, dataset size, hardware, accessibility and historical lineage.  
+**Free-status authority:** No.
+
+### URLs
+
+- Model explorer: https://epoch.ai/models/search
+- Dataset overview: https://epoch.ai/data/ai-models
+- Documentation: https://epoch.ai/data/ai-models-documentation
+- Records/field definitions: https://epoch.ai/data/ai-models-documentation/records
+- Downloads: https://epoch.ai/data/ai-models-documentation/downloads
+- All models CSV: https://epoch.ai/data/all_ai_models.csv
+
+### Why it is trustworthy
+
+Epoch AI documents inclusion criteria, field definitions, estimation methodology, supporting evidence and update procedures. Its hosted CSV is synchronized daily and released under a Creative Commons Attribution license.
+
+Its model explorer is particularly useful for preventing a US-centric registry. It includes developers such as Alibaba, DeepSeek, Z.ai, Moonshot, MiniMax, Tsinghua University, Peking University, Xiaomi, Baichuan, Technology Innovation Institute, Mistral, Cohere and many others.
+
+### Bash — download the complete dataset
+
+```bash
+curl -fsSL \
+  https://epoch.ai/data/all_ai_models.csv \
+  -o epoch-all-ai-models.csv
+```
+
+### Bash — inspect columns
+
+```bash
+python - <<'PY'
+import pandas as pd
+p='epoch-all-ai-models.csv'
+df=pd.read_csv(p)
+print('\n'.join(df.columns))
+PY
+```
+
+### Python — search globally by any text field
+
+```python
+import pandas as pd
+
+df = pd.read_csv('https://epoch.ai/data/all_ai_models.csv')
+term = 'Alibaba'
+mask = df.astype(str).apply(
+    lambda col: col.str.contains(term, case=False, na=False)
+).any(axis=1)
+print(df.loc[mask].to_string(index=False))
+```
+
+### Recommended role
+
+```text
+canonical_model_identity  = excellent
+lab/developer_identity    = excellent
+country/origin            = excellent
+release_history           = excellent
+training_metadata         = excellent
+serving_provider_mapping  = limited
+free_api_truth            = no
+```
+
+### Refresh
+
+```text
+daily
+```
+
+---
+
+## 4.7 LLM Stats / ZeroEval
+
+**Rating:** 4.8/5  
+**Role:** Searchable model/provider/benchmark intelligence API  
+**Best use:** Model discovery, provider pricing, context lengths, benchmark scores, rankings and category-level comparison.  
+**Free-status authority:** No — validate free access with the serving provider.
+
+### URLs
+
+- Main site: https://llm-stats.com/
+- Provider browser: https://llm-stats.com/providers
+- Developer/API docs: https://llm-stats.com/developer
+- API base: https://api.zeroeval.com/stats/v1
+- Models endpoint: https://api.zeroeval.com/stats/v1/models
+- ZeroEval docs: https://github.com/zeroeval/llm-stats-docs
+
+### What it provides
+
+The data API exposes hundreds of models and dozens of verified benchmarks, including model identity, organization/developer, serving providers, input/output pricing, context length, benchmark scores, category scores and rankings.
+
+### Bash — search models
+
+```bash
+curl -fsSL \
+  -H "Authorization: Bearer $LLM_STATS_API_KEY" \
+  'https://api.zeroeval.com/stats/v1/models?limit=100' \
+  | jq .
+```
+
+### Bash — filter by organization
+
+```bash
+curl -fsSL \
+  -H "Authorization: Bearer $LLM_STATS_API_KEY" \
+  'https://api.zeroeval.com/stats/v1/models?organization=anthropic&limit=20' \
+  | jq '.models[] | {id,name,organization,providers,top_scores}'
+```
+
+### Useful endpoints
+
+```text
+GET /stats/v1/models
+GET /stats/v1/models/{id}
+GET /stats/v1/benchmarks
+GET /stats/v1/scores
+GET /stats/v1/rankings
+GET /stats/v1/updates
+```
+
+### Recommended role
+
+```text
+model_search              = excellent
+provider_discovery        = very_good
+benchmark_crosscheck      = excellent
+pricing_crosscheck        = very_good
+free_status               = verify_elsewhere
+```
+
+### Refresh
+
+```text
+daily
+```
+
+---
+
+## 4.8 LMArena / Arena-Rank
+
+**Rating:** 4.8/5  
+**Role:** Human-preference quality signal  
+**Origin:** UC Berkeley research ecosystem; now operated as Arena/LMArena  
+**Best use:** Determine whether users actually prefer one model over another in blind head-to-head comparisons.  
+**Free-status authority:** No.
+
+### URLs
+
+- Leaderboards: https://lmarena.ai/leaderboard
+- Text leaderboard: https://lmarena.ai/leaderboard/text
+- Arena home: https://lmarena.ai/
+- Arena-Rank methodology: https://arena.ai/blog/arena-rank
+- Arena-Rank GitHub: https://github.com/lmarena/arena-rank
+- Public preference dataset example: https://huggingface.co/datasets/lmarena-ai/arena-human-preference-140k
+
+### Why it is valuable
+
+Static benchmarks can be gamed, saturated or overfit. LMArena provides a complementary real-user signal through randomized pairwise battles. Do **not** treat Arena score as an objective universal intelligence score; treat it as one preference signal among several.
+
+### Install the open ranking implementation
+
+```bash
+python -m pip install arena-rank datasets pandas
+```
+
+### Python — reproduce ratings from public preference data
+
+```python
+import pandas as pd
+from datasets import load_dataset
+from arena_rank.utils.data_utils import PairDataset
+from arena_rank.models.bradley_terry import BradleyTerry
+
+df = load_dataset(
+    'lmarena-ai/arena-human-preference-140k',
+    split='train'
+).to_pandas()
+
+dataset = PairDataset.from_pandas(df[['model_a','model_b','winner']])
+model = BradleyTerry(n_competitors=len(dataset.competitors))
+results = model.compute_ratings_and_cis(dataset, significance_level=0.05)
+print(pd.DataFrame(results).sort_values('ratings', ascending=False).head(20))
+```
+
+### Recommended role
+
+```text
+human_preference_score    = excellent
+quality_crosscheck        = excellent
+provider_discovery        = weak
+pricing                   = incidental
+free_status               = no
+```
+
+### Caveat
+
+Store vote counts and confidence/rank-spread information where available rather than only the ordinal rank.
+
+---
+
+## 4.9 OpenCompass / CompassArena
+
+**Rating:** 4.8/5  
+**Role:** Research-grade global benchmark and preference layer with strong China/Asia coverage  
+**Organization:** OpenCompass / Shanghai AI Laboratory ecosystem  
+**Best use:** Cross-check models underrepresented in Western benchmark/catalog sites, especially Chinese and multilingual models.  
+**Free-status authority:** No.
+
+### URLs
+
+- OpenCompass GitHub: https://github.com/open-compass/opencompass
+- Documentation: https://doc.opencompass.org.cn/
+- CompassAcademic reproduction guide: https://doc.opencompass.org.cn/notes/academic.html
+- CompassArena: https://arena.opencompass.org.cn/
+
+### Why it belongs in a global registry
+
+OpenCompass supports public/open models and API models and evaluates them across a broad suite of datasets. The CompassAcademic leaderboard publishes the configuration needed to reproduce results and is typically updated every couple of weeks.
+
+CompassArena adds a human-preference signal using real conversations and Bradley-Terry ranking, providing a valuable non-Western complement to LMArena.
+
+### Install OpenCompass
+
+```bash
+python -m pip install -U opencompass
+```
+
+Full optional dependencies:
+
+```bash
+python -m pip install 'opencompass[full]'
+```
+
+### Clone for configuration/data inspection
+
+```bash
+git clone https://github.com/open-compass/opencompass.git
+cd opencompass
+```
+
+### Recommended role
+
+```text
+benchmark_validation      = excellent
+china_model_coverage      = excellent
+multilingual_validation   = very_good
+human_preference_signal   = very_good
+provider/free_status      = no
+```
+
+---
+
+## 4.10 ModelScope
+
+**Rating:** 4.9/5  
+**Role:** Large searchable AI model hub and API/SDK, particularly valuable for China/Asia coverage  
+**Best use:** Discover models, organizations, licenses, tasks, architectures, libraries, inference availability and assets that may appear later or less prominently on Western hubs.  
+**Free-status authority:** No — inference availability is not the same thing as durable free inference.
+
+### URLs
+
+- Model browser: https://www.modelscope.cn/models
+- International site: https://modelscope.ai/
+- Official Hub SDK: https://github.com/modelscope/modelscope_hub
+- Main ModelScope GitHub: https://github.com/modelscope/modelscope
+
+### Search capabilities
+
+The model browser supports filtering/search by model name, organization, task, license, architecture, tags, library/runtime and inference API state.
+
+### OpenAPI — search models
+
+```bash
+export MODELSCOPE_ENDPOINT='https://www.modelscope.cn'
+
+curl -fsSL \
+  "$MODELSCOPE_ENDPOINT/openapi/v1/models?search=qwen&sort=downloads&page_size=20" \
+  -H "Authorization: Bearer $MODELSCOPE_API_KEY" \
+  | jq .
+```
+
+Expected model-list records include identifiers plus fields such as downloads, likes, license and tasks.
+
+### Official Python SDK
+
+```bash
+python -m pip install modelscope-hub
+```
+
+```python
+from modelscope_hub import HubApi
+
+api = HubApi()
+result = api.list_models(
+    owner_or_group='Qwen',
+    page_number=1,
+    page_size=20,
+)
+for model in result['Models']:
+    print(model['Path'], model.get('Downloads'))
+```
+
+### Recommended role
+
+```text
+asian_model_discovery     = excellent
+open_model_search         = excellent
+license/task_metadata     = very_good
+model_assets              = excellent
+provider/free_truth       = no
+```
+
+### Refresh
+
+```text
+daily
+```
+
+---
+
+## 4.11 Stanford HELM
+
+**Rating:** 4.6/5  
+**Role:** Transparent, reproducible benchmark validation  
+**Organization:** Stanford Center for Research on Foundation Models (CRFM)  
+**Best use:** Independent benchmark results across capabilities, safety, long context, vision, medicine and other domains.  
+**Free-status authority:** No.
+
+### URLs
+
+- HELM home: https://crfm.stanford.edu/helm/
+- Capabilities leaderboard: https://crfm.stanford.edu/helm/capabilities/latest/
+- Long-context leaderboard: https://crfm.stanford.edu/helm/long-context/latest/
+- GitHub: https://github.com/stanford-crfm/helm
+- PyPI: https://pypi.org/project/crfm-helm/
+
+### Why it is reputable
+
+HELM was designed around holistic, reproducible and transparent foundation-model evaluation. Results expose detailed scenarios, metrics, prompts and responses, making it useful for audit/cross-validation rather than simply accepting a single aggregate score.
+
+### Current-status caveat
+
+The HELM framework entered **maintenance mode on June 1, 2026**. Existing leaderboards and methodology remain valuable, but do not use HELM as the primary freshness source for newly released models.
+
+### Install and run a reproducible test
+
+```bash
+python -m pip install crfm-helm
+
+helm-run \
+  --run-entries 'mmlu:subject=philosophy,model=openai/gpt2' \
+  --suite my-suite \
+  --max-eval-instances 10
+
+helm-summarize --suite my-suite
+```
+
+### Recommended role
+
+```text
+benchmark_reproducibility = excellent
+research_transparency     = excellent
+fresh_model_discovery     = limited
+pricing/provider mapping  = no
+free_status               = no
+```
+
+---
+
+## 4.12 Hugging Face Open LLM Leaderboard — historical/archive source
+
+**Rating:** 3.8/5 current / 5.0/5 historical value  
+**Role:** Historical reproducible benchmark archive for open-weight models  
+**Current-source status:** **Do not use as a freshness source.**
+
+### URLs
+
+- Organization/archive: https://huggingface.co/open-llm-leaderboard
+- Leaderboard space: https://huggingface.co/spaces/open-llm-leaderboard/open_llm_leaderboard
+- Results dataset: https://huggingface.co/datasets/open-llm-leaderboard/results
+
+### Important caveat
+
+The Open LLM Leaderboard was officially retired in **March 2025** because the maintainers considered the benchmark set increasingly obsolete for modern reasoning/assistant models. The datasets remain useful historical evidence but should not influence current production routing without fresher evaluations.
+
+### Recommended role
+
+```text
+historical_open_model_score = useful
+current_model_quality       = do_not_use_as_primary
+free_status                 = no
+```
 
 ---
 
@@ -1153,6 +1635,28 @@ curl -fsSL \
   -o litellm-models.json
 ```
 
+## Pull global intelligence / benchmark catalogs
+
+```bash
+# Epoch AI
+curl -fsSL https://epoch.ai/data/all_ai_models.csv -o epoch-all-ai-models.csv
+
+# Artificial Analysis
+curl -fsSL https://artificialanalysis.ai/api/v2/language/models \
+  -H "x-api-key: $ARTIFICIAL_ANALYSIS_API_KEY" \
+  -o artificial-analysis-models.json
+
+# LLM Stats / ZeroEval
+curl -fsSL 'https://api.zeroeval.com/stats/v1/models?limit=100' \
+  -H "Authorization: Bearer $LLM_STATS_API_KEY" \
+  -o llm-stats-models.json
+
+# ModelScope
+curl -fsSL 'https://www.modelscope.cn/openapi/v1/models?search=qwen&sort=downloads&page_size=100' \
+  -H "Authorization: Bearer $MODELSCOPE_API_KEY" \
+  -o modelscope-qwen-models.json
+```
+
 ## Pull direct provider catalogs
 
 ```bash
@@ -1403,6 +1907,13 @@ Recommended update schedule:
 | Alibaba quota tables | weekly |
 | NVIDIA free endpoint catalog | daily |
 | Vercel model catalog | daily |
+| Artificial Analysis | daily |
+| Epoch AI | daily |
+| LLM Stats / ZeroEval | daily |
+| ModelScope | daily |
+| LMArena | daily/weekly |
+| OpenCompass / CompassArena | weekly / every 1–2 weeks |
+| Stanford HELM | monthly; maintenance mode |
 | community discovery repos | daily/weekly |
 
 Store:
@@ -1595,6 +2106,60 @@ https://github.com/BerriAI/litellm/blob/litellm_internal_staging/model_prices_an
 https://github.com/cheahjs/free-llm-api-resources
 ```
 
+## Global model intelligence / benchmark / regional discovery
+
+```text
+Artificial Analysis
+https://artificialanalysis.ai/
+https://artificialanalysis.ai/leaderboards/providers
+https://artificialanalysis.ai/data-api
+https://artificialanalysis.ai/data-api/docs
+https://artificialanalysis.ai/api/v2
+
+Epoch AI
+https://epoch.ai/models/search
+https://epoch.ai/data/ai-models
+https://epoch.ai/data/ai-models-documentation
+https://epoch.ai/data/ai-models-documentation/downloads
+https://epoch.ai/data/all_ai_models.csv
+
+LLM Stats / ZeroEval
+https://llm-stats.com/
+https://llm-stats.com/providers
+https://llm-stats.com/developer
+https://api.zeroeval.com/stats/v1/models
+
+LMArena
+https://lmarena.ai/
+https://lmarena.ai/leaderboard
+https://arena.ai/blog/arena-rank
+https://github.com/lmarena/arena-rank
+https://huggingface.co/datasets/lmarena-ai/arena-human-preference-140k
+
+OpenCompass / CompassArena
+https://github.com/open-compass/opencompass
+https://doc.opencompass.org.cn/
+https://doc.opencompass.org.cn/notes/academic.html
+https://arena.opencompass.org.cn/
+
+ModelScope
+https://www.modelscope.cn/models
+https://modelscope.ai/
+https://github.com/modelscope/modelscope_hub
+https://github.com/modelscope/modelscope
+
+Stanford HELM
+https://crfm.stanford.edu/helm/
+https://crfm.stanford.edu/helm/capabilities/latest/
+https://crfm.stanford.edu/helm/long-context/latest/
+https://github.com/stanford-crfm/helm
+
+HF Open LLM Leaderboard — archive/historical
+https://huggingface.co/open-llm-leaderboard
+https://huggingface.co/spaces/open-llm-leaderboard/open_llm_leaderboard
+https://huggingface.co/datasets/open-llm-leaderboard/results
+```
+
 ## Direct providers
 
 ```text
@@ -1653,22 +2218,54 @@ https://dashboard.cohere.com/
 
 ---
 
-# 19. Final recommendation
+# 19. Which source should answer which question?
 
-If this registry will drive a real router, use **models.dev as the canonical model universe**, then enrich it with:
+| Question | First source | Cross-check | Never rely on alone |
+|---|---|---|---|
+| What is this model / who made it? | models.dev + Epoch AI | HF / ModelScope | Provider marketing name |
+| What country/lab/ecosystem is it from? | Epoch AI | ModelScope / model card | OpenRouter slug |
+| Is it open-weight? | models.dev + official model card | HF / ModelScope | Hosting price |
+| Where can I call it? | OpenRouter + HF Inference Providers | models.dev / provider catalog | Benchmark sites |
+| Is there a free endpoint? | Official provider pricing/docs | OpenRouter free route | `price=0` in generic catalog |
+| Is the free tier durable or just a trial? | Official provider terms | Community discovery | Model name suffix |
+| What is the context window? | Official provider/model docs | models.dev / LiteLLM | Old benchmark entry |
+| Does it support tools/vision/JSON? | Provider API + models.dev | HF/OpenRouter/LiteLLM | Lab announcement alone |
+| How good is it? | Artificial Analysis + LLM Stats | HELM/OpenCompass | Parameter count |
+| Do real users prefer it? | LMArena + CompassArena | Artificial Analysis | Static benchmark alone |
+| Which host is fastest? | Artificial Analysis provider data | Your own probe | Canonical model metadata |
+| What models are popular in China/Asia? | ModelScope + OpenCompass | HF / Epoch AI | US-only aggregators |
+| What should enter production routing? | Live probe + provider docs | all intelligence sources | Any static list |
+
+---
+
+# 20. Final recommendation
+
+If this registry will drive a real router, use a **multi-source model-intelligence stack** rather than treating any single catalog as complete:
 
 ```text
-OpenRouter
-    → current hosted free variants
+models.dev + Epoch AI
+    → canonical identity, labs/developers, model history and metadata
 
-Hugging Face
-    → provider/model mappings and international discovery
+ModelScope + Hugging Face
+    → global/open-model discovery with strong Asia + international coverage
+
+OpenRouter
+    → current hosted variants and explicit free routes
 
 LiteLLM
     → routing/provider normalization
 
+Artificial Analysis + LLM Stats
+    → quality, benchmarks, pricing, speed/latency and provider cross-checks
+
+LMArena + OpenCompass/CompassArena + Stanford HELM
+    → independent preference/benchmark validation
+
 Direct provider APIs/docs
-    → authoritative free status, rate limits, region, expiry
+    → authoritative free status, rate limits, billing behavior, region and expiry
+
+Live API probes
+    → final proof that the provider/model actually works right now
 ```
 
 The production rule should be:
