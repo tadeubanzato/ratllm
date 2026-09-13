@@ -6,7 +6,7 @@ export type AutomationType = typeof JOB_TYPES[number];
 const DEFAULT_SCHEDULES: Record<AutomationType, string> = {
   MODEL_DISCOVERY: "0 */6 * * *",
   CANDIDATE_VERIFICATION: "15 */6 * * *",
-  HEALTH_MONITOR: "*/10 * * * *",
+  HEALTH_MONITOR: "0 * * * *",
   RATE_LIMIT_LEARNING: "30 */6 * * *",
   PROVIDER_VERIFICATION: "45 */6 * * *",
   APPLY_APPROVED_PLANS: "0 * * * *",

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { UptimeBar, availabilityPercent } from "@/components/status-history-strip";
+import { httpPromptDetail, UptimeBar, availabilityPercent } from "@/components/status-history-strip";
 import { PageShell } from "@/components/page-shell";
 import { StatusPill } from "@/components/status-pill";
 import { timeAgo } from "@/lib/utils";
@@ -16,7 +16,7 @@ type CandidateRow=Awaited<ReturnType<typeof getModelCandidates>>[number];
 function availabilityFor(row:CandidateRow){const evidence=row.evidence;const lastStatus=String(evidence.lastStatus??"").toLowerCase();const status=lastStatus==="provider_unresolved"?"PROVIDER_UNRESOLVED":lastStatus==="provider_not_configured"?"VERIFIER_NOT_CONFIGURED":lastStatus==="auth_error"?"AUTH_ERROR":!row.providerId?"PROVIDER_UNRESOLVED":!row.credentialConfigured?"CREDENTIAL_MISSING":!row.credentialVerified?"CREDENTIAL_UNVERIFIED":lastStatus==="available"||lastStatus==="passed"?"AVAILABLE":lastStatus==="rate_limited"?"RATE_LIMITED":lastStatus==="unavailable"||lastStatus==="failed"?"UNAVAILABLE":"QUEUED";return{status,httpStatus:typeof evidence.lastHttpStatus==="number"?evidence.lastHttpStatus:null,lastTestedAt:typeof evidence.testedAt==="string"?new Date(evidence.testedAt):null,nextCheckAt:typeof evidence.nextCheckAt==="string"?new Date(evidence.nextCheckAt):null,requiredAction:typeof evidence.requiredAction==="string"?evidence.requiredAction:null};}
 
 function candidateHistoryItems(points: CandidateCheckPoint[]) {
-  return points.map(point => ({at: point.at, status: point.httpStatus === 429 ? "RATE_LIMITED" : point.status, detail: `HTTP ${point.httpStatus ?? "—"}${point.error ? ` · ${point.error}` : ""}`}));
+  return points.map(point => ({at: point.at, status: point.httpStatus === 429 ? "RATE_LIMITED" : point.status, detail: httpPromptDetail(point.httpStatus, point.status === "available", point.error)}));
 }
 
 /** Turns a static "here's what's blocking promotion" reason into a link to wherever that's actually fixed —

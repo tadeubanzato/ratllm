@@ -30,6 +30,19 @@ const statusLabel: Record<StatusHistoryState, string> = {
   unknown: "No data",
 };
 
+/** Breaks one check's result into its two distinct sub-signals for the hover tooltip: whether the HTTP call
+ *  itself succeeded, and — separately — whether the model actually returned usable prompt content. These can
+ *  disagree (HTTP 200 with an empty/refused completion), and collapsing them into one status previously hid that
+ *  from anyone reading the bar as "still 200, still fine". `passed` is the check's own final verdict (already
+ *  content-validated by verify.ts / the LiteLLM smoke test), so an HTTP-ok-but-not-passed result can only mean the
+ *  prompt test itself is what failed. */
+export function httpPromptDetail(httpStatus: number | null, passed: boolean, error?: string | null): string {
+  const httpOk = typeof httpStatus === "number" && httpStatus >= 200 && httpStatus < 300;
+  const httpPart = `HTTP ${httpStatus ?? "—"} - ${httpOk ? "passed" : "failed"}`;
+  const promptPart = `Prompt test - ${httpOk ? (passed ? "passed" : "failed") : "not reached"}`;
+  return `${httpPart} · ${promptPart}${error ? ` · ${error}` : ""}`;
+}
+
 function timestamp(value: StatusHistoryItem["at"]) {
   if (!value) return "Unknown time";
   const date = value instanceof Date ? value : new Date(value);
