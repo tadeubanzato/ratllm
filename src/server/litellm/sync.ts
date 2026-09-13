@@ -58,6 +58,10 @@ export async function syncLiteLLM(options: { dryRun?: boolean } = {}, adapter = 
       let model = (await db.select().from(canonicalModels).where(eq(canonicalModels.slug, modelSlug)).limit(1))[0];
       const modelName=typeof item.model_info.source_model==="string"?item.model_info.source_model:modelSlug.replace(/[-_]/g," ").replace(/\b\w/g,c=>c.toUpperCase());
       if (!model) [model] = await db.insert(canonicalModels).values({ slug: modelSlug, name:modelName, lifecycle: "ACTIVE" }).returning();
+      // A canonical model quarantined by a past auto-remove (health/monitor.ts) is back with a live router
+      // deployment right now — the router's own inventory is ground truth, so the quarantine mark is stale and
+      // must not linger forever misreporting the overview's quarantined count. See docs/FREE-MODEL-LIFECYCLE.md §7.
+      else if (model.lifecycle === "QUARANTINED") [model] = await db.update(canonicalModels).set({ lifecycle: "ACTIVE", updatedAt: new Date() }).where(eq(canonicalModels.id, model.id)).returning();
       const managedFlag = isManagedDeployment(item);
       if (managedFlag) managed += 1; else unmanaged += 1;
       const existing = (await db.select().from(modelDeployments).where(eq(modelDeployments.litellmDeploymentId, identity.deploymentId)).limit(1))[0];

@@ -5,6 +5,7 @@ import { candidateChecks, canonicalModels, laneAssignments, lanes, modelCandidat
 import { providerSlug, resolveProvider } from "./providers/catalog";
 import { matchDeployment, matchDeployments } from "./discovery/model-key";
 import { resolveVerificationEndpoint } from "./discovery/verify";
+import { isFlapLimited, removalHistoryOf } from "./discovery/auto-add-policy";
 import { providerWiring, CUSTOM_ADAPTER_PROVIDERS } from "./providers/wiring";
 import { sourceRegistry } from "./discovery/registry";
 import { laneStatus, type LaneStatus } from "./status";
@@ -159,7 +160,7 @@ export async function getModelCandidates(){
     db.select().from(modelCandidates).orderBy(desc(modelCandidates.verifiedFree),modelCandidates.source,modelCandidates.displayName),
     db.select({id:providers.id,slug:providers.slug,name:providers.name,baseUrl:providers.baseUrl}).from(providers),
     db.select({providerId:providerCredentialReferences.providerId,valid:providerCredentialReferences.valid}).from(providerCredentialReferences),
-    db.select({id:modelDeployments.id,providerId:modelDeployments.providerId,providerModelId:modelDeployments.providerModelId,health:modelDeployments.health,managed:modelDeployments.managed,litellmModelName:modelDeployments.litellmModelName,litellmDeploymentId:modelDeployments.litellmDeploymentId,lifecycle:modelDeployments.lifecycle}).from(modelDeployments),
+    db.select({id:modelDeployments.id,providerId:modelDeployments.providerId,providerModelId:modelDeployments.providerModelId,health:modelDeployments.health,managed:modelDeployments.managed,litellmModelName:modelDeployments.litellmModelName,litellmDeploymentId:modelDeployments.litellmDeploymentId,lifecycle:modelDeployments.lifecycle,rawMetadata:modelDeployments.rawMetadata}).from(modelDeployments),
     db.select({deploymentId:laneAssignments.deploymentId,slug:lanes.slug,excluded:laneAssignments.excluded}).from(laneAssignments).innerJoin(lanes,eq(laneAssignments.laneId,lanes.id)),
   ]);
   return rows.map(row=>{
@@ -188,7 +189,12 @@ export async function getModelCandidates(){
     // read as "added" here — autoAddIfEligible (verify-due.ts) uses this exact field to decide whether a
     // recovered candidate is eligible to be auto-re-added, and a permanently-truthy id would block that forever.
     const liveLiteLLMDeploymentId=deployment?.lifecycle==="ACTIVE"?deployment.litellmDeploymentId??null:null;
-    return {...row,providerId:provider?.id??null,credentialConfigured:credentials.length>0,credentialVerified,credentialRequired,liteLLMDeploymentId:liveLiteLLMDeploymentId,liteLLMHealth:deployment?.health??null,liteLLMManaged:deployment?.managed??null,liteLLMLifecycle:deployment?.lifecycle??null,laneMemberships,promotable:promotableReason===null,promotableReason};
+    // Distinguishes an auto-remove (health/monitor.ts always stamps a removedReason) from a plain manual delete
+    // (never does) so the UI can tell "automation pulled this, might come back" from "someone deleted this on
+    // purpose" — see docs/FREE-MODEL-LIFECYCLE.md §3.
+    const liteLLMRemovedReason=deployment?.lifecycle==="REMOVED"&&typeof deployment.rawMetadata?.removedReason==="string"?deployment.rawMetadata.removedReason:null;
+    const liteLLMNeedsReview=isFlapLimited(removalHistoryOf(row.evidence));
+    return {...row,providerId:provider?.id??null,credentialConfigured:credentials.length>0,credentialVerified,credentialRequired,liteLLMDeploymentId:liveLiteLLMDeploymentId,liteLLMHealth:deployment?.health??null,liteLLMManaged:deployment?.managed??null,liteLLMLifecycle:deployment?.lifecycle??null,liteLLMRemovedReason,liteLLMNeedsReview,laneMemberships,promotable:promotableReason===null,promotableReason};
   });
 }
 

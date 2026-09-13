@@ -4,6 +4,8 @@ RatLLM is a self-hosted, open-source control plane for the model deployments beh
 
 This is a personal, educational, non-commercial project — a place to evaluate model providers of your choosing side by side. See [About](#about--license) below for the full picture, or open the **About** page in the running app.
 
+The full discover → verify → promote → monitor → remove automation loop, its status-label taxonomy, and its schedule are documented end to end in [`docs/FREE-MODEL-LIFECYCLE.md`](docs/FREE-MODEL-LIFECYCLE.md) — read that before changing anything under `src/server/discovery`, `src/server/health`, `src/server/lanes`, or `src/server/automation`.
+
 ## Contents
 
 - [Installation](#installation)
