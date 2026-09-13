@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { PageShell } from "@/components/page-shell";
 import { StatusPill } from "@/components/status-pill";
-import { UptimeBar, availabilityPercent } from "@/components/status-history-strip";
+import { httpPromptDetail, UptimeBar, availabilityPercent } from "@/components/status-history-strip";
 import { demoDeployments } from "@/server/demo-data";
 import { getDeploymentSmokeHistory, getDeployments, withDemo, type SmokeHistoryPoint } from "@/server/queries";
 import { duration, timeAgo } from "@/lib/utils";
@@ -12,7 +12,7 @@ export default async function LiteLLMPage(){
   const rows=await withDemo(getDeployments,()=>demoDeployments);
   const history=await withDemo(() => getDeploymentSmokeHistory(20), () => new Map<string, SmokeHistoryPoint[]>());
   const managed=rows.filter(r=>r.managed).length;const local=rows.filter(r=>r.backend?.toLowerCase()==="mlx").length;
-  const pointsById=new Map(rows.map(row=>[row.id,(history.get(row.id)??[]).map(point=>({at:point.at,status:point.httpStatus===429?"RATE_LIMITED":point.status,detail:`HTTP ${point.httpStatus??"—"} · ${point.latencyMs??"—"}ms${point.error?` · ${point.error}`:""}`}))]));
+  const pointsById=new Map(rows.map(row=>[row.id,(history.get(row.id)??[]).map(point=>({at:point.at,status:point.httpStatus===429?"RATE_LIMITED":point.status,detail:`${httpPromptDetail(point.httpStatus,point.status==="PASSED",point.error)} · ${point.latencyMs??"—"}ms`}))]));
   // Highest check % first; deployments with no check history yet sort last.
   const sorted=[...rows].sort((a,b)=>{
     const pa=availabilityPercent(pointsById.get(a.id)??[],20),pb=availabilityPercent(pointsById.get(b.id)??[],20);
