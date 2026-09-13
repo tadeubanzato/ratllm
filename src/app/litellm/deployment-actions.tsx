@@ -30,7 +30,9 @@ export function DeploymentActions({ id, alias, health, live }: { id: string; ali
   return <>
     <span style={{ display: "inline-flex", gap: 6 }}>
       <button className="button small" onClick={() => { setPending("deactivate"); setError(""); }}>Deactivate</button>
-      {health !== "HEALTHY" && <button className="button small" onClick={() => { setPending("delete"); setError(""); }}>Delete</button>}
+      {/* UNKNOWN means "not tested yet" (e.g. seconds after being added), not "confirmed broken" — offering Delete
+          for it invited deleting a deployment before the health monitor ever got a chance to prove it works. */}
+      {health !== "HEALTHY" && health !== "UNKNOWN" && <button className="button small" onClick={() => { setPending("delete"); setError(""); }}>Delete</button>}
     </span>
     <Modal open={pending !== null} title={pending === "delete" ? "Delete deployment" : "Deactivate deployment"} onClose={() => setPending(null)}>
       <form onSubmit={confirm}>

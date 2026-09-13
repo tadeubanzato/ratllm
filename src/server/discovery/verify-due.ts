@@ -57,15 +57,23 @@ async function checkCandidate(db:ReturnType<typeof getDb>,row:Candidate,provider
   return {id:row.id,model:row.modelRef,provider:providerKey,status:result.status,httpStatus:result.httpStatus,error:result.error,nextCheckAt};
 }
 
-/** Tests candidates directly; a 429 backs off only that provider, never the whole batch. Candidates for a provider we already have a verified credential for are guaranteed the first slots — hundreds of candidates with no usable credential shouldn't crowd out the ones we can actually test. */
-export async function verifyDueCandidates(limit=20){
+/** Tests candidates directly; a 429 backs off only that provider, never the whole batch. Candidates for a provider we already have a verified credential for are guaranteed the first slots — hundreds of candidates with no usable credential shouldn't crowd out the ones we can actually test.
+ *  limit/concurrency default high enough to actually cycle through the credential-verified population (in the
+ *  thousands, not dozens) within a reasonable number of cron firings — 20 sequential checks per run left most of
+ *  it untested indefinitely, so "5 consecutive passes" could take weeks to ever be reached for a perfectly good
+ *  candidate. Concurrency-bounded the same way verifyConnectedCandidates already is, so a large limit doesn't
+ *  open hundreds of sockets at once; the shared providerBackoff map still gives real (if not perfectly atomic)
+ *  per-provider courtesy under concurrency. */
+export async function verifyDueCandidates(limit=300,concurrency=8){
   const db=getDb();const rows=await getModelCandidates();const now=Date.now();const dueForCheck=rows.filter(row=>{const nextCheckAt=row.evidence.nextCheckAt??row.evidence.retryAt??row.evidence.testedAt;return !nextCheckAt||new Date(String(nextCheckAt)).getTime()<=now;});
   const eligible=await skippedByProvider(db,dueForCheck);
   const priority=eligible.filter(row=>row.credentialVerified);const rest=eligible.filter(row=>!row.credentialVerified);
   const due:typeof eligible=[];drain(roundRobinQueue(priority),due,limit);if(due.length<limit)drain(roundRobinQueue(rest),due,limit);
   const { autoAdd }=await getLiteLLMManagementSettings();
   const providerBackoff=new Map<string,string>();const results:VerificationRow[]=[];
-  for(const row of due)results.push(await checkCandidate(db,row,providerBackoff,autoAdd));
+  let cursor=0;
+  async function worker(){while(cursor<due.length){const row=due[cursor++];results.push(await checkCandidate(db,row,providerBackoff,autoAdd));}}
+  await Promise.all(Array.from({length:Math.min(Math.max(concurrency,1),due.length||1)},()=>worker()));
   return {processed:results.length,results,nextEligibleAt:results.find(item=>item.status==="rate_limited")?.nextCheckAt??null};
 }
 

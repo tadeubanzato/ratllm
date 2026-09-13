@@ -159,7 +159,7 @@ export async function getModelCandidates(){
     db.select().from(modelCandidates).orderBy(desc(modelCandidates.verifiedFree),modelCandidates.source,modelCandidates.displayName),
     db.select({id:providers.id,slug:providers.slug,name:providers.name,baseUrl:providers.baseUrl}).from(providers),
     db.select({providerId:providerCredentialReferences.providerId,valid:providerCredentialReferences.valid}).from(providerCredentialReferences),
-    db.select({id:modelDeployments.id,providerId:modelDeployments.providerId,providerModelId:modelDeployments.providerModelId,health:modelDeployments.health,managed:modelDeployments.managed,litellmModelName:modelDeployments.litellmModelName,lifecycle:modelDeployments.lifecycle}).from(modelDeployments),
+    db.select({id:modelDeployments.id,providerId:modelDeployments.providerId,providerModelId:modelDeployments.providerModelId,health:modelDeployments.health,managed:modelDeployments.managed,litellmModelName:modelDeployments.litellmModelName,litellmDeploymentId:modelDeployments.litellmDeploymentId,lifecycle:modelDeployments.lifecycle}).from(modelDeployments),
     db.select({deploymentId:laneAssignments.deploymentId,slug:lanes.slug,excluded:laneAssignments.excluded}).from(laneAssignments).innerJoin(lanes,eq(laneAssignments.laneId,lanes.id)),
   ]);
   return rows.map(row=>{
@@ -182,7 +182,13 @@ export async function getModelCandidates(){
     const endpoint=definition?resolveVerificationEndpoint(definition,provider?.baseUrl??null):null;
     const promotableReason=!provider?"Provider not resolved"
       :CUSTOM_ADAPTER_PROVIDERS[provider.slug]??(credentialRequired&&!credentialVerified?"Credential not verified":!endpoint?"No known endpoint for this provider":null);
-    return {...row,providerId:provider?.id??null,credentialConfigured:credentials.length>0,credentialVerified,credentialRequired,liteLLMDeploymentId:deployment?.id??null,liteLLMHealth:deployment?.health??null,liteLLMManaged:deployment?.managed??null,liteLLMLifecycle:deployment?.lifecycle??null,laneMemberships,promotable:promotableReason===null,promotableReason};
+    // liteLLMDeploymentId means "currently live in LiteLLM" (the real router id, gated on ACTIVE) — never just
+    // "a deployment row exists for this candidate". matchDeployment() deliberately falls back to a stale
+    // REMOVED/DEACTIVATED row so liteLLMLifecycle can still show real history, but that same stale row must never
+    // read as "added" here — autoAddIfEligible (verify-due.ts) uses this exact field to decide whether a
+    // recovered candidate is eligible to be auto-re-added, and a permanently-truthy id would block that forever.
+    const liveLiteLLMDeploymentId=deployment?.lifecycle==="ACTIVE"?deployment.litellmDeploymentId??null:null;
+    return {...row,providerId:provider?.id??null,credentialConfigured:credentials.length>0,credentialVerified,credentialRequired,liteLLMDeploymentId:liveLiteLLMDeploymentId,liteLLMHealth:deployment?.health??null,liteLLMManaged:deployment?.managed??null,liteLLMLifecycle:deployment?.lifecycle??null,laneMemberships,promotable:promotableReason===null,promotableReason};
   });
 }
 

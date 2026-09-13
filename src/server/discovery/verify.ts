@@ -30,5 +30,19 @@ export async function verifyCandidateDirectly(input: CandidateVerificationInput)
   const url=resolveVerificationEndpoint(input.provider,input.providerBaseUrl); if (!url) return { status: "provider_not_configured", httpStatus: null, error: `${input.provider.name} has no automated verification endpoint configured` };
   const apiKey=resolveCredentialSecret(input.credential);
   if (!apiKey) return { status:"credential_missing",httpStatus:null,error:`Credential ${input.credential.environmentVariable} is not available to the verifier` };
-  try { const response=await fetch(url,{method:"POST",headers:{authorization:`Bearer ${apiKey}`,"content-type":"application/json",...buildExtraHeaders(input.provider.slug,input.credential.config)},body:JSON.stringify({model:bareCandidateModelRef(input),messages:[{role:"user",content:"Reply with OK"}],max_tokens:4,temperature:0}),signal:AbortSignal.timeout(30_000),cache:"no-store"}); const body=await response.json().catch(()=>({})) as {error?:{message?:string}|string;message?:string}; const error=typeof body.error==="string"?body.error:body.error?.message??body.message??null; if(response.ok)return{status:"available",httpStatus:response.status,error:null}; if(response.status===429)return{status:"rate_limited",httpStatus:response.status,error}; if(response.status===401||response.status===403)return{status:"auth_error",httpStatus:response.status,error}; return{status:"unavailable",httpStatus:response.status,error}; } catch(error) { return {status:"unavailable",httpStatus:null,error:error instanceof Error?error.message:"Provider request failed"}; }
+  try {
+    const response=await fetch(url,{method:"POST",headers:{authorization:`Bearer ${apiKey}`,"content-type":"application/json",...buildExtraHeaders(input.provider.slug,input.credential.config)},body:JSON.stringify({model:bareCandidateModelRef(input),messages:[{role:"user",content:"Reply with exactly: OK"}],max_tokens:128,temperature:0}),signal:AbortSignal.timeout(30_000),cache:"no-store"});
+    const body=await response.json().catch(()=>({})) as {error?:{message?:string}|string;message?:string;choices?:Array<{message?:{content?:string}}>};
+    const error=typeof body.error==="string"?body.error:body.error?.message??body.message??null;
+    if(response.status===429)return{status:"rate_limited",httpStatus:response.status,error};
+    if(response.status===401||response.status===403)return{status:"auth_error",httpStatus:response.status,error};
+    if(!response.ok)return{status:"unavailable",httpStatus:response.status,error};
+    // HTTP 200 alone isn't proof the model actually answered — a reasoning model can burn its whole token
+    // budget on hidden reasoning and return empty visible content, or a provider can 200 an error envelope.
+    // The same bar the live LiteLLM smoke test judges a deployment by (client.ts's smokeTest) applies here too,
+    // so "N passes" during discovery reliably predicts it'll also pass once actually added to LiteLLM.
+    const content=body.choices?.[0]?.message?.content?.trim()??"";
+    if(!content)return{status:"unavailable",httpStatus:response.status,error:"Empty completion"};
+    return{status:"available",httpStatus:response.status,error:null};
+  } catch(error) { return {status:"unavailable",httpStatus:null,error:error instanceof Error?error.message:"Provider request failed"}; }
 }
