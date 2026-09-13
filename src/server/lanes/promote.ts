@@ -9,6 +9,7 @@ import { syncLiteLLM } from "@/server/litellm/sync";
 import { resolveProvider } from "@/server/providers/catalog";
 import { buildExtraHeaders } from "@/server/providers/wiring";
 import { bareModelKey } from "@/server/discovery/model-key";
+import { removalHistoryOf } from "@/server/discovery/auto-add-policy";
 import { bareCandidateModelRef, resolveCredentialSecret, resolveVerificationEndpoint, verifyCandidateDirectly } from "@/server/discovery/verify";
 import { classifyCandidateLanes } from "./rules";
 import { syncFallbackConfig } from "./fallbacks";
@@ -71,7 +72,7 @@ export interface TargetResult {
   error?: string;
 }
 
-export interface PromoteOptions { lanes?: LaneId[]; directAlias?: boolean; skipFallbackSync?: boolean }
+export interface PromoteOptions { lanes?: LaneId[]; directAlias?: boolean; skipFallbackSync?: boolean; trigger?: "manual" | "auto" }
 
 export interface PromoteResult {
   candidateId: string;
@@ -197,6 +198,13 @@ export async function promoteCandidate(candidateId: string, options: PromoteOpti
     if (!options.skipFallbackSync) await syncFallbackConfig(adapter).catch(() => undefined);
 
     const ok = results.every(result => result.status !== "failed");
+    // A manual promotion (someone clicking "Add to LiteLLM" themselves, including on a flap-limited candidate the
+    // UI is offering the button back for) is the human review the flap limit exists to require — clear the
+    // candidate's removal history so it starts this run with a clean slate rather than carrying old flaps forward
+    // forever. An automatic re-add must never do this itself, or the flap limit could never actually trigger.
+    // See auto-add-policy.ts and docs/FREE-MODEL-LIFECYCLE.md §5.
+    if (ok && options.trigger !== "auto" && removalHistoryOf(ctx.candidate.evidence).length)
+      await db.update(modelCandidates).set({ evidence: { ...ctx.candidate.evidence, removalHistory: [] }, updatedAt: new Date() }).where(eq(modelCandidates.id, candidateId));
     const summary = { candidateId, ok, targets: results };
     await db.update(syncRuns).set({ status: ok ? "SUCCEEDED" : "FAILED", finishedAt: new Date(), summary, error: ok ? null : "One or more lane targets failed", updatedAt: new Date() }).where(eq(syncRuns.id, run.id));
     await db.insert(auditEvents).values({ actor: "user", action: "litellm.candidate.promoted", entityType: "model_candidate", entityId: candidateId, after: summary, correlationId });

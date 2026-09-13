@@ -1,7 +1,8 @@
 import "server-only";
 import { and, desc, eq, isNotNull, sql } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
-import { auditEvents, canonicalModels, laneAssignments, modelDeployments, providers, smokeTests } from "@/server/db/schema";
+import { auditEvents, canonicalModels, laneAssignments, modelCandidates, modelDeployments, providers, smokeTests } from "@/server/db/schema";
+import { removalHistoryOf } from "@/server/discovery/auto-add-policy";
 import { HttpLiteLLMAdapter } from "@/server/litellm/client";
 import { log } from "@/server/logging";
 import { recordLaneSnapshots } from "@/server/lanes/snapshots";
@@ -21,6 +22,21 @@ async function consecutiveFailureCount(deploymentId: string): Promise<number> {
   return computeFailureStreak(recent);
 }
 
+/** Appends this removal to the source candidate's flap history (see auto-add-policy.ts) so a later re-add can
+ *  tell whether it's due a cooldown or has flapped past the point of trusting automation with it again. The
+ *  candidate is found via the id `registerTarget` (lanes/promote.ts) embeds in every deployment it creates —
+ *  silently a no-op for a deployment that predates that (or was added outside RatLLM), since there's no candidate
+ *  row to track flaps against. */
+async function recordCandidateRemoval(db: ReturnType<typeof getDb>, deployment: typeof modelDeployments.$inferSelect, reason: string) {
+  const modelInfo = deployment.rawMetadata?.model_info as Record<string, unknown> | undefined;
+  const candidateId = typeof modelInfo?.source_candidate_id === "string" ? modelInfo.source_candidate_id : null;
+  if (!candidateId) return;
+  const candidate = (await db.select({ evidence: modelCandidates.evidence }).from(modelCandidates).where(eq(modelCandidates.id, candidateId)).limit(1))[0];
+  if (!candidate) return;
+  const history = [...removalHistoryOf(candidate.evidence), { at: new Date().toISOString(), reason }];
+  await db.update(modelCandidates).set({ evidence: { ...candidate.evidence, removalHistory: history }, updatedAt: new Date() }).where(eq(modelCandidates.id, candidateId));
+}
+
 /**
  * A ratllm-managed deployment that has failed its last AUTO_REMOVE_AFTER_FAILURES health checks in a row is
  * pulled from LiteLLM automatically, excluded from its lanes, and its canonical model quarantined — so a dead
@@ -36,6 +52,7 @@ async function autoRemoveIfFailing(deployment: typeof modelDeployments.$inferSel
 
   const db = getDb();
   const correlationId = randomUUID();
+  const reason = `${AUTO_REMOVE_AFTER_FAILURES} consecutive failed health checks`;
   try {
     await adapter.removeDeployment(deployment.litellmDeploymentId);
   } catch (error) {
@@ -44,13 +61,14 @@ async function autoRemoveIfFailing(deployment: typeof modelDeployments.$inferSel
   }
   await db.update(modelDeployments).set({
     litellmDeploymentId: null, health: "UNAVAILABLE", lifecycle: "REMOVED",
-    rawMetadata: { ...deployment.rawMetadata, removedAt: new Date().toISOString(), removedReason: `${AUTO_REMOVE_AFTER_FAILURES} consecutive failed health checks` },
+    rawMetadata: { ...deployment.rawMetadata, removedAt: new Date().toISOString(), removedReason: reason },
     updatedAt: new Date(),
   }).where(eq(modelDeployments.id, deployment.id));
   await db.update(laneAssignments).set({
     excluded: true, explanation: { source: "AUTO_REMOVE", reason: "removed from LiteLLM after repeated failures", at: new Date().toISOString() }, updatedAt: new Date(),
   }).where(eq(laneAssignments.deploymentId, deployment.id));
   await db.update(canonicalModels).set({ lifecycle: "QUARANTINED", updatedAt: new Date() }).where(eq(canonicalModels.id, deployment.canonicalModelId));
+  await recordCandidateRemoval(db, deployment, reason);
   await db.insert(auditEvents).values({
     actor: "system", action: "litellm.deployment.auto_removed", entityType: "model_deployment", entityId: deployment.id,
     before: { litellmDeploymentId: deployment.litellmDeploymentId, health: deployment.health },

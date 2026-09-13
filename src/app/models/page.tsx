@@ -54,15 +54,24 @@ export default async function ModelsPage(){
     // Lifecycle takes priority over the raw "does a deployment row exist" check: a row survives deactivation/removal
     // in LiteLLM (deliberately, so history/health aren't lost), so without this a candidate would show "Added"
     // forever even after it's gone.
+    //
+    // REMOVED must never permanently hide the re-add path (docs/FREE-MODEL-LIFECYCLE.md §3) — automation may
+    // still be quietly retrying this candidate (or a human may want to force it back), so the badge and the
+    // button/blocker are shown together instead of either/or. The badge itself distinguishes three cases: a plain
+    // manual delete has no removedReason at all; an auto-remove still under the flap limit says so and keeps
+    // offering the button as a courtesy; a flap-limited auto-remove needs a human to actually click it.
+    const removedBadge=row.liteLLMLifecycle==="REMOVED"
+      ? row.liteLLMRemovedReason
+        ? row.liteLLMNeedsReview
+          ? <span className="status-pill status-bad">Auto-removed — needs review</span>
+          : <span className="status-pill status-warn">Auto-removed — retry pending</span>
+        : <span className="status-pill status-neutral">Deleted from LiteLLM</span>
+      : null;
     const litellmCell=row.liteLLMLifecycle==="DEACTIVATED"
       ? <span className="status-pill status-warn">Deactivated in LiteLLM</span>
-      : row.liteLLMLifecycle==="REMOVED"
-        ? <span className="status-pill status-bad">Deleted from LiteLLM</span>
-        : row.liteLLMDeploymentId
-          ? <span className="status-pill status-good">Added to LiteLLM</span>
-          : row.promotable
-            ? <AddToLiteLLMButton candidateId={row.id}/>
-            : promotionBlocker(row);
+      : row.liteLLMDeploymentId
+        ? <><span className="status-pill status-good">Added to LiteLLM</span>{row.liteLLMManaged&&<span className="status-pill status-bad" style={{marginLeft:6}}>RatLLM Managed</span>}</>
+        : <>{removedBadge}{row.promotable?<AddToLiteLLMButton candidateId={row.id}/>:promotionBlocker(row)}</>;
     return <tr key={row.id}>
       <td><strong>{row.displayName}</strong><br/><span className="mono truncate" title={row.modelRef} style={{maxWidth:220}}>{row.modelRef}</span></td>
       <td>{row.providerName??"Unresolved"}<br/><StatusPill value={!row.credentialRequired?"No credential needed":row.credentialVerified?"Credential verified":row.credentialConfigured?"Credential unverified":"Credential missing"}/></td>

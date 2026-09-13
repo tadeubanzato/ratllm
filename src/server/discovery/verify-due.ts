@@ -7,11 +7,18 @@ import { resolveProvider } from "@/server/providers/catalog";
 import { promoteCandidate } from "@/server/lanes/promote";
 import { getLiteLLMManagementSettings } from "@/server/settings/litellm-management";
 import { log } from "@/server/logging";
+import { isAutoReAddBlocked } from "./auto-add-policy";
 import { verifyCandidateDirectly, type CandidateVerificationStatus } from "./verify";
 
 const SUCCESS_RECHECK_MS=6*60*60_000;
 const FAILURE_RECHECK_MS=6*60*60_000;
 const RATE_LIMIT_RECHECK_MS=24*60*60_000;
+// A candidate that has never yet failed and hasn't earned its first AUTO_ADD_AFTER_SUCCESSES-in-a-row is still
+// "proving" — rechecked far more often than a stable one so a good new model doesn't sit at the SUCCESS_RECHECK_MS
+// pace for ~30h before it can even be considered for auto-add. The moment it fails once, or gets promoted, it
+// permanently drops to the standard cadence — this never applies to the steady-state population, only new arrivals.
+// See docs/FREE-MODEL-LIFECYCLE.md §6.
+const PROVING_RECHECK_MS=90*60_000;
 const AUTO_ADD_AFTER_SUCCESSES=5;
 
 type VerificationRow={id:string;model:string;provider:string|null;status:CandidateVerificationStatus;httpStatus:number|null;error:string|null;nextCheckAt:string};
@@ -34,9 +41,13 @@ async function skippedByProvider<T extends {providerId:string|null}>(db:ReturnTy
  *  yet (no verified credential, no resolved provider, etc.) — `promoteCandidate` re-verifies live before adding. */
 async function autoAddIfEligible(db:ReturnType<typeof getDb>,row:Candidate){
   if(row.liteLLMDeploymentId||!row.promotable)return;
+  // A candidate that's been auto-removed before doesn't get an immediate second chance the instant checks pass
+  // again — see auto-add-policy.ts and docs/FREE-MODEL-LIFECYCLE.md §5 for why (cooldown against same-cycle
+  // flapping, flap limit against a model that's fine standalone but repeatedly broken specifically through LiteLLM).
+  if(isAutoReAddBlocked(row.evidence))return;
   const recent=await db.select({status:candidateChecks.status}).from(candidateChecks).where(eq(candidateChecks.candidateId,row.id)).orderBy(desc(candidateChecks.createdAt)).limit(AUTO_ADD_AFTER_SUCCESSES);
   if(recent.length<AUTO_ADD_AFTER_SUCCESSES||recent.some(item=>item.status!=="available"))return;
-  try{await promoteCandidate(row.id);log("info","Auto-added candidate to LiteLLM",{candidateId:row.id,modelRef:row.modelRef});}
+  try{await promoteCandidate(row.id,{trigger:"auto"});log("info","Auto-added candidate to LiteLLM",{candidateId:row.id,modelRef:row.modelRef});}
   catch(error){log("warn","Auto-add did not go through",{candidateId:row.id,error:error instanceof Error?error.message:String(error)});}
 }
 
@@ -51,8 +62,17 @@ async function checkCandidate(db:ReturnType<typeof getDb>,row:Candidate,provider
   // invalidate it immediately rather than leaving the provider page's VERIFIED badge contradicting what discovery
   // just proved false until someone happens to click "Test credential" again.
   if(result.status==="auth_error"&&credentialId)await db.update(providerCredentialReferences).set({valid:false,lastValidatedAt:new Date(),updatedAt:new Date()}).where(eq(providerCredentialReferences.id,credentialId));
-  const delay=result.status==="available"?SUCCESS_RECHECK_MS:result.status==="rate_limited"?RATE_LIMIT_RECHECK_MS:FAILURE_RECHECK_MS;const nextCheckAt=new Date(Date.now()+delay).toISOString();if(result.status==="rate_limited"&&providerKey&&providerBackoff)providerBackoff.set(providerKey,nextCheckAt);const requiredAction=result.status==="credential_missing"?"ADD_CREDENTIAL":result.status==="credential_unverified"?"VERIFY_CREDENTIAL":result.status==="provider_unresolved"?"RESOLVE_PROVIDER":result.status==="provider_not_configured"?"CONFIGURE_VERIFIER":null;
-  await db.update(modelCandidates).set({evidence:{...row.evidence,testedAt,lastStatus:result.status,lastHttpStatus:result.httpStatus,lastError:result.error?.slice(0,500)??null,retryAt:result.status==="rate_limited"?nextCheckAt:null,nextCheckAt,providerSlug:providerKey,requiredAction},updatedAt:new Date()}).where(eq(modelCandidates.id,row.id));await db.insert(candidateChecks).values({candidateId:row.id,status:result.status,httpStatus:result.httpStatus,error:result.error?.slice(0,500)??null});
+  // Fast-track ramp (docs/FREE-MODEL-LIFECYCLE.md §6): tracked entirely in evidence, no extra query. A candidate
+  // that has never failed and hasn't yet strung together AUTO_ADD_AFTER_SUCCESSES passes is still "proving" and
+  // gets rechecked at PROVING_RECHECK_MS instead of the standard SUCCESS_RECHECK_MS pace. Any failure — this one
+  // included — permanently ends proving for this candidate, same as reaching the pass count or getting promoted.
+  const everFailedBefore=Boolean(row.evidence.everFailed);
+  const priorConsecutiveAvailable=typeof row.evidence.consecutiveAvailable==="number"?row.evidence.consecutiveAvailable:0;
+  const consecutiveAvailable=result.status==="available"?priorConsecutiveAvailable+1:0;
+  const everFailed=everFailedBefore||result.status!=="available";
+  const proving=result.status==="available"&&!everFailedBefore&&!row.liteLLMDeploymentId&&consecutiveAvailable<AUTO_ADD_AFTER_SUCCESSES;
+  const delay=proving?PROVING_RECHECK_MS:result.status==="available"?SUCCESS_RECHECK_MS:result.status==="rate_limited"?RATE_LIMIT_RECHECK_MS:FAILURE_RECHECK_MS;const nextCheckAt=new Date(Date.now()+delay).toISOString();if(result.status==="rate_limited"&&providerKey&&providerBackoff)providerBackoff.set(providerKey,nextCheckAt);const requiredAction=result.status==="credential_missing"?"ADD_CREDENTIAL":result.status==="credential_unverified"?"VERIFY_CREDENTIAL":result.status==="provider_unresolved"?"RESOLVE_PROVIDER":result.status==="provider_not_configured"?"CONFIGURE_VERIFIER":null;
+  await db.update(modelCandidates).set({evidence:{...row.evidence,testedAt,lastStatus:result.status,lastHttpStatus:result.httpStatus,lastError:result.error?.slice(0,500)??null,retryAt:result.status==="rate_limited"?nextCheckAt:null,nextCheckAt,providerSlug:providerKey,requiredAction,everFailed,consecutiveAvailable},updatedAt:new Date()}).where(eq(modelCandidates.id,row.id));await db.insert(candidateChecks).values({candidateId:row.id,status:result.status,httpStatus:result.httpStatus,error:result.error?.slice(0,500)??null});
   if(autoAdd&&result.status==="available")await autoAddIfEligible(db,row);
   return {id:row.id,model:row.modelRef,provider:providerKey,status:result.status,httpStatus:result.httpStatus,error:result.error,nextCheckAt};
 }
