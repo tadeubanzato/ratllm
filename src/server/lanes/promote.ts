@@ -129,7 +129,15 @@ export async function promoteCandidate(candidateId: string, options: PromoteOpti
     const ctx = await resolvePromotionContext(candidateId);
 
     // Prove the provider still serves it, via the exact endpoint+credential LiteLLM will use, before we touch the router.
-    const live = await verifyCandidateDirectly({ modelRef: ctx.candidate.modelRef, source: ctx.candidate.source, provider: ctx.definition, providerBaseUrl: ctx.providerRow.baseUrl, credential: ctx.credential });
+    // A 429 here is exactly as inconclusive as it is everywhere else in this app (computeFailureStreak explicitly
+    // never counts one, verify-due.ts just backs off and retries later) — one unlucky rate limit at the instant
+    // someone clicks "Add" shouldn't permanently block a candidate with a 100% pass history. Retry it the same way
+    // registerTarget below already retries transient LiteLLM errors, before giving up and blocking.
+    let live = await verifyCandidateDirectly({ modelRef: ctx.candidate.modelRef, source: ctx.candidate.source, provider: ctx.definition, providerBaseUrl: ctx.providerRow.baseUrl, credential: ctx.credential });
+    for (let attempt = 1; attempt < MAX_ATTEMPTS && live.status === "rate_limited"; attempt++) {
+      await sleep(400 * 2 ** attempt);
+      live = await verifyCandidateDirectly({ modelRef: ctx.candidate.modelRef, source: ctx.candidate.source, provider: ctx.definition, providerBaseUrl: ctx.providerRow.baseUrl, credential: ctx.credential });
+    }
     if (live.status !== "available") throw new PromotionBlocked(`Provider check failed (${live.status}${live.httpStatus ? ` HTTP ${live.httpStatus}` : ""}); not adding to LiteLLM`);
 
     const classified = classifyCandidateLanes(ctx.candidate);

@@ -75,7 +75,12 @@ export async function runHealthMonitor(options:{limit?:number}={}){
   let healthy=0; let autoRemoved=0; let reachedLiteLLM=false;
   const results=[] as Array<{id:string;health:string;status:number}>;
   for(const deployment of deployments){
-    const result=await adapter.smokeTest(deployment.litellmModelName);
+    // Addressed by the deployment's own litellm_deployment_id, never its litellm_model_name — many deployments
+    // share one alias (a lane's whole routing pool), and testing by alias lets LiteLLM's own load balancer pick
+    // which pool member actually answers. That silently misattributes pass/fail to the wrong row and made the
+    // 5-consecutive-failures auto-remove below unable to ever reliably catch a specific broken lane member.
+    // Addressing by id bypasses routing/fallbacks and hits exactly this deployment, still with a real prompt.
+    const result=await adapter.smokeTest(deployment.litellmDeploymentId!);
     if(result.status!==0)reachedLiteLLM=true; // a real HTTP response (even an error one) proves LiteLLM itself answered
     const health=healthFromSmokeResult(result.ok,result.status,result.latencyMs,result.error);
     if(health==="HEALTHY")healthy++;
