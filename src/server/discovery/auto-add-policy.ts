@@ -36,3 +36,18 @@ export function isAutoReAddBlocked(evidence: Record<string, unknown>, now = Date
   const history = removalHistoryOf(evidence);
   return inRemovalCooldown(history, now) || isFlapLimited(history, now);
 }
+
+/** A candidate whose most recent direct check wasn't a clean pass (or has never been checked at all) has zero
+ *  chance of surviving `promoteCandidate`'s live re-verify — offering the manual "Add to LiteLLM" button for it
+ *  just invites a click that fails immediately. This only ever narrows the *first-time* promotion path: a
+ *  candidate that's already been live before (flap-limited "needs review", or manually deleted) reaches this
+ *  same `lastStatus` value through its own recheck cycle, and by construction keeps passing directly (that
+ *  disagreement with LiteLLM is exactly what makes it flap-limited) — so this never hides the human-override
+ *  button those cases are supposed to keep. See docs/FREE-MODEL-LIFECYCLE.md §3/§6: automation (fast-track ramp
+ *  + 5-in-a-row) is the intended path to promotion; the manual button is only ever a shortcut once there's
+ *  actual evidence the candidate works. */
+export function unprovenCheckReason(evidence: Record<string, unknown>): string | null {
+  const lastStatus = typeof evidence.lastStatus === "string" ? evidence.lastStatus : null;
+  if (lastStatus === "available") return null;
+  return lastStatus ? "Last check did not pass yet" : "Not checked yet";
+}

@@ -167,3 +167,29 @@ known-bad and sitting on the standard cadence.
   the badge/button coexistence and `RatLLM Managed` tag wired into `app/models/page.tsx`, and the
   schedule changes applied in `automation/schedule.ts`. Verified with `tsc --noEmit`, `vitest run`
   (70 passing), `eslint`, and a production `next build` — all clean.
+- **2026-09-14** — First real flap under the new hardening: `meta-llama/llama-prompt-guard-2-{22m,86m}`
+  (Groq) passed direct verification 12+ times in a row and got auto-promoted, then auto-removed after
+  5 real health-monitor failures. Root cause: these are safety/classifier models, not chat models —
+  Groq's live API rejects `stream: true` on `/v1/chat/completions` for them (`text classification
+  models do not support streaming`), and `verify.ts` never sets `stream` so it can't see this, while
+  `client.ts`'s `smokeTest` always does. Confirmed this is genuinely invisible in every metadata source
+  we have — models.dev reports `modalities: {input: [text], output: [text]}` and LiteLLM's own cost
+  map reports `mode: "chat"` for both; only the live Groq call reveals it, and only the model's
+  name/family or models.dev's free-text `description` hint at it structurally. Added
+  `discovery/model-type.ts`'s `nonChatModelReason` (name-pattern + description-keyword heuristic for
+  known guard/classifier families — Prompt Guard, Llama Guard, ShieldGemma, Granite Guardian, WildGuard)
+  and wired it into both `queries.ts`'s `promotableReason` (blocks the UI button) and
+  `lanes/promote.ts`'s `resolvePromotionContext` (blocks the write path itself, so auto-add and manual
+  add can't bypass it) — this is a heuristic on a name, not a structural modality check, because no
+  such field reliably exists upstream.
+  Separately, noticed the "Add to LiteLLM" button was showing for candidates with zero passing checks
+  ever (e.g. OpenRouter's `google/lyria-3-*` — a music-generation model, not chat — stuck at 0%
+  availability, HTTP 400 on every real attempt). `promotable` never looked at check history before this,
+  only at provider/credential/endpoint resolution. Added `auto-add-policy.ts`'s `unprovenCheckReason`
+  (blocks the button — and thus manual promotion — unless the candidate's most-recent direct check
+  actually passed) into the same `promotableReason` chain. This only narrows the *first-time*
+  promotion path: a flap-limited "needs review" or manually-deleted candidate reaches this same
+  `lastStatus` field through its own ongoing recheck cycle and, by construction, keeps passing directly
+  (that disagreement with LiteLLM is what makes it flap-limited in the first place) — so the
+  human-override button those cases are supposed to keep stays intact. The only route into LiteLLM for
+  an unproven or non-chat candidate now is the automatic 5-consecutive-pass path (§6), same as BAU.

@@ -5,7 +5,8 @@ import { candidateChecks, canonicalModels, laneAssignments, lanes, modelCandidat
 import { providerSlug, resolveProvider } from "./providers/catalog";
 import { matchDeployment, matchDeployments } from "./discovery/model-key";
 import { resolveVerificationEndpoint } from "./discovery/verify";
-import { isFlapLimited, removalHistoryOf } from "./discovery/auto-add-policy";
+import { isFlapLimited, removalHistoryOf, unprovenCheckReason } from "./discovery/auto-add-policy";
+import { nonChatModelReason } from "./discovery/model-type";
 import { providerWiring, CUSTOM_ADAPTER_PROVIDERS } from "./providers/wiring";
 import { sourceRegistry } from "./discovery/registry";
 import { laneStatus, type LaneStatus } from "./status";
@@ -182,7 +183,7 @@ export async function getModelCandidates(){
     const definition=resolveProvider(row.source==="openrouter"?"openrouter":row.providerName,row.modelRef);
     const endpoint=definition?resolveVerificationEndpoint(definition,provider?.baseUrl??null):null;
     const promotableReason=!provider?"Provider not resolved"
-      :CUSTOM_ADAPTER_PROVIDERS[provider.slug]??(credentialRequired&&!credentialVerified?"Credential not verified":!endpoint?"No known endpoint for this provider":null);
+      :CUSTOM_ADAPTER_PROVIDERS[provider.slug]??(nonChatModelReason({modelRef:row.modelRef,displayName:row.displayName,description:typeof row.evidence?.description==="string"?row.evidence.description:null})??(credentialRequired&&!credentialVerified?"Credential not verified":!endpoint?"No known endpoint for this provider":unprovenCheckReason(row.evidence)));
     // liteLLMDeploymentId means "currently live in LiteLLM" (the real router id, gated on ACTIVE) — never just
     // "a deployment row exists for this candidate". matchDeployment() deliberately falls back to a stale
     // REMOVED/DEACTIVATED row so liteLLMLifecycle can still show real history, but that same stale row must never

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FLAP_LIMIT, REMOVE_COOLDOWN_MS, inRemovalCooldown, isAutoReAddBlocked, isFlapLimited, removalHistoryOf } from "../src/server/discovery/auto-add-policy";
+import { FLAP_LIMIT, REMOVE_COOLDOWN_MS, inRemovalCooldown, isAutoReAddBlocked, isFlapLimited, removalHistoryOf, unprovenCheckReason } from "../src/server/discovery/auto-add-policy";
 
 const NOW = new Date("2026-09-13T12:00:00Z").getTime();
 const hoursAgo = (h: number) => new Date(NOW - h * 60 * 60_000).toISOString();
@@ -83,5 +83,20 @@ describe("isAutoReAddBlocked", () => {
 
   it("allows re-add for a single old removal well outside both cooldown and flap window", () => {
     expect(isAutoReAddBlocked({ removalHistory: [record(daysAgo(10))] }, NOW)).toBe(false);
+  });
+});
+
+describe("unprovenCheckReason", () => {
+  it("blocks a candidate that has never been checked", () => {
+    expect(unprovenCheckReason({})).toBe("Not checked yet");
+  });
+
+  it("blocks a candidate whose most recent check failed, even after many failures", () => {
+    expect(unprovenCheckReason({ lastStatus: "unavailable" })).toBe("Last check did not pass yet");
+    expect(unprovenCheckReason({ lastStatus: "rate_limited" })).toBe("Last check did not pass yet");
+  });
+
+  it("clears once the most recent check actually passed", () => {
+    expect(unprovenCheckReason({ lastStatus: "available" })).toBeNull();
   });
 });
