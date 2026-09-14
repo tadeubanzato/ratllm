@@ -11,6 +11,7 @@ import { buildExtraHeaders } from "@/server/providers/wiring";
 import { bareModelKey } from "@/server/discovery/model-key";
 import { removalHistoryOf } from "@/server/discovery/auto-add-policy";
 import { bareCandidateModelRef, resolveCredentialSecret, resolveVerificationEndpoint, verifyCandidateDirectly } from "@/server/discovery/verify";
+import { nonChatModelReason } from "@/server/discovery/model-type";
 import { classifyCandidateLanes } from "./rules";
 import { syncFallbackConfig } from "./fallbacks";
 import { getDeploymentsForProvider, laneHasCapacity } from "./shared";
@@ -42,6 +43,10 @@ export async function resolvePromotionContext(candidateId: string): Promise<Prom
   const db = getDb();
   const candidate = (await db.select().from(modelCandidates).where(eq(modelCandidates.id, candidateId)).limit(1))[0];
   if (!candidate) throw new PromotionBlocked("Candidate not found");
+
+  const evidence = candidate.evidence as Record<string, unknown>;
+  const blockedReason = nonChatModelReason({ modelRef: candidate.modelRef, displayName: candidate.displayName, description: typeof evidence?.description === "string" ? evidence.description : null });
+  if (blockedReason) throw new PromotionBlocked(blockedReason);
 
   const definition = resolveProvider(candidate.source === "openrouter" ? "openrouter" : candidate.providerName, candidate.modelRef);
   if (!definition) throw new PromotionBlocked("No known provider resolves for this candidate");

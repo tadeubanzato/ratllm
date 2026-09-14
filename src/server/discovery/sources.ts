@@ -227,7 +227,7 @@ class ModelsDevSource implements DiscoverySource {
           freeType: free ? "FREE_TIER" : "UNKNOWN", verifiedFree: free,
           contextWindow: numberValue(limit.context), maxOutputTokens: numberValue(limit.output),
           supportsVision: inputModalities.includes("image"), supportsTools: Boolean(model.tool_call), supportsReasoning: Boolean(model.reasoning),
-          sourceUrl: this.config.url, evidence: {family: model.family ?? null, openWeights: Boolean(model.open_weights), costZero: free, catalogEntry: true},
+          sourceUrl: this.config.url, evidence: {family: model.family ?? null, openWeights: Boolean(model.open_weights), costZero: free, catalogEntry: true, description: typeof model.description === "string" ? model.description : null},
         });
       }
     }
