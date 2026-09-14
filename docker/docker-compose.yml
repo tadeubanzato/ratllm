@@ -48,3 +48,4 @@ services:
 volumes:
   curator-db-data:
     name: ratllm_curator-db-data
+    external: true
