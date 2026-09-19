@@ -7,6 +7,7 @@ import { duration, timeAgo } from "@/lib/utils";
 import { demoDeployments } from "@/server/demo-data";
 import { getDeploymentDetail } from "@/server/deployment-detail";
 import { getDeployment, withDemo } from "@/server/queries";
+import { findDuplicateGroups } from "@/server/litellm/duplicates";
 import { SmokeButton } from "./smoke-button";
 import { DeploymentActions } from "@/app/litellm/deployment-actions";
 
@@ -14,10 +15,15 @@ export const dynamic = "force-dynamic";
 
 const METADATA_PREVIEW_CHARS = 8000;
 
-function When({ at }: { at: Date | null | undefined }) {
+/** Absolute UTC date (what you'd paste into a ticket) with the relative age beside it. */
+function When({ at, relative = true }: { at: Date | string | null | undefined; relative?: boolean }) {
   if (!at) return <>Never</>;
-  return <time dateTime={at.toISOString()} title={at.toISOString()}>{timeAgo(at)}</time>;
+  const date = new Date(at);
+  const absolute = `${date.toISOString().replace("T", " ").slice(0, 16)} UTC`;
+  return <time dateTime={date.toISOString()} title={date.toISOString()}>{absolute}{relative ? <span className="settings-help"> · {timeAgo(date)}</span> : null}</time>;
 }
+
+const yesNo = (value: boolean | null | undefined) => value === true ? "Yes" : value === false ? "No" : "Unknown";
 
 function hostOf(url: string | null) {
   if (!url) return null;
@@ -34,8 +40,17 @@ export default async function ModelDetail({ params }: { params: Promise<{ id: st
   const removed = lifecycle === "REMOVED";
   const metadataJson = detail ? JSON.stringify(detail.rawMetadata, null, 2) : "";
   const siblingCount = detail?.siblings.length ?? 0;
+  // Other live copies of this same model behind this same alias (an alias pool can hold many *different* models; that's
+  // normal — identical copies are the problem).
+  const duplicateGroup = detail && lifecycle === "ACTIVE" ? findDuplicateGroups([
+    { id: row.id, litellmModelName: row.litellmModelName, providerName: row.providerName, providerModelId: row.providerModelId, lifecycle, litellmDeploymentId: row.litellmDeploymentId },
+    ...detail.siblings.map(sibling => ({ id: sibling.id, litellmModelName: row.litellmModelName, providerName: sibling.providerName, providerModelId: sibling.providerModelId, lifecycle: sibling.lifecycle, litellmDeploymentId: sibling.litellmDeploymentId })),
+  ]).find(group => group.ids.includes(row.id)) : undefined;
 
   return <PageShell title={row.modelName} eyebrow={`${row.providerName} · ${row.providerModelId}`} actions={<SmokeButton deploymentId={row.id} model={row.litellmModelName} />}>
+    {duplicateGroup && <p role="alert" className="settings-feedback" style={{ borderColor: "var(--amber)", marginBottom: 14 }}>
+      <strong>Deployed {duplicateGroup.count} times.</strong> {row.providerModelId} has {duplicateGroup.count} live copies behind “{row.litellmModelName}”, each with its own LiteLLM ID (listed under Alias pool). Identical copies add no capacity — they skew routing toward this model and multiply its rate-limit use. Delete the extra copies by LiteLLM ID.
+    </p>}
     <div className="detail-grid">
       <section className="panel">
         <div className="panel-header">
@@ -96,8 +111,14 @@ export default async function ModelDetail({ params }: { params: Promise<{ id: st
               <dd>{detail.failureStreak} consecutive failed check{detail.failureStreak === 1 ? "" : "s"} <span className="settings-help">(rate limits don&apos;t count)</span></dd>
             </>}
 
-            <dt>First seen</dt>
-            <dd><When at={row.firstSeenAt} /></dd>
+            <dt>Discovered</dt>
+            <dd>{detail?.discovery ? <><When at={detail.discovery.firstSeenAt} /><div className="settings-help">by {detail.discovery.sourceName}</div></> : <span className="settings-help">No discovery record found for this model</span>}</dd>
+            <dt>Added to LiteLLM</dt>
+            <dd>
+              {detail?.addedToLiteLLMAt
+                ? <><When at={detail.addedToLiteLLMAt} /><div className="settings-help">Promoted by RatLLM</div></>
+                : <><When at={row.firstSeenAt} /><div className="settings-help">First seen in the LiteLLM inventory — no RatLLM promotion was recorded, so it was added another way</div></>}
+            </dd>
             <dt>Last seen in inventory</dt>
             <dd><When at={row.lastSeenAt} /></dd>
             <dt>Last tested</dt>
@@ -120,6 +141,45 @@ export default async function ModelDetail({ params }: { params: Promise<{ id: st
     </div>
 
     {detail && <>
+      <section className="panel" style={{ marginTop: 14 }}>
+        <div className="panel-header"><h3>Lifecycle</h3><span>From discovery to now</span></div>
+        <div className="panel-body">
+          {detail.timeline.length ? <ol style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: 10 }}>
+            {detail.timeline.map((event, index) => <li key={index} style={{ display: "grid", gridTemplateColumns: "170px 1fr", gap: 14 }}>
+              <span className="mono settings-help"><When at={event.at} relative={false} /></span>
+              <span>{event.label}{event.detail ? <span className="settings-help"> — {event.detail}</span> : null}</span>
+            </li>)}
+          </ol> : <p className="settings-help">No dated events recorded for this deployment.</p>}
+        </div>
+      </section>
+
+      <section className="panel" style={{ marginTop: 14 }}>
+        <div className="panel-header"><h3>Discovery</h3><span>{detail.discovery ? (detail.discovery.link === "recorded" ? "Linked when RatLLM added it" : "Matched by provider and model name") : "No record"}</span></div>
+        <div className="panel-body">
+          {detail.discovery ? <dl className="definition-list">
+            <dt>Source</dt>
+            <dd>{detail.discovery.sourceName}{detail.discovery.sourceTier ? <> <span className="status-pill status-neutral">Tier {detail.discovery.sourceTier}</span></> : null}{detail.discovery.sourceUrl ? <div className="settings-help"><a href={detail.discovery.sourceUrl} target="_blank" rel="noreferrer noopener">{detail.discovery.sourceUrl}</a></div> : null}</dd>
+            <dt>Free access</dt>
+            <dd><StatusPill value={detail.discovery.freeType} /> {detail.discovery.verifiedFree ? <StatusPill value="VERIFIED FREE" /> : <span className="settings-help">not verified free by the source</span>}</dd>
+            <dt>Discovered</dt>
+            <dd><When at={detail.discovery.firstSeenAt} /></dd>
+            <dt>Last seen by discovery</dt>
+            <dd><When at={detail.discovery.lastSeenAt} /></dd>
+            <dt>Direct provider checks</dt>
+            <dd>{detail.discovery.checks && detail.discovery.checks.total ? <>{detail.discovery.checks.passed} of {detail.discovery.checks.total} passed
+              <div className="settings-help">First pass <When at={detail.discovery.checks.firstPassAt} /> · last check <When at={detail.discovery.checks.lastAt} /></div></> : <span className="settings-help">No direct checks recorded</span>}</dd>
+            <dt>Context window</dt>
+            <dd>{detail.discovery.contextWindow?.toLocaleString() ?? "Unknown"}{detail.discovery.maxOutputTokens ? <span className="settings-help"> · up to {detail.discovery.maxOutputTokens.toLocaleString()} output tokens</span> : null}</dd>
+            <dt>Capabilities</dt>
+            <dd>Vision: {yesNo(detail.discovery.supportsVision)} · Tools: {yesNo(detail.discovery.supportsTools)} · Reasoning: {yesNo(detail.discovery.supportsReasoning)}</dd>
+            <dt>Also reported by</dt>
+            <dd>{detail.discovery.corroborating.length ? detail.discovery.corroborating.map(item => item.source).join(", ") : <span className="settings-help">No other source</span>}</dd>
+            <dt>Discovery record</dt>
+            <dd><CopyableId value={detail.discovery.candidateId} label="discovery record ID" /></dd>
+          </dl> : <p className="settings-help">No discovery record matches this deployment. It was likely added directly in LiteLLM, or discovered before records were kept.</p>}
+        </div>
+      </section>
+
       <section className="panel" style={{ marginTop: 14 }}>
         <div className="panel-header"><h3>Alias pool</h3><span>{siblingCount ? `${siblingCount + 1} deployments share “${row.litellmModelName}”` : "Single deployment"}</span></div>
         <div className="panel-body">

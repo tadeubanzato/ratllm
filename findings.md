@@ -3202,3 +3202,16 @@ While verifying F-01 I found `ADMIN_TOKEN` never protected anything: `proxy.ts` 
 **Known, deliberate difference:** when two existing rows share a provider and model key, which one a new same-model item merges into was unspecified in the original (unordered scan) and is now deterministic (oldest-first). The differential generator gives each (source, model) a stable provider, as real sources do, so it doesn't compare that unspecified case.
 
 **Not covered by these tests:** the network fetch inside each source adapter; `consolidateModelCandidates` (still loads and rewrites row by row — the next discovery cost); the Settings "Sync" button for custom sources (F-07's misleading custom-source UI is unchanged).
+
+### 21.7 Production finding: duplicate deployments (2026-09-19)
+
+Found while building the deployment detail page and checking it against live data.
+
+**F-22 — High — The promoter adds the same model to LiteLLM repeatedly.** `registerTarget` treated a target as "already there" only if the matching deployment's `health !== "UNAVAILABLE"`. Health is the outcome of the last probe, not whether the deployment exists, so any moment where a live deployment probed unavailable (a rate limit, one bad probe) made the next promotion pass add *another copy*. The old copy stayed. Live data: `openai/gemma-4-26b-a4b-it` is ACTIVE **four times** behind `smart-vision` and **three times** behind `smart-long`, all RatLLM-managed, each with its own LiteLLM ID; the list page reports 5 duplicated models in total. Identical copies add no capacity to a router pool — they skew routing and multiply provider rate-limit use.
+
+- **Fixed in code:** existence is now "RatLLM holds a router ID and the deployment is ACTIVE or blocked", independent of health (`src/server/lanes/existing-target.ts`). A removed deployment (or one with no router ID) still allows a genuine re-add. Regression test fails against the old rule.
+- **Made visible:** a warning on each affected model page and a summary on `/litellm` (`src/server/litellm/duplicates.ts`).
+- **Not done:** the existing extra copies are still in LiteLLM. Removing them is a production mutation and should be done deliberately, by LiteLLM ID, keeping one copy per model per alias.
+- **Residual race:** two promotion calls running at the same instant can still both miss a deployment that hasn't been synced into the local database yet. A live inventory check inside the promoter would close it.
+
+**Deployment detail page additions:** absolute UTC dates for Discovered and Added to LiteLLM; a chronological Lifecycle timeline (discovered → first direct check passed → added to LiteLLM → first appeared in inventory → first router health check → lane assignments → auto-removals); and a Discovery panel (source and tier, free-access claim, direct-check pass rate, capabilities, other sources that reported it). "Added to LiteLLM" counts only promotions that really added a target behind the deployment's alias — the audit event is also written for hourly no-op re-runs and failed attempts.

@@ -16,6 +16,7 @@ import { nonChatModelReason } from "@/server/discovery/model-type";
 import { classifyCandidateLanes } from "./rules";
 import { syncFallbackConfig } from "./fallbacks";
 import { getDeploymentsForProvider, laneHasCapacity } from "./shared";
+import { findExistingTarget } from "./existing-target";
 
 const MAX_ATTEMPTS = 3;
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -100,9 +101,7 @@ export interface PromoteResult {
 function providerModelId(bareModel: string) { return `openai/${bareModel}`; }
 
 async function registerTarget(ctx: PromotionContext, modelName: string, lane: LaneId | null, adapter: HttpLiteLLMAdapter): Promise<TargetResult> {
-  const key = bareModelKey(providerModelId(ctx.bareModel));
-  const existing = (await getDeploymentsForProvider(ctx.providerRow.id))
-    .find(row => row.litellmModelName === modelName && bareModelKey(row.providerModelId) === key && row.litellmDeploymentId && row.health !== "UNAVAILABLE");
+  const existing = findExistingTarget(await getDeploymentsForProvider(ctx.providerRow.id), modelName, providerModelId(ctx.bareModel));
   if (existing) return { target: modelName, lane, status: "exists", deploymentId: existing.id };
 
   let lastError = "LiteLLM rejected the deployment";

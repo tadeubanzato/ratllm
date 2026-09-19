@@ -2,6 +2,7 @@ import Link from "next/link";
 import { PageShell } from "@/components/page-shell";
 import { StatusPill } from "@/components/status-pill";
 import { CopyableId } from "@/components/copyable-id";
+import { findDuplicateGroups } from "@/server/litellm/duplicates";
 import { httpPromptDetail, UptimeBar, availabilityPercent } from "@/components/status-history-strip";
 import { demoDeployments } from "@/server/demo-data";
 import { getDeploymentSmokeHistory, getDeployments, withDemo, type SmokeHistoryPoint } from "@/server/queries";
@@ -12,6 +13,7 @@ export const dynamic="force-dynamic";
 export default async function LiteLLMPage(){
   const rows=await withDemo(getDeployments,()=>demoDeployments);
   const history=await withDemo(() => getDeploymentSmokeHistory(20), () => new Map<string, SmokeHistoryPoint[]>());
+  const duplicates=findDuplicateGroups(rows);const extraCopies=duplicates.reduce((sum,group)=>sum+group.count-1,0);
   const managed=rows.filter(r=>r.managed).length;const local=rows.filter(r=>r.backend?.toLowerCase()==="mlx").length;
   const pointsById=new Map(rows.map(row=>[row.id,(history.get(row.id)??[]).map(point=>({at:point.at,status:point.httpStatus===429?"RATE_LIMITED":point.status,detail:`${httpPromptDetail(point.httpStatus,point.status==="PASSED",point.error)} · ${point.latencyMs??"—"}ms`}))]));
   // Highest check % first; deployments with no check history yet sort last.
@@ -22,7 +24,7 @@ export default async function LiteLLMPage(){
     if(pb===null)return -1;
     return pb-pa;
   });
-  return <PageShell title="LiteLLM" eyebrow="Live production-router inventory" actions={<SyncButton/>}><section className="system-strip"><div className="system-item"><div><small>CONNECTION</small><strong>LiteLLM Proxy</strong></div><StatusPill value={rows.length?"Healthy":"Not synced"}/></div><div className="system-item"><div><small>DEPLOYMENTS</small><strong>{rows.length} live</strong></div></div><div className="system-item"><div><small>LOCAL MLX</small><strong>{local} deployments</strong></div></div><div className="system-item"><div><small>OWNERSHIP</small><strong>{managed} Curator managed</strong></div></div></section><section className="panel"><div className="panel-header"><h3>Live deployment inventory</h3><span>{rows.length-managed} unmanaged deployments preserved as read-only</span></div><div className="table-scroll"><table className="data-table"><thead><tr><th>Alias</th><th>LiteLLM ID</th><th>Managed</th><th>Source model</th><th>Provider / backend</th><th>Recent checks</th><th>Response time</th><th>First token</th><th>Action</th></tr></thead><tbody>{sorted.map(row=>{
+  return <PageShell title="LiteLLM" eyebrow="Live production-router inventory" actions={<SyncButton/>}>{duplicates.length>0&&<section className="panel" style={{marginBottom:14,borderColor:"var(--amber)"}}><div className="panel-header"><h3>{duplicates.length} model{duplicates.length===1?" is":"s are"} deployed more than once</h3><span>{extraCopies} extra cop{extraCopies===1?"y":"ies"}</span></div><div className="panel-body"><p className="settings-help">The same model from the same provider is live several times behind one alias. Identical copies add no capacity to a lane; they skew routing and multiply rate-limit use. Open a model to see every copy and its LiteLLM ID.</p><ul style={{margin:"8px 0 0",paddingLeft:18}}>{duplicates.slice(0,12).map(group=><li key={group.alias+group.providerModelId}><Link href={`/models/${group.ids[0]}`}><span className="mono">{group.providerModelId}</span></Link> behind <span className="mono">{group.alias}</span> — {group.count} copies ({group.providerName})</li>)}</ul></div></section>}<section className="system-strip"><div className="system-item"><div><small>CONNECTION</small><strong>LiteLLM Proxy</strong></div><StatusPill value={rows.length?"Healthy":"Not synced"}/></div><div className="system-item"><div><small>DEPLOYMENTS</small><strong>{rows.length} live</strong></div></div><div className="system-item"><div><small>LOCAL MLX</small><strong>{local} deployments</strong></div></div><div className="system-item"><div><small>OWNERSHIP</small><strong>{managed} Curator managed</strong></div></div></section><section className="panel"><div className="panel-header"><h3>Live deployment inventory</h3><span>{rows.length-managed} unmanaged deployments preserved as read-only</span></div><div className="table-scroll"><table className="data-table"><thead><tr><th>Alias</th><th>LiteLLM ID</th><th>Managed</th><th>Source model</th><th>Provider / backend</th><th>Recent checks</th><th>Response time</th><th>First token</th><th>Action</th></tr></thead><tbody>{sorted.map(row=>{
     const points=pointsById.get(row.id)??[];
     const isLocal=row.backend?.toLowerCase()==="mlx";
     // Averaged over the last (up to) 10 PASSED checks (see getDeployments) — a single sample is noisy; this

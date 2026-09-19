@@ -1,7 +1,10 @@
 import "server-only";
-import { and, desc, eq, ne } from "drizzle-orm";
+import { and, asc, desc, eq, ne, sql } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
-import { auditEvents, laneAssignments, lanes, modelDeployments, providers, smokeTests } from "@/server/db/schema";
+import { auditEvents, candidateChecks, laneAssignments, lanes, modelCandidates, modelDeployments, providers, smokeTests } from "@/server/db/schema";
+import { removalHistoryOf } from "@/server/discovery/auto-add-policy";
+import { bareModelKey } from "@/server/discovery/model-key";
+import { sourceRegistry } from "@/server/discovery/registry";
 import { computeFailureStreak } from "@/server/health/failure-streak";
 import { connectionSummary } from "@/server/settings/connections";
 
@@ -13,7 +16,8 @@ export async function getDeploymentDetail(id: string) {
   const self = (await db.select({
     id: modelDeployments.id, litellmDeploymentId: modelDeployments.litellmDeploymentId, litellmModelName: modelDeployments.litellmModelName,
     lifecycle: modelDeployments.lifecycle, rawMetadata: modelDeployments.rawMetadata, apiBase: modelDeployments.apiBase,
-    updatedAt: modelDeployments.updatedAt,
+    providerId: modelDeployments.providerId, providerModelId: modelDeployments.providerModelId,
+    createdAt: modelDeployments.createdAt, lastSeenAt: modelDeployments.lastSeenAt, updatedAt: modelDeployments.updatedAt,
   }).from(modelDeployments).where(eq(modelDeployments.id, id)).limit(1))[0];
   if (!self) return null;
 
@@ -26,7 +30,7 @@ export async function getDeploymentDetail(id: string) {
     }).from(modelDeployments).innerJoin(providers, eq(modelDeployments.providerId, providers.id))
       .where(and(eq(modelDeployments.litellmModelName, self.litellmModelName), ne(modelDeployments.id, id)))
       .orderBy(modelDeployments.lifecycle, providers.name).limit(50),
-    db.select({ slug: lanes.slug, name: lanes.name, priority: laneAssignments.priority, excluded: laneAssignments.excluded, pinned: laneAssignments.pinned })
+    db.select({ slug: lanes.slug, name: lanes.name, priority: laneAssignments.priority, excluded: laneAssignments.excluded, pinned: laneAssignments.pinned, since: laneAssignments.createdAt, explanation: laneAssignments.explanation })
       .from(laneAssignments).innerJoin(lanes, eq(laneAssignments.laneId, lanes.id)).where(eq(laneAssignments.deploymentId, id)).orderBy(lanes.slug),
     db.select({
       at: smokeTests.createdAt, status: smokeTests.status, httpStatus: smokeTests.httpStatus, latencyMs: smokeTests.latencyMs,
@@ -39,6 +43,55 @@ export async function getDeploymentDetail(id: string) {
 
   const metadata = self.rawMetadata ?? {};
   const info = metadata.model_info && typeof metadata.model_info === "object" ? metadata.model_info as Record<string, unknown> : {};
+
+  // The discovery record behind this deployment. A deployment RatLLM added carries its candidate's id in model_info; one
+  // added directly in LiteLLM (or whose candidate was merged) is matched by provider + normalized model name instead.
+  const linkedId = typeof info.source_candidate_id === "string" ? info.source_candidate_id : null;
+  let candidate = linkedId ? (await db.select().from(modelCandidates).where(eq(modelCandidates.id, linkedId)).limit(1))[0] : undefined;
+  let candidateLink: "recorded" | "matched" | null = candidate ? "recorded" : null;
+  if (!candidate) {
+    const key = bareModelKey(self.providerModelId);
+    candidate = (await db.select().from(modelCandidates).where(eq(modelCandidates.providerId, self.providerId))).find(row => bareModelKey(row.modelRef) === key);
+    if (candidate) candidateLink = "matched";
+  }
+
+  const [checkStats, promotions, firstProbe] = await Promise.all([
+    candidate ? db.select({
+      total: sql<number>`count(*)::int`,
+      passed: sql<number>`(count(*) filter (where ${candidateChecks.status} = 'available'))::int`,
+      firstPassAt: sql<Date | null>`min(${candidateChecks.createdAt}) filter (where ${candidateChecks.status} = 'available')`,
+      lastAt: sql<Date | null>`max(${candidateChecks.createdAt})`,
+    }).from(candidateChecks).where(eq(candidateChecks.candidateId, candidate.id)).then(rows => rows[0]) : Promise.resolve(null),
+    // A promotion audit event is written on every promotion attempt — including hourly no-op re-runs where every target
+    // already "exists" — so which events actually added something is decided below from each event's `targets`.
+    candidate ? db.select({ at: auditEvents.createdAt, after: auditEvents.after })
+      .from(auditEvents).where(and(eq(auditEvents.action, "litellm.candidate.promoted"), eq(auditEvents.entityId, candidate.id))).orderBy(asc(auditEvents.createdAt)).limit(500) : Promise.resolve([]),
+    db.select({ at: sql<Date | null>`min(${smokeTests.createdAt})` }).from(smokeTests).where(eq(smokeTests.deploymentId, id)).then(rows => rows[0]?.at ?? null),
+  ]);
+  const asDate = (value: Date | string | null | undefined) => value ? new Date(value) : null;
+  const source = candidate ? sourceRegistry.find(entry => entry.id === candidate.source) : undefined;
+  const corroborating = candidate && Array.isArray(candidate.evidence.corroboratingSources) ? candidate.evidence.corroboratingSources as { source: string; sourceUrl: string }[] : [];
+  const removals = candidate ? removalHistoryOf(candidate.evidence) : [];
+
+  // One chronological story of this model, from first being discovered to now. Each entry is only included when there's
+  // a real timestamp behind it — nothing is inferred or back-filled.
+  const timeline: { at: Date; label: string; detail?: string }[] = [];
+  const push = (at: Date | null, label: string, detail?: string) => { if (at && !Number.isNaN(at.getTime())) timeline.push({ at, label, detail }); };
+  if (candidate) push(candidate.firstSeenAt, "Discovered", `${source?.name ?? candidate.source}${source ? ` · tier ${source.tier}` : ""}`);
+  if (checkStats) push(asDate(checkStats.firstPassAt), "First passed a direct provider check");
+  // Only events that really added a target behind THIS deployment's alias count as "added to LiteLLM". (The result of an add
+  // carries the alias and lane, not the new deployment's id, so the alias is what ties an event to this deployment.)
+  const additions = promotions.flatMap(promotion => {
+    const targets = Array.isArray(promotion.after?.targets) ? promotion.after.targets as { target?: string; lane?: string | null; status?: string }[] : [];
+    return targets.filter(target => target.status === "added" && target.target === self.litellmModelName).map(target => ({ at: promotion.at, lane: target.lane ?? null }));
+  });
+  for (const addition of additions) push(addition.at, "Added to LiteLLM by RatLLM", addition.lane ? `lane ${addition.lane}` : "direct alias");
+  push(self.createdAt, additions.length ? "First appeared in the LiteLLM inventory" : "First seen in the LiteLLM inventory", additions.length ? undefined : "no RatLLM addition was recorded for it");
+  push(asDate(firstProbe), "First health check through LiteLLM");
+  for (const lane of laneRows) push(lane.since, `Assigned to ${lane.name}`, lane.excluded ? "currently excluded" : undefined);
+  for (const removal of removals) push(new Date(removal.at), "Auto-removed from LiteLLM", removal.reason);
+  timeline.sort((x, y) => x.at.getTime() - y.at.getTime());
+
   return {
     instanceBaseUrl: connection?.baseUrl ?? null,
     blocked: info.blocked === true,
@@ -49,6 +102,27 @@ export async function getDeploymentDetail(id: string) {
     probes,
     audit,
     failureStreak: computeFailureStreak(probes.map(probe => ({ status: probe.status, errorCode: probe.errorCode }))),
+    discovery: candidate ? {
+      link: candidateLink!,
+      candidateId: candidate.id,
+      sourceId: candidate.source,
+      sourceName: source?.name ?? candidate.source,
+      sourceTier: source?.tier ?? null,
+      sourceUrl: candidate.sourceUrl,
+      firstSeenAt: candidate.firstSeenAt,
+      lastSeenAt: candidate.lastSeenAt,
+      freeType: candidate.freeType,
+      verifiedFree: candidate.verifiedFree,
+      contextWindow: candidate.contextWindow,
+      maxOutputTokens: candidate.maxOutputTokens,
+      supportsVision: candidate.supportsVision,
+      supportsTools: candidate.supportsTools,
+      supportsReasoning: candidate.supportsReasoning,
+      corroborating,
+      checks: checkStats ? { total: checkStats.total, passed: checkStats.passed, firstPassAt: asDate(checkStats.firstPassAt), lastAt: asDate(checkStats.lastAt) } : null,
+    } : null,
+    addedToLiteLLMAt: additions[0]?.at ?? null,
+    timeline,
   };
 }
 

@@ -53,3 +53,39 @@ describe("deployment identity on the detail page data", () => {
     expect(await getDeployment("00000000-0000-4000-8000-000000000000")).toBeNull();
   });
 });
+
+describe("lifecycle timeline", () => {
+  it("counts only promotions that really added a target behind this alias, not hourly no-op re-runs", async () => {
+    const { modelCandidates, auditEvents } = await import("@/server/db/schema");
+    const db = getDb();
+    await syncLiteLLM({}, inventory(item("router-id-aaa", "smart-vision", "groq/llama-3.2-90b-vision")));
+    const local = await idOf("router-id-aaa");
+    const [candidate] = await db.insert(modelCandidates).values({ source: "openrouter", modelRef: "groq/llama-3.2-90b-vision", displayName: "v", sourceUrl: "u", providerId: (await db.select().from(modelDeployments).where(eq(modelDeployments.id, local)))[0].providerId }).returning();
+    // Link the deployment to its candidate the way RatLLM does: via model_info.source_candidate_id.
+    await syncLiteLLM({}, inventory(item("router-id-aaa", "smart-vision", "groq/llama-3.2-90b-vision", { source_candidate_id: candidate.id })));
+    const event = (at: string, targets: unknown[]) => db.insert(auditEvents).values({ actor: "user", action: "litellm.candidate.promoted", entityType: "model_candidate", entityId: candidate.id, after: { targets }, correlationId: at, createdAt: new Date(at) });
+    await event("2026-09-13T09:12:00Z", [{ target: "smart-vision", lane: "smart-vision", status: "added" }, { target: "smart-agent", lane: "smart-agent", status: "added" }]);
+    await event("2026-09-13T10:00:00Z", [{ target: "smart-vision", lane: "smart-vision", status: "exists" }]);   // no-op re-run
+    await event("2026-09-13T11:00:00Z", [{ target: "smart-vision", lane: "smart-vision", status: "failed" }]);   // failed attempt
+    const detail = await getDeploymentDetail(local);
+    const added = detail!.timeline.filter(entry => entry.label === "Added to LiteLLM by RatLLM");
+    expect(added).toHaveLength(1);                                   // not 3, and not the smart-agent target
+    expect(added[0]).toMatchObject({ detail: "lane smart-vision" });
+    expect(added[0].at.toISOString()).toBe("2026-09-13T09:12:00.000Z");
+    expect(detail!.addedToLiteLLMAt!.toISOString()).toBe("2026-09-13T09:12:00.000Z");
+    expect(detail!.discovery).toMatchObject({ link: "recorded", candidateId: candidate.id });
+  });
+
+  it("falls back to matching the discovery record by provider and model when no link was recorded", async () => {
+    const { modelCandidates } = await import("@/server/db/schema");
+    const db = getDb();
+    await syncLiteLLM({}, inventory(item("router-id-aaa", "smart-agent", "groq/llama-3.3-70b-versatile")));
+    const local = await idOf("router-id-aaa");
+    const providerId = (await db.select().from(modelDeployments).where(eq(modelDeployments.id, local)))[0].providerId;
+    await db.insert(modelCandidates).values({ source: "openrouter", modelRef: "llama-3.3-70b-versatile", displayName: "l", sourceUrl: "u", providerId });
+    const detail = await getDeploymentDetail(local);
+    expect(detail!.discovery).toMatchObject({ link: "matched", sourceId: "openrouter" });
+    expect(detail!.addedToLiteLLMAt).toBeNull();                    // unmanaged: no RatLLM addition on record
+    expect(detail!.timeline.some(entry => entry.label === "First seen in the LiteLLM inventory")).toBe(true);
+  });
+});
