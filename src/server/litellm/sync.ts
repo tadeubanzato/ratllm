@@ -3,7 +3,7 @@ import { and, eq, isNotNull, notInArray, count, desc, ne } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { CURATOR_MANAGED_BY, CURATOR_VERSION, LANE_IDS } from "@/lib/constants";
 import { getDb } from "@/server/db/client";
-import { auditEvents, canonicalModels, laneAssignments, lanes, modelDeployments, providers, rateLimitProfiles, syncRuns } from "@/server/db/schema";
+import { auditEvents, canonicalModels, laneAssignments, lanes, modelDeployments, providers, rateLimitProfiles, syncRuns, modelCandidates } from "@/server/db/schema";
 import { log } from "@/server/logging";
 import { resolveProvider } from "@/server/providers/catalog";
 import { connectionError, recordConnection } from "@/server/settings/connections";
@@ -25,6 +25,12 @@ function providerIdentity(item: Awaited<ReturnType<HttpLiteLLMAdapter["listDeplo
   const known=rawSlug!=="litellm"?resolveProvider(rawSlug,""):null;
   if(known)return {slug:known.slug,name:known.name};
   return {slug:rawSlug,name:rawSlug==="litellm"?"LiteLLM / Custom":rawSlug.replace(/^./,c=>c.toUpperCase())};
+}
+/** The provider of a discovery record, or undefined when the id isn't a known candidate (e.g. a malformed or deleted one). */
+async function providerOfCandidate(db: ReturnType<typeof getDb>, candidateId: string) {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(candidateId)) return undefined;
+  const row = (await db.select({ provider: providers }).from(modelCandidates).innerJoin(providers, eq(modelCandidates.providerId, providers.id)).where(eq(modelCandidates.id, candidateId)).limit(1))[0];
+  return row?.provider;
 }
 function canonicalSlug(model: string) { return model.split("/").at(-1)!.toLowerCase().replace(/[^a-z0-9._-]+/g, "-"); }
 
@@ -56,7 +62,13 @@ export async function syncLiteLLM(options: { dryRun?: boolean } = {}, adapter = 
       // so it is reported and skipped rather than stored under a guessed identity.
       if (identity.deploymentId === null) { identityMissing += 1; log("warn", "LiteLLM inventory item has no deployment ID; skipped", { correlationId, modelName: item.model_name }); continue; }
       const remoteId: string = identity.deploymentId; remoteDeploymentIds.push(remoteId); const providerIdentityValue=providerIdentity(item,identity.providerModelId); const slug=providerIdentityValue.slug;
-      let provider = (await db.select().from(providers).where(eq(providers.slug, slug)).limit(1))[0];
+      // A deployment RatLLM added carries the id of the discovery record it came from, and that record's provider was resolved
+      // when the model was discovered — authoritative, unlike matching the deployment's provider NAME against the catalog. Name
+      // matching missed "Alibaba Cloud Model Studio" (catalog: "Alibaba Model Studio") and filed the deployment under the
+      // catch-all "Openai" provider taken from its openai/<model> route prefix.
+      const candidateId = typeof item.model_info.source_candidate_id === "string" ? item.model_info.source_candidate_id : null;
+      const fromCandidate = candidateId && isManagedDeployment(item) ? await providerOfCandidate(db, candidateId) : undefined;
+      let provider = fromCandidate ?? (await db.select().from(providers).where(eq(providers.slug, slug)).limit(1))[0];
       if (!provider) [provider] = await db.insert(providers).values({ slug, name: providerIdentityValue.name, adapterKey: "manual", adapterCapability: "MANUAL" }).returning();
       const sourceModel=typeof item.model_info.source_model==="string"?item.model_info.source_model:identity.providerModelId;
       const modelSlug = canonicalSlug(sourceModel);

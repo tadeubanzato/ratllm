@@ -2,10 +2,11 @@ import { NextResponse } from "next/server";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { apiError, correlationId } from "@/server/http";
 import { getDb } from "@/server/db/client";
-import { laneAssignments, lanes, modelCandidates } from "@/server/db/schema";
+import { laneAssignments, lanes, modelCandidates, modelDeployments } from "@/server/db/schema";
 import { bareModelKey } from "@/server/discovery/model-key";
 import { classifyCandidateLanes, LANE_RULES } from "@/server/lanes/rules";
 import { getDeploymentsForProvider } from "@/server/lanes/shared";
+import { liveLaneMember } from "@/server/lanes/membership";
 import { PromotionBlocked, resolvePromotionContext } from "@/server/lanes/promote";
 
 export const dynamic = "force-dynamic";
@@ -39,7 +40,8 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
 
   const counts = await db.select({ slug: lanes.slug, total: sql<number>`count(*)` }).from(laneAssignments)
     .innerJoin(lanes, eq(laneAssignments.laneId, lanes.id))
-    .where(eq(laneAssignments.excluded, false))
+    .innerJoin(modelDeployments, eq(laneAssignments.deploymentId, modelDeployments.id))
+    .where(liveLaneMember)
     .groupBy(lanes.slug);
   const countFor = (slug: string) => Number(counts.find(row => row.slug === slug)?.total ?? 0);
 

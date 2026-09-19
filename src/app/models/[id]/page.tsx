@@ -68,7 +68,7 @@ export default async function ModelDetail({ params }: { params: Promise<{ id: st
 
   return <PageShell title={row.modelName} eyebrow={`${row.providerName} · ${row.providerModelId}`} actions={<SmokeButton deploymentId={row.id} model={row.litellmModelName} />}>
     {duplicateGroup && <p role="alert" className="settings-feedback" style={{ borderColor: "var(--amber)", marginBottom: 14 }}>
-      <strong>Deployed {duplicateGroup.count} times.</strong> {row.providerModelId} has {duplicateGroup.count} live copies behind “{row.litellmModelName}”, all through the same {row.providerName} endpoint, each with its own LiteLLM ID (listed under Alias pool). Identical copies share one rate limit and one cost, so they add no capacity — they only skew routing toward this model. (The same model from a different provider or endpoint is fine and is not counted.) Delete the extra copies by LiteLLM ID.
+      <strong>Deployed {duplicateGroup.count} times.</strong> {row.providerModelId} has {duplicateGroup.count} live copies behind “{row.litellmModelName}”, all through the same {row.providerName} endpoint, each with its own LiteLLM ID (listed under Alias pool). {duplicateGroup.keyKnown ? "They use the same API key, so they share one rate limit and add no capacity — they only skew routing toward this model." : "This deployment doesn't record which API key it uses, so they may be on different keys (separate quotas) — check the key in LiteLLM before deleting any."} (The same model from a different provider or endpoint is fine and is not counted.) Delete the extra copies by LiteLLM ID.
     </p>}
     <div className="detail-grid">
       <section className="panel">
@@ -76,7 +76,7 @@ export default async function ModelDetail({ params }: { params: Promise<{ id: st
           <h3>Identity</h3>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <StatusPill value={row.health} />
-            <DeploymentActions id={row.id} alias={row.litellmModelName} health={row.health} live={Boolean(row.litellmDeploymentId)} />
+            <DeploymentActions id={row.id} alias={row.litellmModelName} health={row.health} live={Boolean(row.litellmDeploymentId) && !removed} facts={{ litellmId: row.litellmDeploymentId, providerModelId: row.providerModelId, providerName: row.providerName, owner: row.owner, managed: row.managed }} />
           </div>
         </div>
         <div className="panel-body">
@@ -120,8 +120,9 @@ export default async function ModelDetail({ params }: { params: Promise<{ id: st
 
             <dt>Ownership</dt>
             <dd>
-              {row.managed ? "Managed by RatLLM" : "Unmanaged · read only"}
+              {row.managed ? "Managed by RatLLM" : row.owner ? <>Managed by <code className="mono">{row.owner}</code> · read-only in RatLLM</> : "Not managed by RatLLM · read-only"}
               {row.managed && (row.managedBy || row.curatorVersion) ? <div className="settings-help">{[row.managedBy, row.curatorVersion && `v${row.curatorVersion}`].filter(Boolean).join(" · ")}</div> : null}
+              {!row.managed ? <div className="settings-help">RatLLM never changes a model on its own unless it manages it. Deactivate and Delete above act on this exact LiteLLM ID after you confirm it. Adopt hands it to RatLLM to manage.</div> : null}
             </dd>
 
             <dt>Lifecycle</dt>

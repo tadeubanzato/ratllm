@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+// crypto.ts reads CREDENTIAL_ENCRYPTION_KEY from the environment when used (that is what makes key rotation possible).
+vi.hoisted(() => { process.env.CREDENTIAL_ENCRYPTION_KEY = "test-encryption-key-at-least-32-characters"; });
 vi.mock("server-only",()=>({}));
 vi.mock("@/server/config",()=>({env:{LITELLM_BASE_URL:"http://environment",LITELLM_MASTER_KEY:"environment-secret",CREDENTIAL_ENCRYPTION_KEY:"test-encryption-key-at-least-32-characters"}}));
 const storage=vi.hoisted(()=>({value:{} as Record<string,unknown>}));

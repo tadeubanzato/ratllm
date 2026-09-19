@@ -204,7 +204,10 @@ export const leases = pgTable("leases", {
 });
 
 export const automationJobs = pgTable("automation_jobs", {
-  id: uuid("id").primaryKey().defaultRandom(), type: text("type").notNull().unique(), enabled: boolean("enabled").notNull().default(true), schedule: text("schedule").notNull(), customSchedule: boolean("custom_schedule").notNull().default(false), timezone: text("timezone").notNull().default("UTC"), status: automationStatus("status").notNull().default("IDLE"), lastRunAt: timestamp("last_run_at", { withTimezone: true }), nextRunAt: timestamp("next_run_at", { withTimezone: true }), durationMs: integer("duration_ms"), failureCount: integer("failure_count").notNull().default(0), lastError: text("last_error"), ...timestamps,
+  id: uuid("id").primaryKey().defaultRandom(), type: text("type").notNull().unique(), enabled: boolean("enabled").notNull().default(true), schedule: text("schedule").notNull(), customSchedule: boolean("custom_schedule").notNull().default(false), timezone: text("timezone").notNull().default("UTC"), status: automationStatus("status").notNull().default("IDLE"), lastRunAt: timestamp("last_run_at", { withTimezone: true }), nextRunAt: timestamp("next_run_at", { withTimezone: true }), durationMs: integer("duration_ms"), failureCount: integer("failure_count").notNull().default(0), lastError: text("last_error"),
+  /** Set when an operator asks for an immediate run. The worker picks it up on its next tick and clears it when it starts the job,
+   *  so a manual run goes through the same lease and reporting as a scheduled one instead of running inside a web request. */
+  runRequestedAt: timestamp("run_requested_at", { withTimezone: true }), requestedOptions: jsonb("requested_options").$type<{ candidateScope?: "due" | "connected" }>(), ...timestamps,
 }, (table) => [index("automation_jobs_due_idx").on(table.enabled, table.nextRunAt)]);
 
 export const modelSources = pgTable("model_sources", {

@@ -1,4 +1,5 @@
 import { getDb } from "./client";
+import { ensureDeploymentIdentity } from "@/server/deployment-identity";
 import { lanes, providers, systemSettings } from "./schema";
 import { LANE_IDS } from "@/lib/constants";
 import { providerDefinitions } from "@/server/providers/catalog";
@@ -6,6 +7,7 @@ import { LANE_RULES, laneEligibilityRecord } from "@/server/lanes/rules";
 
 async function main() {
   const db=getDb();
+  await ensureDeploymentIdentity(db);
   for(const provider of providerDefinitions) await db.insert(providers).values(provider).onConflictDoNothing();
   for(const slug of LANE_IDS) {
     const eligibility=laneEligibilityRecord(slug);

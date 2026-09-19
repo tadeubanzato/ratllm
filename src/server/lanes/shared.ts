@@ -3,6 +3,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
 import { laneAssignments, lanes, modelDeployments } from "@/server/db/schema";
 import { LANE_RULES } from "./rules";
+import { liveLaneMember } from "./membership";
 import type { LaneId } from "@/lib/constants";
 
 /** The deployment columns the lane flows need, for one provider. */
@@ -26,6 +27,7 @@ export function getDeploymentsForProvider(providerId: string) {
 export async function laneHasCapacity(slug: LaneId): Promise<boolean> {
   const [row] = await getDb().select({ total: sql<number>`count(*)` }).from(laneAssignments)
     .innerJoin(lanes, eq(laneAssignments.laneId, lanes.id))
-    .where(and(eq(lanes.slug, slug), eq(laneAssignments.excluded, false))).groupBy(lanes.slug);
+    .innerJoin(modelDeployments, eq(laneAssignments.deploymentId, modelDeployments.id))
+    .where(and(eq(lanes.slug, slug), liveLaneMember)).groupBy(lanes.slug);
   return Number(row?.total ?? 0) < LANE_RULES[slug].maxDeployments;
 }

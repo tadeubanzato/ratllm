@@ -17,6 +17,8 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
+      # Every supported Docker Compose topology renders and contains what it should (server, server+LAN, workstation-remote).
+      - run: bash scripts/check-compose.sh
       - run: pnpm typecheck
       - run: pnpm test
       # Real code against a disposable Postgres container (Docker is preinstalled on ubuntu-latest).

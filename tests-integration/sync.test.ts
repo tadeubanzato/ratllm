@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
 import { modelDeployments } from "@/server/db/schema";
 import { syncLiteLLM } from "@/server/litellm/sync";
@@ -55,5 +56,53 @@ describe("syncLiteLLM inventory reconciliation", () => {
   it("a dry run never writes", async () => {
     await syncLiteLLM({ dryRun: true }, inventory(item("dep-1")));
     expect(await getDb().select().from(modelDeployments)).toHaveLength(0);
+  });
+});
+
+describe("provider attribution for RatLLM-managed deployments", () => {
+  const managedItem = (id: string, candidateId: string, sourceProvider: string) =>
+    ({ model_name: "smart-summary", litellm_params: { model: "openai/qwen-flash" }, model_info: { id, managed_by: "ratllm-curator", source_provider: sourceProvider, source_candidate_id: candidateId } });
+
+  async function candidateFor(providerName: string) {
+    const { modelCandidates, providers: providersTable } = await import("@/server/db/schema");
+    const db = getDb();
+    const [provider] = await db.insert(providersTable).values({ slug: "alibaba-model-studio", name: providerName, adapterKey: "manual", adapterCapability: "MANUAL" }).returning();
+    const [candidate] = await db.insert(modelCandidates).values({ source: "models_dev", modelRef: "qwen-flash", displayName: "qwen-flash", sourceUrl: "u", providerId: provider.id }).returning();
+    return { provider, candidate };
+  }
+  const providerNameOf = async (routerId: string) => {
+    const { providers: providersTable } = await import("@/server/db/schema");
+    const row = (await getDb().select().from(modelDeployments).where(eq(modelDeployments.litellmDeploymentId, routerId)))[0];
+    return (await getDb().select().from(providersTable).where(eq(providersTable.id, row.providerId)))[0].name;
+  };
+
+  it("files the deployment under its discovery record's provider, even when the provider NAME doesn't match the catalog", async () => {
+    const { candidate } = await candidateFor("Alibaba Model Studio");
+    // The deployment calls its provider "Alibaba Cloud Model Studio"; only its route prefix says "openai".
+    await syncLiteLLM({}, inventory(managedItem("q1", candidate.id, "Alibaba Cloud Model Studio")));
+    expect(await providerNameOf("q1")).toBe("Alibaba Model Studio");
+  });
+
+  it("corrects a deployment that an earlier sync had filed under the catch-all provider", async () => {
+    // First sync happens before the discovery record exists → falls back to the route prefix ("Openai").
+    const missing = "00000000-0000-4000-8000-0000000000aa";
+    await syncLiteLLM({}, inventory(managedItem("q1", missing, "Alibaba Cloud Model Studio")));
+    expect(await providerNameOf("q1")).toBe("Openai");
+    const { candidate } = await candidateFor("Alibaba Model Studio");
+    await syncLiteLLM({}, inventory(managedItem("q1", candidate.id, "Alibaba Cloud Model Studio")));
+    expect(await providerNameOf("q1")).toBe("Alibaba Model Studio");
+  });
+
+  it("falls back to name/prefix matching when the candidate id is unknown or malformed", async () => {
+    await syncLiteLLM({}, inventory(managedItem("q1", "not-a-uuid", "Alibaba Cloud Model Studio"), managedItem("q2", "00000000-0000-4000-8000-0000000000bb", "Alibaba Cloud Model Studio")));
+    expect(await providerNameOf("q1")).toBe("Openai");
+    expect(await providerNameOf("q2")).toBe("Openai");
+  });
+
+  it("does not let an unmanaged deployment pick a provider from a candidate id it happens to carry", async () => {
+    const { candidate } = await candidateFor("Alibaba Model Studio");
+    const foreign = { ...managedItem("q1", candidate.id, "x"), model_info: { id: "q1", managed_by: "smart-free-sync", source_candidate_id: candidate.id } };
+    await syncLiteLLM({}, inventory(foreign));
+    expect(await providerNameOf("q1")).toBe("Openai");
   });
 });

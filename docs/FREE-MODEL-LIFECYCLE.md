@@ -121,6 +121,35 @@ with no cooldown lets a hair-trigger remove-then-immediately-readd happen within
   already has `deployment.raw_metadata.model_info.source_candidate_id` available at the moment it
   removes a deployment, which is the join back to the candidate.
 
+## 5a. What counts as a failure (auto-remove evidence)
+
+Auto-remove acts on a streak of consecutive failed health checks (`AUTO_REMOVE_AFTER_FAILURES`, opt-in via the Settings
+auto-remove toggle), so what counts toward the streak decides what gets deleted. A failed check only counts as evidence about
+the *deployment* when nothing broader explains it. The rules live in `src/server/health/probe-policy.ts`.
+
+| Recorded as | Meaning | Counts toward removal? |
+|---|---|---|
+| `UNAVAILABLE` / `DEGRADED` (5xx, timeout, 404/410, empty) | The deployment failed on its own | **Yes** |
+| `RATE_LIMITED` (429) | The provider answered; it's busy | No — neutral |
+| `AUTH_ERROR` (401/403) | The provider rejected the *credential*; every deployment made with that key fails alike | No — neutral. Shown as `AUTH_ERROR`; fix the key, don't delete the models |
+| `SYSTEMIC` | The failure happened during a wider incident (below) | No — neutral |
+
+"Neutral" means the row neither adds to a streak nor breaks one already building from genuine failures.
+
+**Incidents.** The monitor probes a whole run first, then judges it before any removal is decided:
+
+- *Router unreachable* — no probe got any HTTP response.
+- *Widespread* — at least 6 probes and at least 60% failed genuinely.
+- *Provider-wide* — at least 3 probes for one provider and **every** one of them failed.
+
+Failures during an incident are re-tagged `SYSTEMIC` (the deployment's health still shows what was observed), logged at `warn`, and
+recorded as a `litellm.health.systemic_failure` audit event.
+
+**The shield expires.** Incident protection only covers a deployment that **passed a check within the last 24 hours**. Without
+that limit a provider that retires all its models at once would look like a permanent incident and its dead deployments would never
+be cleaned up. After 24 hours without a pass, failures count again and the normal streak removes them. A deployment that has never
+passed is never shielded.
+
 ## 6. Fast-track ramp for new candidates
 
 Decision: **fast-track only candidates still proving themselves**, not everyone — steady-state request

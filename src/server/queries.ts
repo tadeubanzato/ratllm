@@ -1,5 +1,6 @@
 import "server-only";
 import { candidateOnlyBlockReason } from "@/server/discovery/promotion-gate";
+import { liveLaneMember } from "@/server/lanes/membership";
 import { desc, eq, isNotNull, sql } from "drizzle-orm";
 import { getDb } from "./db/client";
 import { candidateChecks, canonicalModels, laneAssignments, lanes, modelCandidates, modelDeployments, providers, providerCredentialReferences, rateLimitProfiles, smokeTests, syncRuns } from "./db/schema";
@@ -14,7 +15,7 @@ import { laneStatus, type LaneStatus } from "./status";
 
 export interface ProviderRow { id: string; slug: string; name: string; status: string; adapterCapability: string; modelCount: number; healthyCount: number; knownCount: number; verifiedCount: number; credentialConfigured: boolean; credentialVerified?: boolean; enabled?: boolean; credentialState?: string; lastDiscoveryAt: Date | null }
 export interface ProviderSourceBreakdown { source: string; tier: string; count: number }
-export interface DeploymentRow { id: string; slug: string; modelName: string; providerModelId: string; litellmModelName: string; litellmDeploymentId: string | null; providerName: string; managed: boolean; health: string; lifecycle?: string; credentialFingerprint?: string | null; managedBy?: string | null; curatorVersion?: string | null; firstSeenAt?: Date; lastSeenAt?: Date; score: number | null; freeType: string; contextWindow: number | null; rpmLimit: number | null; tpmLimit: number | null; safeRpm: number | null; safeTpm: number | null; confidence: string; lastTestedAt: Date | null; benchmarkRunCount: number; lastBenchmarkStatus: string | null; apiBase?: string | null; backend?: string | null; host?: string | null; rateLimitProfileId: string | null; observedRpm: number | null; observedTpm: number | null; manualRpm: number | null; manualTpm: number | null; lastProbeAt: Date | null; avgLatencyMs: number | null; avgFirstTokenMs: number | null; latencySampleCount: number }
+export interface DeploymentRow { id: string; slug: string; modelName: string; providerModelId: string; litellmModelName: string; litellmDeploymentId: string | null; providerName: string; managed: boolean; health: string; lifecycle?: string; owner?: string | null; credentialFingerprint?: string | null; managedBy?: string | null; curatorVersion?: string | null; firstSeenAt?: Date; lastSeenAt?: Date; score: number | null; freeType: string; contextWindow: number | null; rpmLimit: number | null; tpmLimit: number | null; safeRpm: number | null; safeTpm: number | null; confidence: string; lastTestedAt: Date | null; benchmarkRunCount: number; lastBenchmarkStatus: string | null; apiBase?: string | null; backend?: string | null; host?: string | null; rateLimitProfileId: string | null; observedRpm: number | null; observedTpm: number | null; manualRpm: number | null; manualTpm: number | null; lastProbeAt: Date | null; avgLatencyMs: number | null; avgFirstTokenMs: number | null; latencySampleCount: number }
 export interface LaneSummary { id: string; slug: string; name: string; enabled: boolean; healthy: number; total: number; minimumHealthy: number; status: LaneStatus; confidence: string }
 export interface RunRow { id: string; type: string; status: string; createdAt: Date; durationMs: number | null; summary: Record<string, unknown> }
 export interface DashboardData {
@@ -73,7 +74,7 @@ export async function getProvider(id: string) {
 }
 
 // How many recent PASSED checks the LiteLLM page's response-time columns average over — enough to smooth out one
-// slow/fast outlier without the number going stale for minutes given the health monitor's ~10-minute cadence.
+// slow/fast outlier without the number going stale for minutes given the health monitor's cadence (hourly by default).
 const LATENCY_SAMPLE_SIZE = 10;
 
 export async function getDeployments(onlyId?: string): Promise<DeploymentRow[]> {
@@ -96,7 +97,7 @@ export async function getDeployments(onlyId?: string): Promise<DeploymentRow[]> 
     latencySampleCount: sql<number>`(select count(*)::int from (select 1 from smoke_tests where smoke_tests.deployment_id = ${modelDeployments.id} and status = 'PASSED' order by created_at desc limit ${LATENCY_SAMPLE_SIZE}) recent)`,
     apiBase:modelDeployments.apiBase,rawMetadata:modelDeployments.rawMetadata,
   }).from(modelDeployments).innerJoin(canonicalModels, eq(modelDeployments.canonicalModelId, canonicalModels.id)).innerJoin(providers, eq(modelDeployments.providerId, providers.id)).leftJoin(rateLimitProfiles, eq(modelDeployments.id, rateLimitProfiles.deploymentId)).where(onlyId ? eq(modelDeployments.id, onlyId) : undefined).orderBy(desc(modelDeployments.managed), providers.name, canonicalModels.name);
-  return rows.map(({rawMetadata,...row}) => {const info=rawMetadata&&typeof rawMetadata.model_info==="object"?rawMetadata.model_info as Record<string,unknown>:{};return {...row,confidence:row.confidence??"UNKNOWN",backend:typeof info.backend==="string"?info.backend:null,host:typeof info.host==="string"?info.host:null,credentialFingerprint:typeof info.ratllm_credential_fingerprint==="string"?info.ratllm_credential_fingerprint:null};});
+  return rows.map(({rawMetadata,...row}) => {const info=rawMetadata&&typeof rawMetadata.model_info==="object"?rawMetadata.model_info as Record<string,unknown>:{};return {...row,confidence:row.confidence??"UNKNOWN",backend:typeof info.backend==="string"?info.backend:null,host:typeof info.host==="string"?info.host:null,owner:typeof info.managed_by==="string"?info.managed_by:null,credentialFingerprint:typeof info.ratllm_credential_fingerprint==="string"?info.ratllm_credential_fingerprint:null};});
 }
 
 export async function getDeployment(id: string) {
@@ -222,8 +223,9 @@ export async function getLanes(): Promise<LaneSummary[]> {
   const db = getDb();
   const rows = await db.select({
     id: lanes.id, slug: lanes.slug, name: lanes.name, enabled: lanes.enabled, minimumHealthy: lanes.minimumHealthy,
-    total: sql<number>`count(${laneAssignments.id}) filter (where ${laneAssignments.excluded} = false)`,
-    healthy: sql<number>`count(${laneAssignments.id}) filter (where ${laneAssignments.excluded} = false and ${modelDeployments.health} = 'HEALTHY')`,
+    // Live members only (see lanes/membership.ts): assignments left behind by removed or blocked deployments don't count.
+    total: sql<number>`count(${laneAssignments.id}) filter (where ${liveLaneMember})`,
+    healthy: sql<number>`count(${laneAssignments.id}) filter (where ${liveLaneMember} and ${modelDeployments.health} = 'HEALTHY')`,
   }).from(lanes)
     .leftJoin(laneAssignments, eq(lanes.id, laneAssignments.laneId))
     .leftJoin(modelDeployments, eq(laneAssignments.deploymentId, modelDeployments.id))

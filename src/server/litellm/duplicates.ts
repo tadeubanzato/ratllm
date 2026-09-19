@@ -1,6 +1,8 @@
 import { bareModelKey } from "@/server/discovery/model-key";
 
-export interface DuplicateGroup { alias: string; providerName: string; providerModelId: string; apiBase: string | null; count: number; ids: string[] }
+export interface DuplicateGroup { alias: string; providerName: string; providerModelId: string; apiBase: string | null; count: number; ids: string[];
+  /** True when every copy's API key is recorded and identical, so they demonstrably share one quota. False when the key is unrecorded (deployments made before key provenance existed, or added outside RatLLM): the copies might use different keys. */
+  keyKnown: boolean }
 
 const normalizeBase = (value: string | null | undefined) => (value ?? "").trim().replace(/\/+$/, "").toLowerCase();
 
@@ -18,7 +20,7 @@ export function findDuplicateGroups(rows: readonly { id: string; litellmModelNam
     // A known key fingerprint separates copies that use different keys (separate quotas). Where it isn't recorded (older or
     // externally-added deployments) copies group as before — but never with a copy whose key IS known, since we can't say they match.
     const key = [row.litellmModelName, row.providerName, normalizeBase(row.apiBase), row.credentialFingerprint ?? "", bareModelKey(row.providerModelId)].join("|");
-    const group = groups.get(key) ?? { alias: row.litellmModelName, providerName: row.providerName, providerModelId: row.providerModelId, apiBase: row.apiBase ?? null, count: 0, ids: [] };
+    const group = groups.get(key) ?? { alias: row.litellmModelName, providerName: row.providerName, providerModelId: row.providerModelId, apiBase: row.apiBase ?? null, count: 0, ids: [], keyKnown: Boolean(row.credentialFingerprint) };
     group.count += 1;
     group.ids.push(row.id);
     groups.set(key, group);

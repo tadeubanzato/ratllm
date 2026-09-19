@@ -54,4 +54,8 @@ describe("findDuplicateGroups with key fingerprints", () => {
   it("won't assume an unrecorded copy shares a key with a recorded one", () => {
     expect(findDuplicateGroups([dep("a", "aaaa"), dep("b")])).toEqual([]);
   });
+  it("says the key is known only when a fingerprint is recorded, so the UI never claims a shared quota it can't prove", () => {
+    expect(findDuplicateGroups([dep("a", "aaaa"), dep("b", "aaaa")])[0].keyKnown).toBe(true);
+    expect(findDuplicateGroups([dep("a"), dep("b", null)])[0].keyKnown).toBe(false);
+  });
 });

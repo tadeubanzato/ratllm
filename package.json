@@ -16,7 +16,8 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/server/db/migrate.ts",
     "db:seed": "tsx src/server/db/seed.ts",
-    "test:integration": "bash scripts/test-integration.sh"
+    "test:integration": "bash scripts/test-integration.sh",
+    "credentials:rotate": "NODE_OPTIONS=--conditions=react-server tsx scripts/rotate-credentials.ts"
   },
   "dependencies": {
     "@tanstack/react-table": "^8.21.3",

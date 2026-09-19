@@ -5,6 +5,10 @@ services:
   curator-worker:
     profiles: [local-worker]
   curator-web:
+    environment:
+      # Tells the app it is a workstation looking at the SERVER's database: it shows that in the UI, flags a DATABASE_URL that points
+      # at a local container, and the worker refuses to run here (the server owns scheduling).
+      RATLLM_DEPLOYMENT_MODE: workstation-remote
     depends_on: !reset {}
     # The server deployment owns migrations, seed data, and background jobs.
     command: ["pnpm", "start"]
