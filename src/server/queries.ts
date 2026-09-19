@@ -14,7 +14,7 @@ import { laneStatus, type LaneStatus } from "./status";
 
 export interface ProviderRow { id: string; slug: string; name: string; status: string; adapterCapability: string; modelCount: number; healthyCount: number; knownCount: number; verifiedCount: number; credentialConfigured: boolean; credentialVerified?: boolean; enabled?: boolean; credentialState?: string; lastDiscoveryAt: Date | null }
 export interface ProviderSourceBreakdown { source: string; tier: string; count: number }
-export interface DeploymentRow { id: string; slug: string; modelName: string; providerModelId: string; litellmModelName: string; litellmDeploymentId: string | null; providerName: string; managed: boolean; health: string; score: number | null; freeType: string; contextWindow: number | null; rpmLimit: number | null; tpmLimit: number | null; safeRpm: number | null; safeTpm: number | null; confidence: string; lastTestedAt: Date | null; benchmarkRunCount: number; lastBenchmarkStatus: string | null; apiBase?: string | null; backend?: string | null; host?: string | null; rateLimitProfileId: string | null; observedRpm: number | null; observedTpm: number | null; manualRpm: number | null; manualTpm: number | null; lastProbeAt: Date | null; avgLatencyMs: number | null; avgFirstTokenMs: number | null; latencySampleCount: number }
+export interface DeploymentRow { id: string; slug: string; modelName: string; providerModelId: string; litellmModelName: string; litellmDeploymentId: string | null; providerName: string; managed: boolean; health: string; lifecycle?: string; managedBy?: string | null; curatorVersion?: string | null; firstSeenAt?: Date; lastSeenAt?: Date; score: number | null; freeType: string; contextWindow: number | null; rpmLimit: number | null; tpmLimit: number | null; safeRpm: number | null; safeTpm: number | null; confidence: string; lastTestedAt: Date | null; benchmarkRunCount: number; lastBenchmarkStatus: string | null; apiBase?: string | null; backend?: string | null; host?: string | null; rateLimitProfileId: string | null; observedRpm: number | null; observedTpm: number | null; manualRpm: number | null; manualTpm: number | null; lastProbeAt: Date | null; avgLatencyMs: number | null; avgFirstTokenMs: number | null; latencySampleCount: number }
 export interface LaneSummary { id: string; slug: string; name: string; enabled: boolean; healthy: number; total: number; minimumHealthy: number; status: LaneStatus; confidence: string }
 export interface RunRow { id: string; type: string; status: string; createdAt: Date; durationMs: number | null; summary: Record<string, unknown> }
 export interface DashboardData {
@@ -76,10 +76,11 @@ export async function getProvider(id: string) {
 // slow/fast outlier without the number going stale for minutes given the health monitor's ~10-minute cadence.
 const LATENCY_SAMPLE_SIZE = 10;
 
-export async function getDeployments(): Promise<DeploymentRow[]> {
+export async function getDeployments(onlyId?: string): Promise<DeploymentRow[]> {
   const rows = await getDb().select({
     id: modelDeployments.id, slug: canonicalModels.slug, modelName: canonicalModels.name, providerModelId: modelDeployments.providerModelId,
     litellmModelName: modelDeployments.litellmModelName, litellmDeploymentId: modelDeployments.litellmDeploymentId, providerName: providers.name, managed: modelDeployments.managed,
+    lifecycle: modelDeployments.lifecycle, managedBy: modelDeployments.managedBy, curatorVersion: modelDeployments.curatorVersion, firstSeenAt: modelDeployments.createdAt, lastSeenAt: modelDeployments.lastSeenAt,
     health: modelDeployments.health, score: modelDeployments.score, freeType: modelDeployments.freeType, contextWindow: canonicalModels.contextWindow,
     rpmLimit: rateLimitProfiles.rpmLimit, tpmLimit: rateLimitProfiles.tpmLimit, safeRpm: rateLimitProfiles.safeRpm, safeTpm: rateLimitProfiles.safeTpm,
     confidence: rateLimitProfiles.confidence, lastTestedAt: modelDeployments.lastTestedAt,
@@ -94,13 +95,13 @@ export async function getDeployments(): Promise<DeploymentRow[]> {
     avgFirstTokenMs: sql<number | null>`(select round(avg(recent.first_token_ms))::int from (select first_token_ms from smoke_tests where smoke_tests.deployment_id = ${modelDeployments.id} and status = 'PASSED' order by created_at desc limit ${LATENCY_SAMPLE_SIZE}) recent)`,
     latencySampleCount: sql<number>`(select count(*)::int from (select 1 from smoke_tests where smoke_tests.deployment_id = ${modelDeployments.id} and status = 'PASSED' order by created_at desc limit ${LATENCY_SAMPLE_SIZE}) recent)`,
     apiBase:modelDeployments.apiBase,rawMetadata:modelDeployments.rawMetadata,
-  }).from(modelDeployments).innerJoin(canonicalModels, eq(modelDeployments.canonicalModelId, canonicalModels.id)).innerJoin(providers, eq(modelDeployments.providerId, providers.id)).leftJoin(rateLimitProfiles, eq(modelDeployments.id, rateLimitProfiles.deploymentId)).orderBy(desc(modelDeployments.managed), providers.name, canonicalModels.name);
+  }).from(modelDeployments).innerJoin(canonicalModels, eq(modelDeployments.canonicalModelId, canonicalModels.id)).innerJoin(providers, eq(modelDeployments.providerId, providers.id)).leftJoin(rateLimitProfiles, eq(modelDeployments.id, rateLimitProfiles.deploymentId)).where(onlyId ? eq(modelDeployments.id, onlyId) : undefined).orderBy(desc(modelDeployments.managed), providers.name, canonicalModels.name);
   return rows.map(({rawMetadata,...row}) => {const info=rawMetadata&&typeof rawMetadata.model_info==="object"?rawMetadata.model_info as Record<string,unknown>:{};return {...row,confidence:row.confidence??"UNKNOWN",backend:typeof info.backend==="string"?info.backend:null,host:typeof info.host==="string"?info.host:null};});
 }
 
 export async function getDeployment(id: string) {
-  const rows = await getDeployments();
-  return rows.find(row => row.id === id) ?? null;
+  // Filtered in SQL: this used to load every deployment (with its per-row aggregate subqueries) just to pick one.
+  return (await getDeployments(id))[0] ?? null;
 }
 
 export interface SourceYield { source: string; discovered: number; verifiedFree: number; promoted: number; providers: string[] }
