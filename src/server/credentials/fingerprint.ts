@@ -18,13 +18,17 @@ export type CredentialSource = "environment" | "database";
 /**
  * The provenance fields written into a deployment's router metadata when RatLLM adds it. Field names deliberately avoid the
  * words key/secret/token/password, which the metadata sanitizer strips, so these survive the round trip through LiteLLM.
+ *
+ * They are prefixed `ratllm_` because that metadata is shared: other tools that add models to the same LiteLLM write their own
+ * fields into it, and a production LiteLLM already carried a foreign `credential_fingerprint` (a different algorithm) on 58
+ * deployments. Un-prefixed names made RatLLM read that value as its own and report a false "key changed" alarm.
  * Contains no secret: only which credential row, which env var name, where the value came from, and its fingerprint.
  */
 export function credentialProvenance(credential: { id: string; environmentVariable: string }, resolved: { secret: string; source: CredentialSource }) {
   return {
-    credential_id: credential.id,
-    credential_env: credential.environmentVariable,
-    credential_source: resolved.source,
-    credential_fingerprint: keyFingerprint(resolved.secret),
+    ratllm_credential_id: credential.id,
+    ratllm_credential_env: credential.environmentVariable,
+    ratllm_credential_source: resolved.source,
+    ratllm_credential_fingerprint: keyFingerprint(resolved.secret),
   };
 }
