@@ -1,4 +1,5 @@
 import "server-only";
+import { candidateOnlyBlockReason } from "@/server/discovery/promotion-gate";
 import { desc, eq, isNotNull, sql } from "drizzle-orm";
 import { getDb } from "./db/client";
 import { candidateChecks, canonicalModels, laneAssignments, lanes, modelCandidates, modelDeployments, providers, providerCredentialReferences, rateLimitProfiles, smokeTests, syncRuns } from "./db/schema";
@@ -182,8 +183,8 @@ export async function getModelCandidates(){
     const laneMemberships=laneRows.filter(lane=>!lane.excluded&&deploymentIds.has(lane.deploymentId)).map(lane=>({slug:lane.slug,health:deployments.find(item=>item.id===lane.deploymentId)?.health??"UNKNOWN"}));
     const definition=resolveProvider(row.source==="openrouter"?"openrouter":row.providerName,row.modelRef);
     const endpoint=definition?resolveVerificationEndpoint(definition,provider?.baseUrl??null):null;
-    const promotableReason=!provider?"Provider not resolved"
-      :CUSTOM_ADAPTER_PROVIDERS[provider.slug]??(nonChatModelReason({modelRef:row.modelRef,displayName:row.displayName,description:typeof row.evidence?.description==="string"?row.evidence.description:null})??(credentialRequired&&!credentialVerified?"Credential not verified":!endpoint?"No known endpoint for this provider":unprovenCheckReason(row.evidence)));
+    const promotableReason=candidateOnlyBlockReason(row)??(!provider?"Provider not resolved"
+      :CUSTOM_ADAPTER_PROVIDERS[provider.slug]??(nonChatModelReason({modelRef:row.modelRef,displayName:row.displayName,description:typeof row.evidence?.description==="string"?row.evidence.description:null})??(credentialRequired&&!credentialVerified?"Credential not verified":!endpoint?"No known endpoint for this provider":unprovenCheckReason(row.evidence))));
     // liteLLMDeploymentId means "currently live in LiteLLM" (the real router id, gated on ACTIVE) — never just
     // "a deployment row exists for this candidate". matchDeployment() deliberately falls back to a stale
     // REMOVED/DEACTIVATED row so liteLLMLifecycle can still show real history, but that same stale row must never
