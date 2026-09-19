@@ -12,11 +12,14 @@ export function resolveVerificationEndpoint(provider: ProviderDefinition, baseUr
 /** Strips a leading provider-prefix segment community sources sometimes bake into the model id, leaving the bare id the provider's own API expects. */
 export function bareCandidateModelRef(input: CandidateVerificationInput) { if (input.source === "openrouter") return input.modelRef; const segment=input.modelRef.split("/",1)[0]?.toLowerCase(); const prefixes=new Set([input.provider?.slug,"mistral","groq","cerebras","sambanova","together_ai","together-ai","zai","zhipuai","gemini"]); return segment&&prefixes.has(segment)?input.modelRef.slice(segment.length+1):input.modelRef; }
 /** Resolves a stored credential to its plaintext secret the same way the verifier does — env var takes precedence over the encrypted DB copy. */
-export function resolveCredentialSecret(credential: {environmentVariable: string; encryptedValue: string | null}): string | null {
+export function resolveCredentialWithSource(credential: {environmentVariable: string; encryptedValue: string | null}): {secret: string; source: "environment" | "database"} | null {
   const fromEnv = process.env[credential.environmentVariable];
-  if (fromEnv) return fromEnv;
-  if (credential.encryptedValue) { try { return decryptCredential(credential.encryptedValue); } catch { return null; } }
+  if (fromEnv) return {secret: fromEnv, source: "environment"};
+  if (credential.encryptedValue) { try { return {secret: decryptCredential(credential.encryptedValue), source: "database"}; } catch { return null; } }
   return null;
+}
+export function resolveCredentialSecret(credential: {environmentVariable: string; encryptedValue: string | null}): string | null {
+  return resolveCredentialWithSource(credential)?.secret ?? null;
 }
 
 /** Verifies the provider directly. It never adds a LiteLLM deployment. */

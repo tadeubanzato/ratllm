@@ -1,11 +1,15 @@
 import { CURATOR_MANAGED_BY } from "@/lib/constants";
 import type { LiteLLMDeployment } from "./types";
 
+/** `deploymentId` is LiteLLM's own remote deployment ID or `null` when the router did not supply one. It is never
+ *  synthesized from the alias/model name: that value is later used to delete, block, and probe a deployment, and an
+ *  alias is shared by every member of a pool, so a guessed ID could target the wrong deployment. */
 export function deploymentIdentity(item: LiteLLMDeployment) {
   const params = item.litellm_params;
   const info = item.model_info;
   const providerModelId = String(params.model ?? info.model ?? item.model_name);
-  const deploymentId = String(info.id ?? info.model_id ?? item.model_id ?? `${item.model_name}:${providerModelId}`);
+  const raw = info.id ?? info.model_id ?? item.model_id;
+  const deploymentId = raw === undefined || raw === null || String(raw).trim() === "" ? null : String(raw);
   return { providerModelId, deploymentId };
 }
 

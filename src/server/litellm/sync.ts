@@ -1,5 +1,5 @@
 import "server-only";
-import { and, eq, isNotNull, notInArray } from "drizzle-orm";
+import { and, eq, isNotNull, notInArray, count, desc, ne } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { CURATOR_MANAGED_BY, CURATOR_VERSION, LANE_IDS } from "@/lib/constants";
 import { getDb } from "@/server/db/client";
@@ -8,6 +8,7 @@ import { log } from "@/server/logging";
 import { resolveProvider } from "@/server/providers/catalog";
 import { connectionError, recordConnection } from "@/server/settings/connections";
 import { deploymentIdentity, isBlockedDeployment, isManagedDeployment, sanitizedMetadata } from "./classify";
+import { shouldApplyRemovals } from "./removal-guard";
 import { HttpLiteLLMAdapter } from "./client";
 
 function privateApiBase(value: unknown) { return typeof value === "string" && /localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|host\.docker/i.test(value); }
@@ -43,14 +44,18 @@ export async function syncLiteLLM(options: { dryRun?: boolean } = {}, adapter = 
     if (options.dryRun) {
       const existing = await db.select({ id: modelDeployments.litellmDeploymentId }).from(modelDeployments);
       const current = new Set(existing.map(row => row.id).filter((id): id is string => id !== null));
-      const incoming = remote.map(item => deploymentIdentity(item).deploymentId);
+      const incoming = remote.map(item => deploymentIdentity(item).deploymentId).filter((id): id is string => id !== null);
       const summary = { dryRun: true, before: current.size, after: incoming.length, added: incoming.filter(id => !current.has(id)), removed: [...current].filter(id => !incoming.includes(id)), updated: incoming.filter(id => current.has(id)), laneChanges: [], rateLimitChanges: [] };
       await db.update(syncRuns).set({ status: "SUCCEEDED", summary, finishedAt: new Date(), updatedAt: new Date() }).where(eq(syncRuns.id, run.id));
       return { runId: run.id, correlationId, ...summary };
     }
-    const remoteDeploymentIds: string[] = [];
+    const remoteDeploymentIds: string[] = []; let identityMissing = 0;
     for (const item of remote) {
-      const identity = deploymentIdentity(item); remoteDeploymentIds.push(identity.deploymentId); const providerIdentityValue=providerIdentity(item,identity.providerModelId); const slug=providerIdentityValue.slug;
+      const identity = deploymentIdentity(item);
+      // No authoritative remote ID means this record can't be addressed safely (delete/block/probe are all ID-based),
+      // so it is reported and skipped rather than stored under a guessed identity.
+      if (identity.deploymentId === null) { identityMissing += 1; log("warn", "LiteLLM inventory item has no deployment ID; skipped", { correlationId, modelName: item.model_name }); continue; }
+      const remoteId: string = identity.deploymentId; remoteDeploymentIds.push(remoteId); const providerIdentityValue=providerIdentity(item,identity.providerModelId); const slug=providerIdentityValue.slug;
       let provider = (await db.select().from(providers).where(eq(providers.slug, slug)).limit(1))[0];
       if (!provider) [provider] = await db.insert(providers).values({ slug, name: providerIdentityValue.name, adapterKey: "manual", adapterCapability: "MANUAL" }).returning();
       const sourceModel=typeof item.model_info.source_model==="string"?item.model_info.source_model:identity.providerModelId;
@@ -64,13 +69,13 @@ export async function syncLiteLLM(options: { dryRun?: boolean } = {}, adapter = 
       else if (model.lifecycle === "QUARANTINED") [model] = await db.update(canonicalModels).set({ lifecycle: "ACTIVE", updatedAt: new Date() }).where(eq(canonicalModels.id, model.id)).returning();
       const managedFlag = isManagedDeployment(item);
       if (managedFlag) managed += 1; else unmanaged += 1;
-      const existing = (await db.select().from(modelDeployments).where(eq(modelDeployments.litellmDeploymentId, identity.deploymentId)).limit(1))[0];
+      const existing = (await db.select().from(modelDeployments).where(eq(modelDeployments.litellmDeploymentId, remoteId)).limit(1))[0];
       // model_info.blocked is authoritative and comes straight from the router, whether ratllm's own deactivate
       // action set it or an external tool (e.g. another app's admin script) blocked it directly — never override
       // that with a guess. Falls back to preserving a prior DEACTIVATED only for the (now rare) case a deployment
       // predates this check having ever run.
       const lifecycle = isBlockedDeployment(item) || existing?.lifecycle === "DEACTIVATED" ? "DEACTIVATED" as const : "ACTIVE" as const;
-      const values = { canonicalModelId: model.id, providerId: provider.id, providerModelId: identity.providerModelId, litellmDeploymentId: identity.deploymentId, litellmModelName: item.model_name, managed: managedFlag, managedBy: managedFlag ? String(item.model_info.managed_by) : null, curatorVersion: managedFlag ? String(item.model_info.curator_version ?? CURATOR_VERSION) : null, apiBase: typeof item.litellm_params.api_base === "string" ? item.litellm_params.api_base : null, rawMetadata: sanitizedMetadata(item), lastSeenAt: new Date(), lifecycle };
+      const values = { canonicalModelId: model.id, providerId: provider.id, providerModelId: identity.providerModelId, litellmDeploymentId: remoteId, litellmModelName: item.model_name, managed: managedFlag, managedBy: managedFlag ? String(item.model_info.managed_by) : null, curatorVersion: managedFlag ? String(item.model_info.curator_version ?? CURATOR_VERSION) : null, apiBase: typeof item.litellm_params.api_base === "string" ? item.litellm_params.api_base : null, rawMetadata: sanitizedMetadata(item), lastSeenAt: new Date(), lifecycle };
       let deploymentRowId: string;
       if (existing) { deploymentRowId = existing.id; await db.update(modelDeployments).set({ ...values, updatedAt: new Date() }).where(eq(modelDeployments.id, existing.id)); }
       else { const [inserted] = await db.insert(modelDeployments).values(values).returning({ id: modelDeployments.id }); deploymentRowId = inserted.id; await db.insert(rateLimitProfiles).values({ deploymentId: inserted.id }); }
@@ -89,8 +94,15 @@ export async function syncLiteLLM(options: { dryRun?: boolean } = {}, adapter = 
     // A deployment no longer in the router's own inventory is gone regardless of how it got that way (deleted
     // directly in LiteLLM, or auto-removed elsewhere) — mark it REMOVED so the Discovered Models page stops
     // showing it as still added, even for a row this sync never otherwise touches.
-    await db.update(modelDeployments).set({ health: "UNAVAILABLE", lifecycle: "REMOVED", updatedAt: new Date() }).where(missingFromRouter);
-    const summary = { deployments: remote.length, managed, unmanaged };
+    // Count only items that had a usable remote ID: an inventory of unaddressable items is as empty as far as removals go.
+    const [{ n: liveLocalCount }] = await db.select({ n: count() }).from(modelDeployments).where(and(isNotNull(modelDeployments.litellmDeploymentId), ne(modelDeployments.lifecycle, "REMOVED")));
+    const previous = (await db.select({ summary: syncRuns.summary }).from(syncRuns).where(and(eq(syncRuns.type, "LITELLM_SYNC"), eq(syncRuns.status, "SUCCEEDED"), ne(syncRuns.id, run.id))).orderBy(desc(syncRuns.createdAt)).limit(5))
+      .map(row => row.summary as Record<string, unknown> | null).find(value => value && value.dryRun !== true);
+    const previousIdentified = previous ? Number(previous.identified ?? previous.deployments ?? NaN) : NaN;
+    const removalDecision = shouldApplyRemovals({ identifiedRemoteCount: remoteDeploymentIds.length, liveLocalCount, previousIdentifiedRemoteCount: Number.isFinite(previousIdentified) ? previousIdentified : null });
+    if (removalDecision.apply) await db.update(modelDeployments).set({ health: "UNAVAILABLE", lifecycle: "REMOVED", updatedAt: new Date() }).where(missingFromRouter);
+    else log("warn", "LiteLLM returned no usable deployments; not marking live deployments removed until a second sync confirms", { correlationId, liveLocalCount });
+    const summary = { deployments: remote.length, identified: remoteDeploymentIds.length, managed, unmanaged, ...(identityMissing ? { identityMissing } : {}), ...(removalDecision.apply ? {} : { removalsSkipped: removalDecision.reason }) };
     await db.update(syncRuns).set({ status: "SUCCEEDED", summary, finishedAt: new Date(), updatedAt: new Date() }).where(eq(syncRuns.id, run.id));
     await db.insert(auditEvents).values({ actor: "system", action: "litellm.inventory.synced", entityType: "sync_run", entityId: run.id, after: summary, correlationId });
     return { runId: run.id, correlationId, ...summary };

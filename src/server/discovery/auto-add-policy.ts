@@ -51,3 +51,15 @@ export function unprovenCheckReason(evidence: Record<string, unknown>): string |
   if (lastStatus === "available") return null;
   return lastStatus ? "Last check did not pass yet" : "Not checked yet";
 }
+
+/** After a deferral (lanes full, credential not ready) auto-add waits this long before trying the same candidate again. */
+export const AUTO_ADD_DEFER_MS = 6 * 60 * 60_000;
+
+export function isAutoAddDeferred(evidence: Record<string, unknown>, now = Date.now()): boolean {
+  const until = evidence.autoAddDeferredUntil;
+  if (typeof until !== "string") return false;
+  const at = new Date(until).getTime();
+  return Number.isFinite(at) && at > now;
+}
+
+export function autoAddDeferredUntil(now = Date.now()): string { return new Date(now + AUTO_ADD_DEFER_MS).toISOString(); }

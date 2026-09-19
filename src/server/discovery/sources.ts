@@ -1,7 +1,7 @@
 import "server-only";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
-import type { DiscoveredCandidate, DiscoverySource } from "./types";
+import { SourceBlockedError, type DiscoveredCandidate, type DiscoverySource } from "./types";
 import { getDb } from "@/server/db/client";
 import { providerCredentialReferences, providers } from "@/server/db/schema";
 import { resolveProvider } from "@/server/providers/catalog";
@@ -81,7 +81,7 @@ class OpenAICompatibleModelsSource implements DiscoverySource {
   get id() { return this.config.id; }
   async discover(): Promise<DiscoveredCandidate[]> {
     const headers = await bearerHeaders(this.config);
-    if (this.config.authEnv && !this.config.authOptional && !headers.authorization) return [];
+    if (this.config.authEnv && !this.config.authOptional && !headers.authorization) throw new SourceBlockedError(`${this.config.authEnv} is not configured`);
     const body = await getJson(this.config.url, headers) as Record<string, unknown>;
     const listKey = this.config.listKey ?? "data";
     const data = Array.isArray(body[listKey]) ? body[listKey] as unknown[] : Array.isArray(body) ? body : [];
@@ -224,10 +224,10 @@ class ModelsDevSource implements DiscoverySource {
         const inputModalities = Array.isArray(modalities.input) ? modalities.input as unknown[] : [];
         out.push({
           source: this.id, modelRef: modelId, displayName: typeof model.name === "string" ? model.name : modelId, providerName,
-          freeType: free ? "FREE_TIER" : "UNKNOWN", verifiedFree: free,
+          freeType: free ? "FREE_TIER" : "UNKNOWN", verifiedFree: false, // aggregator $0 metadata is a price claim, not proof of a durable free API entitlement (docs/models_source.md)
           contextWindow: numberValue(limit.context), maxOutputTokens: numberValue(limit.output),
           supportsVision: inputModalities.includes("image"), supportsTools: Boolean(model.tool_call), supportsReasoning: Boolean(model.reasoning),
-          sourceUrl: this.config.url, evidence: {family: model.family ?? null, openWeights: Boolean(model.open_weights), costZero: free, catalogEntry: true, description: typeof model.description === "string" ? model.description : null},
+          sourceUrl: this.config.url, evidence: {family: model.family ?? null, openWeights: Boolean(model.open_weights), costZero: free, priceZeroClaim: free, catalogEntry: true, description: typeof model.description === "string" ? model.description : null},
         });
       }
     }

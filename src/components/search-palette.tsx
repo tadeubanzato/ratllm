@@ -12,9 +12,16 @@ export function SearchPalette() {
   const inputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
 
+  function openPalette() {
+    setQuery("");
+    setResults([]);
+    setActiveIndex(0);
+    setOpen(true);
+  }
+
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setOpen(o => !o); }
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setOpen(o => { if (!o) { setQuery(""); setResults([]); setActiveIndex(0); } return !o; }); }
       else if (e.key === "Escape") setOpen(false);
     }
     window.addEventListener("keydown", onKeyDown);
@@ -23,7 +30,6 @@ export function SearchPalette() {
 
   useEffect(() => {
     if (!open) return;
-    setQuery(""); setResults([]); setActiveIndex(0);
     const raf = requestAnimationFrame(() => inputRef.current?.focus());
     return () => cancelAnimationFrame(raf);
   }, [open]);
@@ -31,7 +37,7 @@ export function SearchPalette() {
   useEffect(() => {
     if (!open) return;
     const q = query.trim();
-    if (q.length < 2) { setResults([]); return; }
+    if (q.length < 2) return;
     const controller = new AbortController();
     const timer = setTimeout(() => {
       fetch(`/api/search?q=${encodeURIComponent(q)}`, { signal: controller.signal })
@@ -51,7 +57,7 @@ export function SearchPalette() {
   }
 
   return <>
-    <button className="search-button" onClick={() => setOpen(true)}>
+    <button className="search-button" type="button" onClick={openPalette} aria-label="Search models, providers, lanes, and runs">
       <Search size={15}/><span>Search models, providers, runs…</span><kbd>⌘K</kbd>
     </button>
     {open && <div className="search-overlay" role="dialog" aria-modal="true" onClick={() => setOpen(false)}>
@@ -61,9 +67,9 @@ export function SearchPalette() {
           <input ref={inputRef} value={query} onChange={e => setQuery(e.target.value)} onKeyDown={onInputKeyDown} placeholder="Search models, providers, lanes, runs…"/>
           <kbd>Esc</kbd>
         </div>
-        <div className="search-results">
+        <div className="search-results" role="listbox" aria-label="Search results">
           {query.trim().length >= 2 && results.length === 0 && <p className="search-empty">No matches</p>}
-          {results.map((r, i) => <button key={`${r.type}-${r.href}-${i}`} className={"search-result" + (i === activeIndex ? " active" : "")} onMouseEnter={() => setActiveIndex(i)} onClick={() => go(r.href)}>
+          {query.trim().length >= 2 && results.map((r, i) => <button key={`${r.type}-${r.href}-${i}`} type="button" role="option" aria-selected={i === activeIndex} className={"search-result" + (i === activeIndex ? " active" : "")} onMouseEnter={() => setActiveIndex(i)} onClick={() => go(r.href)}>
             <span className="search-result-type">{r.type}</span>
             <span className="search-result-label">{r.label}</span>
             {r.sublabel && <span className="search-result-sub">{r.sublabel}</span>}

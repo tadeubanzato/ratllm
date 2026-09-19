@@ -81,7 +81,7 @@ export default function AboutPage() {
             <dt>Confidence</dt>
             <dd>UNKNOWN / LOW / MEDIUM / HIGH — how much smoke-test evidence currently backs a rate-limit estimate.</dd>
             <dt>Published / Observed / Safe (RPM &amp; TPM)</dt>
-            <dd>Published is whatever a provider or LiteLLM itself reports. Observed is learned automatically from recent non-429 smoke-test volume. Safe applies a conservative margin (70% of observed) so lane routing does not chase the actual limit.</dd>
+            <dd>Published is whatever a provider or LiteLLM itself reports. Observed and Safe are not measured yet: smoke tests are spaced probes, not a requests-per-minute window, so RatLLM shows a dash rather than an invented number. Only Published values and manual overrides are shown.</dd>
             <dt>Success rate</dt>
             <dd>The percentage of a deployment&apos;s most recent smoke tests that returned a real, non-empty response.</dd>
             <dt>p50 / p95 latency</dt>

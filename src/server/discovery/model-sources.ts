@@ -38,3 +38,10 @@ export async function recordSourceSync(adapterReference: string, result: {ok: tr
     updatedAt: new Date(),
   }).where(eq(modelSources.adapterReference, adapterReference));
 }
+
+/** A source that couldn't run because something it needs isn't configured. Deliberately leaves `lastSyncAt` alone: that
+ *  timestamp drives the refresh interval, and resetting it would delay the first real fetch by a full interval after the
+ *  credential is added. */
+export async function recordSourceBlocked(adapterReference: string) {
+  await getDb().update(modelSources).set({status: "BLOCKED", updatedAt: new Date()}).where(eq(modelSources.adapterReference, adapterReference));
+}

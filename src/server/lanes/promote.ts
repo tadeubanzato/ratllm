@@ -1,4 +1,5 @@
 import "server-only";
+import { candidateOnlyBlockReason } from "@/server/discovery/promotion-gate";
 import { eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { CURATOR_MANAGED_BY, CURATOR_VERSION, type LaneId } from "@/lib/constants";
@@ -10,11 +11,13 @@ import { resolveProvider } from "@/server/providers/catalog";
 import { buildExtraHeaders } from "@/server/providers/wiring";
 import { bareModelKey } from "@/server/discovery/model-key";
 import { removalHistoryOf } from "@/server/discovery/auto-add-policy";
-import { bareCandidateModelRef, resolveCredentialSecret, resolveVerificationEndpoint, verifyCandidateDirectly } from "@/server/discovery/verify";
+import { bareCandidateModelRef, resolveCredentialWithSource, resolveVerificationEndpoint, verifyCandidateDirectly } from "@/server/discovery/verify";
+import { credentialProvenance } from "@/server/credentials/fingerprint";
 import { nonChatModelReason } from "@/server/discovery/model-type";
 import { classifyCandidateLanes } from "./rules";
 import { syncFallbackConfig } from "./fallbacks";
 import { getDeploymentsForProvider, laneHasCapacity } from "./shared";
+import { findExistingTarget } from "./existing-target";
 
 const MAX_ATTEMPTS = 3;
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -22,6 +25,13 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 /** Raised when a candidate cannot be added to LiteLLM for a reason the user must fix first (no credential, no endpoint, provider down). */
 export class PromotionBlocked extends Error {
   constructor(message: string) { super(message); this.name = "PromotionBlocked"; }
+}
+
+/** A block that is an expected waiting state rather than a failure — every recommended lane is full, no lane fits yet, or
+ *  a credential/provider prerequisite hasn't been set up. Recorded as a DEFERRED run (not FAILED) so the Runs page and
+ *  failure counts show real problems, and auto-add backs off instead of retrying the same dead end every hour. */
+export class PromotionDeferred extends PromotionBlocked {
+  constructor(message: string) { super(message); this.name = "PromotionDeferred"; }
 }
 
 type Candidate = typeof modelCandidates.$inferSelect;
@@ -33,6 +43,8 @@ export interface PromotionContext {
   providerRow: typeof providers.$inferSelect;
   credential: typeof providerCredentialReferences.$inferSelect;
   apiKey: string;
+  /** Which credential row, and where its value came from, so the deployment can record it (never the value itself). */
+  credentialProvenance: ReturnType<typeof credentialProvenance>;
   bareModel: string;
   apiBase: string;
   directAliasName: string;
@@ -48,24 +60,28 @@ export async function resolvePromotionContext(candidateId: string): Promise<Prom
   const blockedReason = nonChatModelReason({ modelRef: candidate.modelRef, displayName: candidate.displayName, description: typeof evidence?.description === "string" ? evidence.description : null });
   if (blockedReason) throw new PromotionBlocked(blockedReason);
 
+  const authorityReason = candidateOnlyBlockReason(candidate);
+  if (authorityReason) throw new PromotionBlocked(authorityReason);
+
   const definition = resolveProvider(candidate.source === "openrouter" ? "openrouter" : candidate.providerName, candidate.modelRef);
   if (!definition) throw new PromotionBlocked("No known provider resolves for this candidate");
 
   const providerRow = (await db.select().from(providers).where(eq(providers.slug, definition.slug)).limit(1))[0];
-  if (!providerRow) throw new PromotionBlocked(`${definition.name} is not registered yet — run discovery first`);
+  if (!providerRow) throw new PromotionDeferred(`${definition.name} is not registered yet — run discovery first`);
 
   const credential = (await db.select().from(providerCredentialReferences).where(eq(providerCredentialReferences.providerId, providerRow.id)).limit(1))[0];
-  if (!credential) throw new PromotionBlocked(`Add a credential for ${definition.name} first`);
-  if (credential.valid !== true) throw new PromotionBlocked(`Verify the ${definition.name} credential first`);
+  if (!credential) throw new PromotionDeferred(`Add a credential for ${definition.name} first`);
+  if (credential.valid !== true) throw new PromotionDeferred(`Verify the ${definition.name} credential first`);
 
   const chatUrl = resolveVerificationEndpoint(definition, providerRow.baseUrl);
   if (!chatUrl) throw new PromotionBlocked(`${definition.name} has no known OpenAI-compatible endpoint`);
 
-  const apiKey = resolveCredentialSecret(credential);
-  if (!apiKey) throw new PromotionBlocked(`Credential ${credential.environmentVariable} is not available to the server`);
+  const resolved = resolveCredentialWithSource(credential);
+  if (!resolved) throw new PromotionBlocked(`Credential ${credential.environmentVariable} is not available to the server`);
+  const apiKey = resolved.secret;
 
   const bareModel = bareCandidateModelRef({ modelRef: candidate.modelRef, source: candidate.source, provider: definition, providerBaseUrl: providerRow.baseUrl });
-  return { candidate, definition, providerRow, credential, apiKey, bareModel, apiBase: chatUrl.replace(/\/chat\/completions$/, ""), directAliasName: `${definition.slug}/${bareModel}` };
+  return { candidate, definition, providerRow, credential, apiKey, credentialProvenance: credentialProvenance(credential, resolved), bareModel, apiBase: chatUrl.replace(/\/chat\/completions$/, ""), directAliasName: `${definition.slug}/${bareModel}` };
 }
 
 export interface TargetResult {
@@ -89,9 +105,7 @@ export interface PromoteResult {
 function providerModelId(bareModel: string) { return `openai/${bareModel}`; }
 
 async function registerTarget(ctx: PromotionContext, modelName: string, lane: LaneId | null, adapter: HttpLiteLLMAdapter): Promise<TargetResult> {
-  const key = bareModelKey(providerModelId(ctx.bareModel));
-  const existing = (await getDeploymentsForProvider(ctx.providerRow.id))
-    .find(row => row.litellmModelName === modelName && bareModelKey(row.providerModelId) === key && row.litellmDeploymentId && row.health !== "UNAVAILABLE");
+  const existing = findExistingTarget(await getDeploymentsForProvider(ctx.providerRow.id), modelName, providerModelId(ctx.bareModel));
   if (existing) return { target: modelName, lane, status: "exists", deploymentId: existing.id };
 
   let lastError = "LiteLLM rejected the deployment";
@@ -106,6 +120,7 @@ async function registerTarget(ctx: PromotionContext, modelName: string, lane: La
         metadata: {
           managed_by: CURATOR_MANAGED_BY, curator_version: CURATOR_VERSION, source_provider: ctx.definition.name,
           source_model: ctx.candidate.modelRef, source_candidate_id: ctx.candidate.id, free_type: ctx.candidate.freeType,
+          ...ctx.credentialProvenance,
           ...(lane ? { lane } : {}),
         },
       });
@@ -156,8 +171,8 @@ export async function promoteCandidate(candidateId: string, options: PromoteOpti
     const laneSlugs = explicit ? deduped : (await Promise.all(deduped.map(async slug => (await laneHasCapacity(slug)) ? slug : null))).filter((slug): slug is LaneId => slug !== null);
     const directAlias = options.directAlias ?? false;
     if (!laneSlugs.length && !directAlias) {
-      if (!explicit && deduped.length) throw new PromotionBlocked("All recommended lanes are at capacity");
-      throw new PromotionBlocked("No lane matched this model — pick one explicitly or enable the direct alias");
+      if (!explicit && deduped.length) throw new PromotionDeferred("All recommended lanes are at capacity");
+      throw new PromotionDeferred("No lane matched this model — pick one explicitly or enable the direct alias");
     }
 
     const plan: { modelName: string; lane: LaneId | null }[] = [
@@ -211,12 +226,13 @@ export async function promoteCandidate(candidateId: string, options: PromoteOpti
     if (ok && options.trigger !== "auto" && removalHistoryOf(ctx.candidate.evidence).length)
       await db.update(modelCandidates).set({ evidence: { ...ctx.candidate.evidence, removalHistory: [] }, updatedAt: new Date() }).where(eq(modelCandidates.id, candidateId));
     const summary = { candidateId, ok, targets: results };
-    await db.update(syncRuns).set({ status: ok ? "SUCCEEDED" : "FAILED", finishedAt: new Date(), summary, error: ok ? null : "One or more lane targets failed", updatedAt: new Date() }).where(eq(syncRuns.id, run.id));
+    const anySucceeded = results.some(result => result.status !== "failed");
+    await db.update(syncRuns).set({ status: ok ? "SUCCEEDED" : anySucceeded ? "PARTIAL" : "FAILED", finishedAt: new Date(), summary, error: ok ? null : "One or more lane targets failed", updatedAt: new Date() }).where(eq(syncRuns.id, run.id));
     await db.insert(auditEvents).values({ actor: "user", action: "litellm.candidate.promoted", entityType: "model_candidate", entityId: candidateId, after: summary, correlationId });
     return { candidateId, runId: run.id, ok, targets: results };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Promotion failed";
-    await db.update(syncRuns).set({ status: "FAILED", finishedAt: new Date(), error: message, updatedAt: new Date() }).where(eq(syncRuns.id, run.id));
+    await db.update(syncRuns).set({ status: error instanceof PromotionDeferred ? "DEFERRED" : "FAILED", finishedAt: new Date(), error: message, updatedAt: new Date() }).where(eq(syncRuns.id, run.id));
     throw error;
   }
 }

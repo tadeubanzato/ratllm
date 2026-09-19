@@ -85,6 +85,20 @@
       "when": 1789235910674,
       "tag": "0011_add_deployment_lifecycle",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1789762467325,
+      "tag": "0012_yummy_krista_starr",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1789781500767,
+      "tag": "0013_clear_partial_key_hints",
+      "breakpoints": true
     }
   ]
 }

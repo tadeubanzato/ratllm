@@ -83,7 +83,7 @@ export async function runHealthMonitor(options:{limit?:number}={}){
   const db=getDb();
   const rows=await db.select({deployment:modelDeployments,providerSlug:providers.slug}).from(modelDeployments)
     .innerJoin(providers,eq(modelDeployments.providerId,providers.id))
-    .where(and(isNotNull(modelDeployments.litellmDeploymentId),eq(providers.enabled,true)))
+    .where(and(isNotNull(modelDeployments.litellmDeploymentId),eq(modelDeployments.lifecycle,"ACTIVE"),eq(providers.enabled,true)))
     .orderBy(sql`${modelDeployments.lastTestedAt} asc nulls first`)
     .limit(options.limit??25);
   const deployments=rows.map(row=>row.deployment);

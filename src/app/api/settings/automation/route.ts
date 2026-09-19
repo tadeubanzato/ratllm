@@ -29,15 +29,16 @@ export async function PATCH(request: Request) {
   if (!type) return apiError("INVALID_AUTOMATION_JOB", "Job type is required", 400, id);
 
   try {
+    const zone = (await getDb().select({ timezone: automationJobs.timezone }).from(automationJobs).where(eq(automationJobs.type, type)).limit(1))[0]?.timezone ?? "UTC";
     let patch: Record<string, unknown>;
     if (parsed.data.resetSchedule) {
       if (!knownType(type)) return apiError("INVALID_AUTOMATION_JOB", "Unknown job type", 400, id);
       const schedule = defaultScheduleFor(type);
-      patch = { schedule, customSchedule: false, nextRunAt: nextCron(schedule), updatedAt: new Date() };
+      patch = { schedule, customSchedule: false, nextRunAt: nextCron(schedule, new Date(), zone), updatedAt: new Date() };
     } else {
       patch = {
         ...parsed.data,
-        ...(parsed.data.schedule ? { customSchedule: true, nextRunAt: nextCron(parsed.data.schedule) } : {}),
+        ...(parsed.data.schedule ? { customSchedule: true, nextRunAt: nextCron(parsed.data.schedule, new Date(), zone) } : {}),
         updatedAt: new Date(),
       };
       delete (patch as { resetSchedule?: unknown }).resetSchedule;

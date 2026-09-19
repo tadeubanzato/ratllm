@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { OutboundPolicyError, assertSafeOutboundUrl } from "@/server/net/outbound-policy";
 import { HttpLiteLLMAdapter } from "@/server/litellm/client";
 import { connectionInput, connectionSummary, saveConnection, recordConnection, connectionError } from "@/server/settings/connections";
 export async function GET() {
@@ -8,6 +9,8 @@ export async function GET() {
 export async function PUT(request: Request) {
   const parsed = connectionInput.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({error: {message: "Provide an HTTP(S) base URL without embedded credentials and an optional credential of at least 8 characters."}}, {status: 400});
+  try { await assertSafeOutboundUrl(parsed.data.baseUrl, {allowPrivate: true}); }
+  catch (error) { if (error instanceof OutboundPolicyError) return NextResponse.json({error: {message: error.message}}, {status: 400}); throw error; }
   try { await saveConnection("litellm", parsed.data); return NextResponse.json({saved: true}); }
   catch { return NextResponse.json({error: {message: "Unable to save securely. Check database connectivity and CREDENTIAL_ENCRYPTION_KEY on the server."}}, {status: 503}); }
 }

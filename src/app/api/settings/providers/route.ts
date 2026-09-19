@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { OutboundPolicyError, assertSafeOutboundUrl } from "@/server/net/outbound-policy";
 import { z } from "zod";
 import { apiError, correlationId } from "@/server/http";
 import { createCustomProvider, DuplicateProviderError, listProviderSettings, ProviderNotFoundError, setProviderBaseUrl, setProviderEnabled } from "@/server/providers/registry";
@@ -17,6 +18,10 @@ export async function POST(request: Request) {
   const id = correlationId(request);
   const parsed = createInput.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return apiError("INVALID_PROVIDER", "Provide a provider name; base URL and API key are optional", 400, id);
+  if (parsed.data.baseUrl) {
+    try { await assertSafeOutboundUrl(parsed.data.baseUrl, {allowPrivate: true}); }
+    catch (error) { if (error instanceof OutboundPolicyError) return apiError("URL_NOT_ALLOWED", error.message, 400, id); throw error; }
+  }
   try {
     const provider = await createCustomProvider({name: parsed.data.name, baseUrl: parsed.data.baseUrl || undefined, apiKey: parsed.data.apiKey || undefined}, id);
     return NextResponse.json({id: provider.id, slug: provider.slug, name: provider.name});
@@ -36,6 +41,10 @@ export async function PATCH(request: Request) {
   const id = correlationId(request);
   const parsed = patchInput.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return apiError("INVALID_PROVIDER_SETTING", "Provider ID and at least one of enabled/baseUrl are required", 400, id);
+  if (parsed.data.baseUrl) {
+    try { await assertSafeOutboundUrl(parsed.data.baseUrl, {allowPrivate: true}); }
+    catch (error) { if (error instanceof OutboundPolicyError) return apiError("URL_NOT_ALLOWED", error.message, 400, id); throw error; }
+  }
   try {
     let result: unknown = null;
     if (parsed.data.enabled !== undefined) result = await setProviderEnabled(parsed.data.id, parsed.data.enabled);

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { OutboundPolicyError, assertSafeOutboundUrl } from "@/server/net/outbound-policy";
 import { desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/server/db/client";
@@ -27,6 +28,10 @@ export async function POST(request: Request) {
   const id = correlationId(request);
   const p = input.safeParse(await request.json().catch(() => null));
   if (!p.success) return apiError("INVALID_SOURCE", "Invalid model source", 400, id);
+  if (p.data.url) {
+    try { await assertSafeOutboundUrl(p.data.url, {allowPrivate: false}); }
+    catch (error) { if (error instanceof OutboundPolicyError) return apiError("URL_NOT_ALLOWED", error.message, 400, id); throw error; }
+  }
   const db = getDb();
   const values = {...p.data, providerId: p.data.providerId ?? null, url: p.data.url ?? null, credentialReference: p.data.credentialReference ?? null, adapterReference: p.data.adapterReference ?? null};
   const [row] = p.data.id ? await db.update(modelSources).set({...values, updatedAt: new Date()}).where(eq(modelSources.id, p.data.id)).returning() : await db.insert(modelSources).values(values).returning();

@@ -14,6 +14,7 @@ export function getDeploymentsForProvider(providerId: string) {
     litellmModelName: modelDeployments.litellmModelName,
     litellmDeploymentId: modelDeployments.litellmDeploymentId,
     health: modelDeployments.health,
+    lifecycle: modelDeployments.lifecycle,
     rawMetadata: modelDeployments.rawMetadata,
   }).from(modelDeployments).where(eq(modelDeployments.providerId, providerId));
 }
