@@ -1,5 +1,6 @@
 import "server-only";
 import { candidateOnlyBlockReason } from "@/server/discovery/promotion-gate";
+import { liveLaneMember } from "@/server/lanes/membership";
 import { desc, eq, isNotNull, sql } from "drizzle-orm";
 import { getDb } from "./db/client";
 import { candidateChecks, canonicalModels, laneAssignments, lanes, modelCandidates, modelDeployments, providers, providerCredentialReferences, rateLimitProfiles, smokeTests, syncRuns } from "./db/schema";
@@ -222,8 +223,9 @@ export async function getLanes(): Promise<LaneSummary[]> {
   const db = getDb();
   const rows = await db.select({
     id: lanes.id, slug: lanes.slug, name: lanes.name, enabled: lanes.enabled, minimumHealthy: lanes.minimumHealthy,
-    total: sql<number>`count(${laneAssignments.id}) filter (where ${laneAssignments.excluded} = false)`,
-    healthy: sql<number>`count(${laneAssignments.id}) filter (where ${laneAssignments.excluded} = false and ${modelDeployments.health} = 'HEALTHY')`,
+    // Live members only (see lanes/membership.ts): assignments left behind by removed or blocked deployments don't count.
+    total: sql<number>`count(${laneAssignments.id}) filter (where ${liveLaneMember})`,
+    healthy: sql<number>`count(${laneAssignments.id}) filter (where ${liveLaneMember} and ${modelDeployments.health} = 'HEALTHY')`,
   }).from(lanes)
     .leftJoin(laneAssignments, eq(lanes.id, laneAssignments.laneId))
     .leftJoin(modelDeployments, eq(laneAssignments.deploymentId, modelDeployments.id))

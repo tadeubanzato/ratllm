@@ -7,6 +7,7 @@ import { laneAssignments, lanes, modelDeployments, syncRuns } from "@/server/db/
 import { HttpLiteLLMAdapter } from "@/server/litellm/client";
 import { syncFallbackConfig } from "./fallbacks";
 import { promoteCandidate, PromotionBlocked } from "./promote";
+import { isPresentInRouter } from "./existing-target";
 
 function candidateIdOf(rawMetadata: Record<string, unknown>): string | null {
   const value = rawMetadata?.source_candidate_id ?? (rawMetadata?.model_info as Record<string, unknown> | undefined)?.source_candidate_id;
@@ -31,7 +32,7 @@ export async function reconcileLaneMembership() {
     const rows = await db.select({
       laneSlug: lanes.slug,
       excluded: laneAssignments.excluded,
-      health: modelDeployments.health,
+      lifecycle: modelDeployments.lifecycle,
       litellmDeploymentId: modelDeployments.litellmDeploymentId,
       rawMetadata: modelDeployments.rawMetadata,
     }).from(laneAssignments)
@@ -41,7 +42,11 @@ export async function reconcileLaneMembership() {
     const broken = new Map<string, Set<LaneId>>();
     for (const row of rows) {
       if (row.excluded) continue;
-      if (row.health !== "UNAVAILABLE" && row.litellmDeploymentId) continue;
+      // Repair a member only when its deployment is genuinely gone from the router. It used to also count as "broken" when its
+      // health read UNAVAILABLE, so a live deployment that had one bad probe was re-promoted every hour and, with the old
+      // existence check, re-added as a duplicate (production ended up with the same model 3-4 times). Unhealthy is the health
+      // monitor's concern (streaks, cooldowns, incident protection); missing is the reconciler's.
+      if (isPresentInRouter(row)) continue;
       const candidateId = candidateIdOf(row.rawMetadata);
       if (!candidateId) { orphans.push(row.laneSlug); continue; }
       const set = broken.get(candidateId) ?? new Set<LaneId>();
