@@ -11,7 +11,8 @@ import { resolveProvider } from "@/server/providers/catalog";
 import { buildExtraHeaders } from "@/server/providers/wiring";
 import { bareModelKey } from "@/server/discovery/model-key";
 import { removalHistoryOf } from "@/server/discovery/auto-add-policy";
-import { bareCandidateModelRef, resolveCredentialSecret, resolveVerificationEndpoint, verifyCandidateDirectly } from "@/server/discovery/verify";
+import { bareCandidateModelRef, resolveCredentialWithSource, resolveVerificationEndpoint, verifyCandidateDirectly } from "@/server/discovery/verify";
+import { credentialProvenance } from "@/server/credentials/fingerprint";
 import { nonChatModelReason } from "@/server/discovery/model-type";
 import { classifyCandidateLanes } from "./rules";
 import { syncFallbackConfig } from "./fallbacks";
@@ -42,6 +43,8 @@ export interface PromotionContext {
   providerRow: typeof providers.$inferSelect;
   credential: typeof providerCredentialReferences.$inferSelect;
   apiKey: string;
+  /** Which credential row, and where its value came from, so the deployment can record it (never the value itself). */
+  credentialProvenance: ReturnType<typeof credentialProvenance>;
   bareModel: string;
   apiBase: string;
   directAliasName: string;
@@ -73,11 +76,12 @@ export async function resolvePromotionContext(candidateId: string): Promise<Prom
   const chatUrl = resolveVerificationEndpoint(definition, providerRow.baseUrl);
   if (!chatUrl) throw new PromotionBlocked(`${definition.name} has no known OpenAI-compatible endpoint`);
 
-  const apiKey = resolveCredentialSecret(credential);
-  if (!apiKey) throw new PromotionBlocked(`Credential ${credential.environmentVariable} is not available to the server`);
+  const resolved = resolveCredentialWithSource(credential);
+  if (!resolved) throw new PromotionBlocked(`Credential ${credential.environmentVariable} is not available to the server`);
+  const apiKey = resolved.secret;
 
   const bareModel = bareCandidateModelRef({ modelRef: candidate.modelRef, source: candidate.source, provider: definition, providerBaseUrl: providerRow.baseUrl });
-  return { candidate, definition, providerRow, credential, apiKey, bareModel, apiBase: chatUrl.replace(/\/chat\/completions$/, ""), directAliasName: `${definition.slug}/${bareModel}` };
+  return { candidate, definition, providerRow, credential, apiKey, credentialProvenance: credentialProvenance(credential, resolved), bareModel, apiBase: chatUrl.replace(/\/chat\/completions$/, ""), directAliasName: `${definition.slug}/${bareModel}` };
 }
 
 export interface TargetResult {
@@ -116,6 +120,7 @@ async function registerTarget(ctx: PromotionContext, modelName: string, lane: La
         metadata: {
           managed_by: CURATOR_MANAGED_BY, curator_version: CURATOR_VERSION, source_provider: ctx.definition.name,
           source_model: ctx.candidate.modelRef, source_candidate_id: ctx.candidate.id, free_type: ctx.candidate.freeType,
+          ...ctx.credentialProvenance,
           ...(lane ? { lane } : {}),
         },
       });

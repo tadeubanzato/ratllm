@@ -25,6 +25,25 @@ function When({ at, relative = true }: { at: Date | string | null | undefined; r
 
 const yesNo = (value: boolean | null | undefined) => value === true ? "Yes" : value === false ? "No" : "Unknown";
 
+const SOURCE_LABEL: Record<string, string> = { environment: "read from the server environment", database: "stored in RatLLM" };
+
+/** Which API key this deployment uses, in plain words: what RatLLM recorded, what is only inferred, and what isn't known. */
+function CredentialInfo({ credential }: { credential: NonNullable<Awaited<ReturnType<typeof getDeploymentDetail>>>["credential"] }) {
+  const { recorded, current, status, lastChangedAt, environmentOverride } = credential;
+  return <>
+    {recorded ? <>
+      <code className="mono">{recorded.envVar ?? "credential"}</code>{recorded.source ? <span className="settings-help"> · {SOURCE_LABEL[recorded.source] ?? recorded.source}</span> : null}
+      <div className="settings-help">Key fingerprint <code className="mono">{recorded.fingerprint}</code> — recorded when RatLLM added this deployment. The key itself is never stored here.</div>
+    </> : null}
+    {status === "matches" && <div className="settings-help">✓ Same key the provider uses now{environmentOverride ? " (this server reads it from its environment)" : ""}.</div>}
+    {status === "changed" && <p role="alert" className="settings-feedback" style={{ borderColor: "var(--amber)", marginTop: 8 }}><strong>The provider&apos;s key has changed since this was added.</strong> This deployment was created with fingerprint <code className="mono">{recorded?.fingerprint}</code>; the provider&apos;s current key is <code className="mono">{current?.fingerprint}</code>. LiteLLM still holds the old key, so it will fail if that key was revoked.</p>}
+    {status === "inferred_current" && <div className="settings-help"><strong>Not recorded</strong> — this was added before RatLLM tracked keys. Inferred from the audit trail: RatLLM created it from the provider&apos;s credential, which last changed <When at={lastChangedAt} relative={false} />, before this deployment appeared, so it was created with the current key. (Assumes no key in the server&apos;s environment overrode the stored one.)</div>}
+    {status === "inferred_stale" && <div className="settings-help"><strong>Not recorded.</strong> The provider&apos;s credential changed <When at={lastChangedAt} relative={false} />, after this deployment was added, so it may still hold an older key.</div>}
+    {status === "external" && <div className="settings-help">Added outside RatLLM, so which key it uses isn&apos;t known here.</div>}
+    {status === "unknown" && <div className="settings-help">RatLLM can&apos;t determine which key this uses{recorded ? " — the credential it was created with is no longer available" : ""}.</div>}
+  </>;
+}
+
 function hostOf(url: string | null) {
   if (!url) return null;
   try { return new URL(url).host; } catch { return url; }
@@ -43,8 +62,8 @@ export default async function ModelDetail({ params }: { params: Promise<{ id: st
   // Other live copies of this same model behind this same alias (an alias pool can hold many *different* models; that's
   // normal — identical copies are the problem).
   const duplicateGroup = detail && lifecycle === "ACTIVE" ? findDuplicateGroups([
-    { id: row.id, litellmModelName: row.litellmModelName, providerName: row.providerName, providerModelId: row.providerModelId, apiBase: row.apiBase, lifecycle, litellmDeploymentId: row.litellmDeploymentId },
-    ...detail.siblings.map(sibling => ({ id: sibling.id, litellmModelName: row.litellmModelName, providerName: sibling.providerName, providerModelId: sibling.providerModelId, apiBase: sibling.apiBase, lifecycle: sibling.lifecycle, litellmDeploymentId: sibling.litellmDeploymentId })),
+    { id: row.id, litellmModelName: row.litellmModelName, providerName: row.providerName, providerModelId: row.providerModelId, apiBase: row.apiBase, credentialFingerprint: row.credentialFingerprint, lifecycle, litellmDeploymentId: row.litellmDeploymentId },
+    ...detail.siblings.map(sibling => ({ id: sibling.id, litellmModelName: row.litellmModelName, providerName: sibling.providerName, providerModelId: sibling.providerModelId, apiBase: sibling.apiBase, credentialFingerprint: sibling.credentialFingerprint, lifecycle: sibling.lifecycle, litellmDeploymentId: sibling.litellmDeploymentId })),
   ]).find(group => group.ids.includes(row.id)) : undefined;
 
   return <PageShell title={row.modelName} eyebrow={`${row.providerName} · ${row.providerModelId}`} actions={<SmokeButton deploymentId={row.id} model={row.litellmModelName} />}>
@@ -90,6 +109,11 @@ export default async function ModelDetail({ params }: { params: Promise<{ id: st
 
             <dt>Provider</dt>
             <dd>{row.providerName}{row.backend ? <> · <span className="mono">{row.backend}</span></> : null}{row.apiBase ? <div className="settings-help mono">{row.apiBase}</div> : null}</dd>
+
+            {detail && <>
+              <dt>API key</dt>
+              <dd><CredentialInfo credential={detail.credential} /></dd>
+            </>}
 
             <dt>Canonical model</dt>
             <dd>{row.slug}</dd>

@@ -14,6 +14,8 @@ export default defineConfig({
   test: {
     include: ["tests-integration/**/*.test.ts"],
     setupFiles: ["tests-integration/setup.ts"],
+    // Test-only value, so credential encryption works. Never a real key.
+    env: { CREDENTIAL_ENCRYPTION_KEY: "integration-test-only-encryption-key-0123456789" },
     fileParallelism: false, // every file shares one database
     testTimeout: 30_000,
     hookTimeout: 30_000,

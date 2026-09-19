@@ -1,7 +1,9 @@
 import "server-only";
 import { and, asc, desc, eq, ne, sql } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
-import { auditEvents, candidateChecks, laneAssignments, lanes, modelCandidates, modelDeployments, providers, smokeTests } from "@/server/db/schema";
+import { auditEvents, candidateChecks, laneAssignments, lanes, modelCandidates, modelDeployments, providerCredentialReferences, providers, smokeTests } from "@/server/db/schema";
+import { keyFingerprint } from "@/server/credentials/fingerprint";
+import { resolveCredentialWithSource } from "@/server/discovery/verify";
 import { removalHistoryOf } from "@/server/discovery/auto-add-policy";
 import { bareModelKey } from "@/server/discovery/model-key";
 import { sourceRegistry } from "@/server/discovery/registry";
@@ -16,7 +18,7 @@ export async function getDeploymentDetail(id: string) {
   const self = (await db.select({
     id: modelDeployments.id, litellmDeploymentId: modelDeployments.litellmDeploymentId, litellmModelName: modelDeployments.litellmModelName,
     lifecycle: modelDeployments.lifecycle, rawMetadata: modelDeployments.rawMetadata, apiBase: modelDeployments.apiBase,
-    providerId: modelDeployments.providerId, providerModelId: modelDeployments.providerModelId,
+    providerId: modelDeployments.providerId, providerModelId: modelDeployments.providerModelId, managed: modelDeployments.managed,
     createdAt: modelDeployments.createdAt, lastSeenAt: modelDeployments.lastSeenAt, updatedAt: modelDeployments.updatedAt,
   }).from(modelDeployments).where(eq(modelDeployments.id, id)).limit(1))[0];
   if (!self) return null;
@@ -27,6 +29,7 @@ export async function getDeploymentDetail(id: string) {
     db.select({
       id: modelDeployments.id, litellmDeploymentId: modelDeployments.litellmDeploymentId, providerModelId: modelDeployments.providerModelId,
       lifecycle: modelDeployments.lifecycle, health: modelDeployments.health, managed: modelDeployments.managed, providerName: providers.name, apiBase: modelDeployments.apiBase,
+      credentialFingerprint: sql<string | null>`${modelDeployments.rawMetadata}->'model_info'->>'credential_fingerprint'`,
     }).from(modelDeployments).innerJoin(providers, eq(modelDeployments.providerId, providers.id))
       .where(and(eq(modelDeployments.litellmModelName, self.litellmModelName), ne(modelDeployments.id, id)))
       .orderBy(modelDeployments.lifecycle, providers.name).limit(50),
@@ -72,6 +75,8 @@ export async function getDeploymentDetail(id: string) {
   const source = candidate ? sourceRegistry.find(entry => entry.id === candidate.source) : undefined;
   const corroborating = candidate && Array.isArray(candidate.evidence.corroboratingSources) ? candidate.evidence.corroboratingSources as { source: string; sourceUrl: string }[] : [];
   const removals = candidate ? removalHistoryOf(candidate.evidence) : [];
+
+  const credential = await describeCredential(db, self, info);
 
   // One chronological story of this model, from first being discovered to now. Each entry is only included when there's
   // a real timestamp behind it — nothing is inferred or back-filled.
@@ -130,8 +135,52 @@ export async function getDeploymentDetail(id: string) {
       checks: checkStats ? { total: checkStats.total, passed: checkStats.passed, firstPassAt: asDate(checkStats.firstPassAt), lastAt: asDate(checkStats.lastAt) } : null,
     } : null,
     addedToLiteLLMAt: additions[0]?.at ?? null,
+    credential,
     timeline,
   };
 }
 
 export type DeploymentDetail = NonNullable<Awaited<ReturnType<typeof getDeploymentDetail>>>;
+
+export type CredentialStatus =
+  | "matches"            // recorded fingerprint equals the provider's current key
+  | "changed"            // recorded fingerprint differs: the provider's key was replaced after this deployment was added
+  | "unknown"            // can't tell (credential row gone or unreadable, or no change history)
+  | "inferred_current"   // not recorded; audit trail says the credential last changed BEFORE this deployment was added
+  | "inferred_stale"     // not recorded; the credential changed AFTER this deployment was added
+  | "external";          // added outside RatLLM: which key it uses isn't known to RatLLM
+
+const asText = (value: unknown) => typeof value === "string" && value ? value : null;
+
+/**
+ * Which API key this deployment was created with, as far as RatLLM can know — without ever exposing a key.
+ *
+ * When RatLLM adds a deployment it records the credential row, whether the value came from the server environment or the
+ * database, and a fingerprint of the key. That record is compared with the provider's key as this server sees it now. For
+ * deployments that predate the record, it falls back to an inference from the audit trail (a RatLLM-managed deployment is
+ * created from the provider's credential, so if that credential last changed before the deployment appeared, it was created
+ * with the current key) and says it is an inference. The key itself is decrypted only to fingerprint it and never returned.
+ */
+async function describeCredential(db: ReturnType<typeof getDb>, self: { id: string; providerId: string; managed: boolean; createdAt: Date }, info: Record<string, unknown>) {
+  const fingerprint = asText(info.credential_fingerprint);
+  const recorded = fingerprint ? { credentialId: asText(info.credential_id), envVar: asText(info.credential_env), source: asText(info.credential_source), fingerprint } : null;
+
+  const credentials = await db.select({ id: providerCredentialReferences.id, environmentVariable: providerCredentialReferences.environmentVariable, encryptedValue: providerCredentialReferences.encryptedValue })
+    .from(providerCredentialReferences).where(eq(providerCredentialReferences.providerId, self.providerId)).orderBy(asc(providerCredentialReferences.createdAt));
+  // With a recorded credential id, that row is the one to compare with. Without one, only an unambiguous single credential is.
+  const wanted = recorded?.credentialId ? credentials.find(row => row.id === recorded.credentialId) : credentials.length === 1 ? credentials[0] : undefined;
+  const resolved = wanted ? resolveCredentialWithSource(wanted) : null;
+  const current = wanted && resolved ? { envVar: wanted.environmentVariable, source: resolved.source, fingerprint: keyFingerprint(resolved.secret) } : null;
+
+  const lastChangeRow = (await db.select({ at: sql<Date | string | null>`max(${auditEvents.createdAt})` }).from(auditEvents)
+    .where(and(eq(auditEvents.action, "provider.credential.updated"), eq(auditEvents.entityId, self.providerId))))[0];
+  const lastChangedAt = lastChangeRow?.at ? new Date(lastChangeRow.at) : null;
+
+  let status: CredentialStatus;
+  if (recorded) status = current ? (current.fingerprint === recorded.fingerprint ? "matches" : "changed") : "unknown";
+  else if (!self.managed) status = "external";
+  else if (!lastChangedAt || !wanted) status = "unknown";
+  else status = lastChangedAt.getTime() <= self.createdAt.getTime() ? "inferred_current" : "inferred_stale";
+
+  return { status, recorded, current, lastChangedAt, environmentOverride: resolved?.source === "environment" };
+}
