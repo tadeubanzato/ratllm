@@ -18,6 +18,7 @@ import { classifyCandidateLanes } from "./rules";
 import { syncFallbackConfig } from "./fallbacks";
 import { getDeploymentsForProvider, laneHasCapacity } from "./shared";
 import { findExistingTarget } from "./existing-target";
+import { promotionRunStatus } from "./promotion-status";
 
 const MAX_ATTEMPTS = 3;
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -215,7 +216,8 @@ export async function promoteCandidate(candidateId: string, options: PromoteOpti
 
     // A member of any lane changes the fallback pool for the lanes that fall back to it — keep the router in sync.
     // The reconciler passes skipFallbackSync and pushes once at the end of its batch instead.
-    if (!options.skipFallbackSync) await syncFallbackConfig(adapter).catch(() => undefined);
+    // A failure here is not ignorable: it is reported in the run and makes it PARTIAL (see promotion-status.ts).
+    const fallback = options.skipFallbackSync ? null : await syncFallbackConfig(adapter).catch(error => ({ ok: false, applied: [], errors: [{ model: "*", type: "general", error: error instanceof Error ? error.message : "fallback sync failed" }] }));
 
     const ok = results.every(result => result.status !== "failed");
     // A manual promotion (someone clicking "Add to LiteLLM" themselves, including on a flap-limited candidate the
@@ -225,9 +227,10 @@ export async function promoteCandidate(candidateId: string, options: PromoteOpti
     // See auto-add-policy.ts and docs/FREE-MODEL-LIFECYCLE.md §5.
     if (ok && options.trigger !== "auto" && removalHistoryOf(ctx.candidate.evidence).length)
       await db.update(modelCandidates).set({ evidence: { ...ctx.candidate.evidence, removalHistory: [] }, updatedAt: new Date() }).where(eq(modelCandidates.id, candidateId));
-    const summary = { candidateId, ok, targets: results };
-    const anySucceeded = results.some(result => result.status !== "failed");
-    await db.update(syncRuns).set({ status: ok ? "SUCCEEDED" : anySucceeded ? "PARTIAL" : "FAILED", finishedAt: new Date(), summary, error: ok ? null : "One or more lane targets failed", updatedAt: new Date() }).where(eq(syncRuns.id, run.id));
+    const fallbackOk = fallback ? fallback.ok : true; // null = the caller (the reconciler) pushes fallbacks itself, once, at the end of its batch
+    const summary = { candidateId, ok, targets: results, fallback: fallback ? { ok: fallback.ok, errors: fallback.errors } : null };
+    const outcome = promotionRunStatus({ targetsFailed: results.filter(result => result.status === "failed").length, targetsTotal: results.length, fallbackOk });
+    await db.update(syncRuns).set({ status: outcome.status, finishedAt: new Date(), summary, error: outcome.error, updatedAt: new Date() }).where(eq(syncRuns.id, run.id));
     await db.insert(auditEvents).values({ actor: "user", action: "litellm.candidate.promoted", entityType: "model_candidate", entityId: candidateId, after: summary, correlationId });
     return { candidateId, runId: run.id, ok, targets: results };
   } catch (error) {
