@@ -114,6 +114,12 @@ export const providerWiring: Readonly<Record<string, ProviderWiring>> = {
   // bring-your-own-model Truss deployment product, which this app isn't wiring) — confirmed fully OpenAI-compatible
   // per Baseten's own API reference/changelog, with free signup credit and no card required.
   baseten: { check: { url: "https://inference.baseten.co/v1/models", auth: "bearer" }, completions: "https://inference.baseten.co/v1/chat/completions" },
+
+  // Moved out of CUSTOM_ADAPTER_PROVIDERS 2026-09-19: GigaChat needs an OAuth2 client-credentials exchange (the
+  // stored credential is the "Authorization key", not a usable Bearer token directly) and its hosts present a
+  // Russian government CA chain Node doesn't trust by default — both handled in providers/gigachat.ts, which
+  // discovery/verify.ts and providers/verify.ts swap in ahead of the generic bearer-token path below.
+  gigachat: { check: { url: "https://gigachat.devices.sberbank.ru/api/v1/models", auth: "bearer" }, completions: "https://gigachat.devices.sberbank.ru/api/v1/chat/completions" },
 };
 
 /** Providers this app expects to be automatable (catalog adapterCapability AUTOMATED/PARTIAL) that are
@@ -140,7 +146,6 @@ export const SELF_HOSTED_PROVIDERS: ReadonlySet<string> = new Set(["lemonade", "
 export const CUSTOM_ADAPTER_PROVIDERS: Readonly<Record<string, string>> = {
   "vertex-ai": "Needs OAuth service-account token exchange plus a project/region — not yet supported",
   "ibm-watsonx": "Needs IBM IAM token exchange plus a project/space ID — not yet supported",
-  gigachat: "Needs OAuth2 client-credentials exchange (30-minute token expiry) — not yet supported",
 };
 
 export function supportsCredentialTest(slug: string): boolean {
