@@ -43,13 +43,13 @@ export default async function ModelDetail({ params }: { params: Promise<{ id: st
   // Other live copies of this same model behind this same alias (an alias pool can hold many *different* models; that's
   // normal — identical copies are the problem).
   const duplicateGroup = detail && lifecycle === "ACTIVE" ? findDuplicateGroups([
-    { id: row.id, litellmModelName: row.litellmModelName, providerName: row.providerName, providerModelId: row.providerModelId, lifecycle, litellmDeploymentId: row.litellmDeploymentId },
-    ...detail.siblings.map(sibling => ({ id: sibling.id, litellmModelName: row.litellmModelName, providerName: sibling.providerName, providerModelId: sibling.providerModelId, lifecycle: sibling.lifecycle, litellmDeploymentId: sibling.litellmDeploymentId })),
+    { id: row.id, litellmModelName: row.litellmModelName, providerName: row.providerName, providerModelId: row.providerModelId, apiBase: row.apiBase, lifecycle, litellmDeploymentId: row.litellmDeploymentId },
+    ...detail.siblings.map(sibling => ({ id: sibling.id, litellmModelName: row.litellmModelName, providerName: sibling.providerName, providerModelId: sibling.providerModelId, apiBase: sibling.apiBase, lifecycle: sibling.lifecycle, litellmDeploymentId: sibling.litellmDeploymentId })),
   ]).find(group => group.ids.includes(row.id)) : undefined;
 
   return <PageShell title={row.modelName} eyebrow={`${row.providerName} · ${row.providerModelId}`} actions={<SmokeButton deploymentId={row.id} model={row.litellmModelName} />}>
     {duplicateGroup && <p role="alert" className="settings-feedback" style={{ borderColor: "var(--amber)", marginBottom: 14 }}>
-      <strong>Deployed {duplicateGroup.count} times.</strong> {row.providerModelId} has {duplicateGroup.count} live copies behind “{row.litellmModelName}”, each with its own LiteLLM ID (listed under Alias pool). Identical copies add no capacity — they skew routing toward this model and multiply its rate-limit use. Delete the extra copies by LiteLLM ID.
+      <strong>Deployed {duplicateGroup.count} times.</strong> {row.providerModelId} has {duplicateGroup.count} live copies behind “{row.litellmModelName}”, all through the same {row.providerName} endpoint, each with its own LiteLLM ID (listed under Alias pool). Identical copies share one rate limit and one cost, so they add no capacity — they only skew routing toward this model. (The same model from a different provider or endpoint is fine and is not counted.) Delete the extra copies by LiteLLM ID.
     </p>}
     <div className="detail-grid">
       <section className="panel">

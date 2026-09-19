@@ -67,6 +67,7 @@ describe("lifecycle timeline", () => {
     await event("2026-09-13T09:12:00Z", [{ target: "smart-vision", lane: "smart-vision", status: "added" }, { target: "smart-agent", lane: "smart-agent", status: "added" }]);
     await event("2026-09-13T10:00:00Z", [{ target: "smart-vision", lane: "smart-vision", status: "exists" }]);   // no-op re-run
     await event("2026-09-13T11:00:00Z", [{ target: "smart-vision", lane: "smart-vision", status: "failed" }]);   // failed attempt
+    await db.update(modelDeployments).set({ createdAt: new Date("2026-09-13T09:12:05Z") }).where(eq(modelDeployments.id, local)); // synced moments after its addition
     const detail = await getDeploymentDetail(local);
     const added = detail!.timeline.filter(entry => entry.label === "Added to LiteLLM by RatLLM");
     expect(added).toHaveLength(1);                                   // not 3, and not the smart-agent target
@@ -86,6 +87,39 @@ describe("lifecycle timeline", () => {
     const detail = await getDeploymentDetail(local);
     expect(detail!.discovery).toMatchObject({ link: "matched", sourceId: "openrouter" });
     expect(detail!.addedToLiteLLMAt).toBeNull();                    // unmanaged: no RatLLM addition on record
+    expect(detail!.timeline.some(entry => entry.label === "First seen in the LiteLLM inventory")).toBe(true);
+  });
+});
+
+describe("attributing an addition to one copy of a model", () => {
+  it("gives each copy behind the same alias its own addition time, not the first one's", async () => {
+    const { modelCandidates, auditEvents } = await import("@/server/db/schema");
+    const db = getDb();
+    await syncLiteLLM({}, inventory(item("copy-1", "smart-vision", "groq/llama-3.2-90b-vision"), item("copy-2", "smart-vision", "groq/llama-3.2-90b-vision"), item("copy-3", "smart-vision", "groq/llama-3.2-90b-vision")));
+    const providerId = (await db.select().from(modelDeployments))[0].providerId;
+    const [candidate] = await db.insert(modelCandidates).values({ source: "openrouter", modelRef: "groq/llama-3.2-90b-vision", displayName: "v", sourceUrl: "u", providerId }).returning();
+    await syncLiteLLM({}, inventory(...["copy-1", "copy-2", "copy-3"].map(id => item(id, "smart-vision", "groq/llama-3.2-90b-vision", { source_candidate_id: candidate.id }))));
+    const added = { "copy-1": "2026-09-13T09:12:00Z", "copy-2": "2026-09-14T07:05:00Z", "copy-3": "2026-09-14T08:05:00Z" };
+    for (const [remote, at] of Object.entries(added)) {
+      await db.insert(auditEvents).values({ actor: "user", action: "litellm.candidate.promoted", entityType: "model_candidate", entityId: candidate.id, after: { targets: [{ target: "smart-vision", lane: "smart-vision", status: "added" }] }, correlationId: remote, createdAt: new Date(at) });
+      await db.update(modelDeployments).set({ createdAt: new Date(new Date(at).getTime() + 4000) }).where(eq(modelDeployments.litellmDeploymentId, remote));
+    }
+    for (const [remote, at] of Object.entries(added)) {
+      const detail = await getDeploymentDetail(await idOf(remote));
+      expect(detail!.addedToLiteLLMAt!.toISOString()).toBe(new Date(at).toISOString());
+      expect(detail!.timeline.filter(entry => entry.label === "Added to LiteLLM by RatLLM")).toHaveLength(1);
+    }
+  });
+
+  it("attributes nothing to a deployment that appeared with no addition anywhere near it (added outside RatLLM)", async () => {
+    const { modelCandidates, auditEvents } = await import("@/server/db/schema");
+    const db = getDb();
+    await syncLiteLLM({}, inventory(item("outside", "smart-vision", "groq/llama-3.2-90b-vision")));
+    const providerId = (await db.select().from(modelDeployments))[0].providerId;
+    const [candidate] = await db.insert(modelCandidates).values({ source: "openrouter", modelRef: "groq/llama-3.2-90b-vision", displayName: "v", sourceUrl: "u", providerId }).returning();
+    await db.insert(auditEvents).values({ actor: "user", action: "litellm.candidate.promoted", entityType: "model_candidate", entityId: candidate.id, after: { targets: [{ target: "smart-vision", lane: "smart-vision", status: "added" }] }, correlationId: "old", createdAt: new Date("2020-01-01T00:00:00Z") });
+    const detail = await getDeploymentDetail(await idOf("outside"));
+    expect(detail!.addedToLiteLLMAt).toBeNull();
     expect(detail!.timeline.some(entry => entry.label === "First seen in the LiteLLM inventory")).toBe(true);
   });
 });

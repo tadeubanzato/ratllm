@@ -26,7 +26,7 @@ export async function getDeploymentDetail(id: string) {
     // the alias — is what identifies one.
     db.select({
       id: modelDeployments.id, litellmDeploymentId: modelDeployments.litellmDeploymentId, providerModelId: modelDeployments.providerModelId,
-      lifecycle: modelDeployments.lifecycle, health: modelDeployments.health, managed: modelDeployments.managed, providerName: providers.name,
+      lifecycle: modelDeployments.lifecycle, health: modelDeployments.health, managed: modelDeployments.managed, providerName: providers.name, apiBase: modelDeployments.apiBase,
     }).from(modelDeployments).innerJoin(providers, eq(modelDeployments.providerId, providers.id))
       .where(and(eq(modelDeployments.litellmModelName, self.litellmModelName), ne(modelDeployments.id, id)))
       .orderBy(modelDeployments.lifecycle, providers.name).limit(50),
@@ -79,12 +79,20 @@ export async function getDeploymentDetail(id: string) {
   const push = (at: Date | null, label: string, detail?: string) => { if (at && !Number.isNaN(at.getTime())) timeline.push({ at, label, detail }); };
   if (candidate) push(candidate.firstSeenAt, "Discovered", `${source?.name ?? candidate.source}${source ? ` · tier ${source.tier}` : ""}`);
   if (checkStats) push(asDate(checkStats.firstPassAt), "First passed a direct provider check");
-  // Only events that really added a target behind THIS deployment's alias count as "added to LiteLLM". (The result of an add
-  // carries the alias and lane, not the new deployment's id, so the alias is what ties an event to this deployment.)
-  const additions = promotions.flatMap(promotion => {
+  // Only events that really added a target behind THIS deployment's alias are candidates. The result of an add carries the
+  // alias and lane, not the new deployment's id — and every copy behind one alias shares them — so which event created THIS
+  // deployment is decided by time: promotion adds to the router and syncs the inventory in the same pass, so the deployment
+  // row appears within moments of its own addition. Pick the closest addition, and none if nothing is close.
+  const ATTRIBUTION_WINDOW_MS = 15 * 60_000;
+  const candidates = promotions.flatMap(promotion => {
     const targets = Array.isArray(promotion.after?.targets) ? promotion.after.targets as { target?: string; lane?: string | null; status?: string }[] : [];
     return targets.filter(target => target.status === "added" && target.target === self.litellmModelName).map(target => ({ at: promotion.at, lane: target.lane ?? null }));
   });
+  const closest = candidates
+    .map(addition => ({ addition, gap: Math.abs(addition.at.getTime() - self.createdAt.getTime()) }))
+    .filter(entry => entry.gap <= ATTRIBUTION_WINDOW_MS)
+    .sort((x, y) => x.gap - y.gap)[0]?.addition;
+  const additions = closest ? [closest] : [];
   for (const addition of additions) push(addition.at, "Added to LiteLLM by RatLLM", addition.lane ? `lane ${addition.lane}` : "direct alias");
   push(self.createdAt, additions.length ? "First appeared in the LiteLLM inventory" : "First seen in the LiteLLM inventory", additions.length ? undefined : "no RatLLM addition was recorded for it");
   push(asDate(firstProbe), "First health check through LiteLLM");

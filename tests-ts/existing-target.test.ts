@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { findExistingTarget, isPresentInRouter } from "../src/server/lanes/existing-target";
 import { findDuplicateGroups } from "../src/server/litellm/duplicates";
 
-const dep = (over: Partial<{ id: string; litellmModelName: string; providerModelId: string; litellmDeploymentId: string | null; lifecycle: string; health: string; providerName: string }> = {}) =>
-  ({ id: "d1", litellmModelName: "smart-vision", providerModelId: "openai/gemma-4-26b-a4b-it", litellmDeploymentId: "router-1", lifecycle: "ACTIVE", health: "HEALTHY", providerName: "Google AI Studio", ...over });
+const dep = (over: Partial<{ id: string; litellmModelName: string; providerModelId: string; litellmDeploymentId: string | null; lifecycle: string; health: string; providerName: string; apiBase: string | null }> = {}) =>
+  ({ id: "d1", litellmModelName: "smart-vision", providerModelId: "openai/gemma-4-26b-a4b-it", litellmDeploymentId: "router-1", lifecycle: "ACTIVE", health: "HEALTHY", providerName: "Google AI Studio", apiBase: "https://generativelanguage.googleapis.com/v1beta/openai", ...over });
 
 describe("findExistingTarget", () => {
   it("finds a live deployment of the same model behind the same alias", () => {
@@ -63,6 +63,15 @@ describe("findDuplicateGroups", () => {
 
   it("does not merge the same model name from different providers", () => {
     expect(findDuplicateGroups([dep({ id: "a" }), dep({ id: "b", providerName: "Other", litellmDeploymentId: "r-b" })])).toEqual([]);
+  });
+
+  it("does not flag the same model through a DIFFERENT endpoint of the same provider (separate limits, e.g. another region or project)", () => {
+    expect(findDuplicateGroups([dep({ id: "a", apiBase: "https://eu.example.com/v1" }), dep({ id: "b", apiBase: "https://us.example.com/v1", litellmDeploymentId: "r-b" })])).toEqual([]);
+  });
+
+  it("treats endpoint spellings that differ only by case or a trailing slash as the same endpoint", () => {
+    const groups = findDuplicateGroups([dep({ id: "a", apiBase: "https://API.example.com/v1/" }), dep({ id: "b", apiBase: "https://api.example.com/v1", litellmDeploymentId: "r-b" })]);
+    expect(groups).toHaveLength(1);
   });
 
   it("orders the worst offender first", () => {
