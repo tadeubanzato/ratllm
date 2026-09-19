@@ -12,6 +12,7 @@ import { runHealthMonitor } from "@/server/health/monitor";
 import { learnRateLimits } from "@/server/rate-limits/learn";
 import { syncLiteLLM } from "@/server/litellm/sync";
 import { verifyAllProviders } from "@/server/providers/verify";
+import { refreshGigaChatTokens } from "@/server/providers/gigachat";
 import { defaultScheduleFor, JOB_TYPES, nextCron, type AutomationType } from "./schedule";
 
 export { defaultScheduleFor, JOB_TYPES, nextCron } from "./schedule";
@@ -44,7 +45,7 @@ export async function release(type:string,owner:string){await getDb().delete(lea
 /** Next due time for a job, computed from its own persisted schedule and time zone. */
 async function nextRunFor(type:string,from:Date){const job=(await getDb().select({schedule:automationJobs.schedule,timezone:automationJobs.timezone}).from(automationJobs).where(eq(automationJobs.type,type)).limit(1))[0];return nextCron(job.schedule,from,job.timezone);}
 export type AutomationOptions={candidateScope?:"due"|"connected"};
-async function execute(type:AutomationType,options?:AutomationOptions){switch(type){case "MODEL_DISCOVERY": return runDiscovery();case "CANDIDATE_VERIFICATION":return options?.candidateScope==="connected"?verifyConnectedCandidates():verifyDueCandidates();case "HEALTH_MONITOR":return runHealthMonitor();case "RATE_LIMIT_LEARNING":return learnRateLimits();case "PROVIDER_VERIFICATION":return verifyAllProviders();case "APPLY_APPROVED_PLANS":return syncLiteLLM({dryRun:false});case "DEEP_BENCHMARK":return runHealthMonitor({limit:100});case "LANE_RECONCILE":return reconcileLaneMembership();case "MAINTENANCE":{const db=getDb();const cutoff=new Date(Date.now()-RUN_RETENTION_DAYS*24*60*60_000);return {leasesPruned:(await db.delete(leases).where(lte(leases.expiresAt,new Date())).returning({key:leases.key})).length,runsPruned:(await db.delete(syncRuns).where(lt(syncRuns.createdAt,cutoff)).returning({id:syncRuns.id})).length,candidates:await consolidateModelCandidates()};}}}
+async function execute(type:AutomationType,options?:AutomationOptions){switch(type){case "MODEL_DISCOVERY": return runDiscovery();case "CANDIDATE_VERIFICATION":return options?.candidateScope==="connected"?verifyConnectedCandidates():verifyDueCandidates();case "HEALTH_MONITOR":return runHealthMonitor();case "RATE_LIMIT_LEARNING":return learnRateLimits();case "PROVIDER_VERIFICATION":return verifyAllProviders();case "APPLY_APPROVED_PLANS":return syncLiteLLM({dryRun:false});case "DEEP_BENCHMARK":return runHealthMonitor({limit:100});case "LANE_RECONCILE":return reconcileLaneMembership();case "GIGACHAT_TOKEN_REFRESH":return refreshGigaChatTokens();case "MAINTENANCE":{const db=getDb();const cutoff=new Date(Date.now()-RUN_RETENTION_DAYS*24*60*60_000);return {leasesPruned:(await db.delete(leases).where(lte(leases.expiresAt,new Date())).returning({key:leases.key})).length,runsPruned:(await db.delete(syncRuns).where(lt(syncRuns.createdAt,cutoff)).returning({id:syncRuns.id})).length,candidates:await consolidateModelCandidates()};}}}
 // runDiscovery() and reconcileLaneMembership() insert their own sync_runs row under this exact same type string
 // (they're also called directly, outside this scheduler, by the manual "run now" API routes) — so on the scheduled
 // path below, creating a second wrapper row here would double-log every real execution: one real row with the

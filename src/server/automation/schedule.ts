@@ -1,6 +1,6 @@
 /** Pure scheduling primitives for the automation worker — no DB, no server-only, safe to unit-test in isolation. */
 
-export const JOB_TYPES = ["MODEL_DISCOVERY", "CANDIDATE_VERIFICATION", "HEALTH_MONITOR", "RATE_LIMIT_LEARNING", "PROVIDER_VERIFICATION", "APPLY_APPROVED_PLANS", "DEEP_BENCHMARK", "LANE_RECONCILE", "MAINTENANCE"] as const;
+export const JOB_TYPES = ["MODEL_DISCOVERY", "CANDIDATE_VERIFICATION", "HEALTH_MONITOR", "RATE_LIMIT_LEARNING", "PROVIDER_VERIFICATION", "APPLY_APPROVED_PLANS", "DEEP_BENCHMARK", "LANE_RECONCILE", "MAINTENANCE", "GIGACHAT_TOKEN_REFRESH"] as const;
 export type AutomationType = typeof JOB_TYPES[number];
 
 // See docs/FREE-MODEL-LIFECYCLE.md §4 for the rationale behind each cadence. CANDIDATE_VERIFICATION moved from
@@ -19,6 +19,9 @@ const DEFAULT_SCHEDULES: Record<AutomationType, string> = {
   DEEP_BENCHMARK: "0 3 * * *",
   LANE_RECONCILE: "5 * * * *",
   MAINTENANCE: "30 3 * * *",
+  // GigaChat's OAuth token expires every ~30 minutes (see providers/gigachat.ts) — refreshed well inside that
+  // window so a missed or slow tick never lets a promoted deployment's key actually go stale.
+  GIGACHAT_TOKEN_REFRESH: "*/10 * * * *",
 };
 
 /** The code-owned default schedule for a job. The DB row is healed back to this whenever the user has not explicitly customised it. */

@@ -81,14 +81,20 @@ export class HttpLiteLLMAdapter implements LiteLLMAdapter {
     }
   }
 
-  async addDeployment(input:{modelName:string;model:string;apiKey:string;apiBase?:string;extraHeaders?:Record<string,string>;metadata:Record<string,unknown>}) {
-    const response=await this.request("/model/new",{method:"POST",body:JSON.stringify({model_name:input.modelName,litellm_params:{model:input.model,api_key:input.apiKey,...(input.apiBase?{api_base:input.apiBase}:{}),...(input.extraHeaders&&Object.keys(input.extraHeaders).length?{extra_headers:input.extraHeaders}:{})},model_info:input.metadata})});
+  async addDeployment(input:{modelName:string;model:string;apiKey:string;apiBase?:string;extraHeaders?:Record<string,string>;sslVerify?:boolean;metadata:Record<string,unknown>}) {
+    const response=await this.request("/model/new",{method:"POST",body:JSON.stringify({model_name:input.modelName,litellm_params:{model:input.model,api_key:input.apiKey,...(input.apiBase?{api_base:input.apiBase}:{}),...(input.extraHeaders&&Object.keys(input.extraHeaders).length?{extra_headers:input.extraHeaders}:{}),...(input.sslVerify===false?{ssl_verify:false}:{})},model_info:input.metadata})});
     const body=await response.json().catch(()=>({})) as {model_info?:{id?:string};id?:string}; return {id:body.model_info?.id??body.id};
   }
 
   /** Keeps a deployment's record and routing history while taking it out of service. */
   async setDeploymentBlocked(id: string, blocked: boolean) {
     await this.request(`/model/${encodeURIComponent(id)}/update`, { method: "PATCH", body: JSON.stringify({ blocked }) });
+  }
+
+  /** Rotates the stored api_key on an existing deployment without recreating it — needed for providers whose
+   *  credential is a short-lived OAuth token (see providers/gigachat.ts's refresh job) rather than a static key. */
+  async updateDeploymentApiKey(id: string, apiKey: string) {
+    await this.request(`/model/${encodeURIComponent(id)}/update`, { method: "PATCH", body: JSON.stringify({ litellm_params: { api_key: apiKey } }) });
   }
 
   /** The router's own model_info for one deployment, or null if it isn't listed. */

@@ -12,6 +12,7 @@ import { buildExtraHeaders } from "@/server/providers/wiring";
 import { bareModelKey } from "@/server/discovery/model-key";
 import { removalHistoryOf } from "@/server/discovery/auto-add-policy";
 import { bareCandidateModelRef, resolveCredentialWithSource, resolveVerificationEndpoint, verifyCandidateDirectly } from "@/server/discovery/verify";
+import { getGigaChatAccessToken } from "@/server/providers/gigachat";
 import { credentialProvenance } from "@/server/credentials/fingerprint";
 import { nonChatModelReason } from "@/server/discovery/model-type";
 import { classifyCandidateLanes } from "./rules";
@@ -79,7 +80,15 @@ export async function resolvePromotionContext(candidateId: string): Promise<Prom
 
   const resolved = resolveCredentialWithSource(credential);
   if (!resolved) throw new PromotionBlocked(`Credential ${credential.environmentVariable} is not available to the server`);
-  const apiKey = resolved.secret;
+  // GigaChat's stored credential is an OAuth "Authorization key" — LiteLLM needs an actual Bearer token in its
+  // static api_key slot. This gives it a fresh one at promotion time; gigachat.ts's refresh job keeps it alive
+  // afterward, since the token itself expires in ~30 minutes.
+  let apiKey = resolved.secret;
+  if (definition.slug === "gigachat") {
+    const tokenResult = await getGigaChatAccessToken(resolved.secret);
+    if ("error" in tokenResult) throw new PromotionDeferred(`GigaChat token exchange failed: ${tokenResult.error}`);
+    apiKey = tokenResult.token;
+  }
 
   const bareModel = bareCandidateModelRef({ modelRef: candidate.modelRef, source: candidate.source, provider: definition, providerBaseUrl: providerRow.baseUrl });
   return { candidate, definition, providerRow, credential, apiKey, credentialProvenance: credentialProvenance(credential, resolved), bareModel, apiBase: chatUrl.replace(/\/chat\/completions$/, ""), directAliasName: `${definition.slug}/${bareModel}` };
@@ -118,6 +127,10 @@ async function registerTarget(ctx: PromotionContext, modelName: string, lane: La
         apiKey: ctx.apiKey,
         apiBase: ctx.apiBase,
         extraHeaders: buildExtraHeaders(ctx.definition.slug, ctx.credential.config),
+        // LiteLLM runs as a separate service this app doesn't control the TLS trust store of — it can't be made to
+        // trust GigaChat's Russian government CA chain the way our own verification calls are (providers/gigachat.ts).
+        // This mirrors what LiteLLM's own native GigaChat integration does, scoped to only this provider's deployments.
+        sslVerify: ctx.definition.slug === "gigachat" ? false : undefined,
         metadata: {
           managed_by: CURATOR_MANAGED_BY, curator_version: CURATOR_VERSION, source_provider: ctx.definition.name,
           source_model: ctx.candidate.modelRef, source_candidate_id: ctx.candidate.id, free_type: ctx.candidate.freeType,
