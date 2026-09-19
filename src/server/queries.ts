@@ -74,7 +74,7 @@ export async function getProvider(id: string) {
 }
 
 // How many recent PASSED checks the LiteLLM page's response-time columns average over — enough to smooth out one
-// slow/fast outlier without the number going stale for minutes given the health monitor's ~10-minute cadence.
+// slow/fast outlier without the number going stale for minutes given the health monitor's cadence (hourly by default).
 const LATENCY_SAMPLE_SIZE = 10;
 
 export async function getDeployments(onlyId?: string): Promise<DeploymentRow[]> {

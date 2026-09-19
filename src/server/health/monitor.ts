@@ -139,9 +139,9 @@ export async function runHealthMonitor(options:{limit?:number; adapter?:HealthAd
   for(const p of probed){
     if(autoRemove && !p.ok && !systemicIds.has(p.deployment.id) && await autoRemoveIfFailing(p.deployment,p.providerSlug,adapter)) autoRemoved++;
   }
-  // The health monitor runs every few minutes — a far more frequent, real proof of LiteLLM connectivity than
-  // waiting on someone to click "Test connection" in Settings, so the overview page's LITELLM card doesn't sit
-  // on STALE between manual tests while everything is actually working.
+  // Every health run (hourly by default) is real proof of LiteLLM connectivity, far better than waiting on someone to click
+  // "Test connection" in Settings, so the overview's LITELLM card doesn't sit on STALE between manual tests while everything
+  // is actually working.
   if(reachedLiteLLM)await recordConnection("litellm",{ok:true}).catch(()=>undefined);
   await recordLaneSnapshots();
   return {checked:deployments.length,healthy,autoRemoved,results,incidents};

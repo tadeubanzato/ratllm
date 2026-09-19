@@ -45,6 +45,16 @@ DEMO_MODE=true pnpm dev
 
 Demo data is isolated in `src/server/demo-data.ts`; production pages never silently fall back to it.
 
+### Check that it is actually working
+
+A running page is not the same as a working system: `/api/health` only says the web process is alive and the worker is beating. After setup (and any time you wonder), check:
+
+```bash
+curl -s http://localhost:9090/api/status
+```
+
+It returns `healthy`, or `degraded` with a plain-language reason for each problem: no worker running, LiteLLM unreachable, discovery or health checks gone stale, jobs that failed in the last 24 hours, invalid provider credentials, and live models that are not serving. The same reasons appear at the top of the Overview page. A freshly installed system reports `degraded` until the first discovery and health checks have run — that is correct, not a bug.
+
 ## Setting up LiteLLM
 
 RatLLM does not run inference itself — it manages deployments on a [LiteLLM](https://github.com/BerriAI/litellm) proxy that you run separately. If you don't already have one, a minimal self-hosted LiteLLM proxy looks like this:
