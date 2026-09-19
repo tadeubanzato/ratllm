@@ -142,6 +142,7 @@ The in-app version of the [About & license](#about--license) section below.
 | `LITELLM_MASTER_KEY` | Server-only LiteLLM administrative key |
 | `INTERNAL_API_SECRET` | Authenticates internal automation endpoints |
 | `CREDENTIAL_ENCRYPTION_KEY` | Encrypts provider credentials at rest |
+| `CREDENTIAL_ENCRYPTION_KEYS` / `CREDENTIAL_ENCRYPTION_KEY_ID` | Optional keyring for rotating the key above (see `docs/SECURITY.md`) |
 | `DEMO_MODE` | Enables isolated development data |
 
 See [architecture](docs/ARCHITECTURE.md), [database](docs/DATABASE.md), [LiteLLM](docs/LITELLM.md), [deployment](docs/DEPLOYMENT.md), [rate-limit learning](docs/RATE-LIMIT-LEARNING.md), and [security](docs/SECURITY.md) for deeper detail than this file covers. The production stack is the Next.js/PostgreSQL application under `src/` and `docker/`.
