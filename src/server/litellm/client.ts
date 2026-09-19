@@ -1,4 +1,5 @@
 import "server-only";
+import { deploymentIdentity } from "./classify";
 import { connectionConfig } from "@/server/settings/connections";
 import { deploymentSchema, type FallbackType, type LiteLLMAdapter, type LiteLLMDeployment, type SmokeResult } from "./types";
 
@@ -88,6 +89,17 @@ export class HttpLiteLLMAdapter implements LiteLLMAdapter {
   /** Keeps a deployment's record and routing history while taking it out of service. */
   async setDeploymentBlocked(id: string, blocked: boolean) {
     await this.request(`/model/${encodeURIComponent(id)}/update`, { method: "PATCH", body: JSON.stringify({ blocked }) });
+  }
+
+  /** The router's own model_info for one deployment, or null if it isn't listed. */
+  async getModelInfo(id: string): Promise<Record<string, unknown> | null> {
+    const item = (await this.listDeployments()).find(deployment => deploymentIdentity(deployment).deploymentId === id);
+    return item ? { ...item.model_info } : null;
+  }
+
+  /** Partial update of one deployment's model_info. Whether the router merges or replaces is checked by the caller (see adoption.ts). */
+  async patchModelInfo(id: string, modelInfo: Record<string, unknown>) {
+    await this.request(`/model/${encodeURIComponent(id)}/update`, { method: "PATCH", body: JSON.stringify({ model_info: modelInfo }) });
   }
 
   async removeDeployment(id:string){await this.request("/model/delete",{method:"POST",body:JSON.stringify({id})});}

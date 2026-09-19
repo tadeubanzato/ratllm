@@ -76,7 +76,7 @@ export default async function ModelDetail({ params }: { params: Promise<{ id: st
           <h3>Identity</h3>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <StatusPill value={row.health} />
-            <DeploymentActions id={row.id} alias={row.litellmModelName} health={row.health} live={Boolean(row.litellmDeploymentId)} />
+            <DeploymentActions id={row.id} alias={row.litellmModelName} health={row.health} live={Boolean(row.litellmDeploymentId) && !removed} facts={{ litellmId: row.litellmDeploymentId, providerModelId: row.providerModelId, providerName: row.providerName, owner: row.owner, managed: row.managed }} />
           </div>
         </div>
         <div className="panel-body">
@@ -122,7 +122,7 @@ export default async function ModelDetail({ params }: { params: Promise<{ id: st
             <dd>
               {row.managed ? "Managed by RatLLM" : row.owner ? <>Managed by <code className="mono">{row.owner}</code> · read-only in RatLLM</> : "Not managed by RatLLM · read-only"}
               {row.managed && (row.managedBy || row.curatorVersion) ? <div className="settings-help">{[row.managedBy, row.curatorVersion && `v${row.curatorVersion}`].filter(Boolean).join(" · ")}</div> : null}
-              {!row.managed ? <div className="settings-help">RatLLM shows this model but never changes a model it doesn&apos;t manage. To block or delete it, use LiteLLM with the LiteLLM ID above.</div> : null}
+              {!row.managed ? <div className="settings-help">RatLLM never changes a model on its own unless it manages it. Deactivate and Delete above act on this exact LiteLLM ID after you confirm it. Adopt hands it to RatLLM to manage.</div> : null}
             </dd>
 
             <dt>Lifecycle</dt>
