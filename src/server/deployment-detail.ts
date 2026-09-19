@@ -29,7 +29,7 @@ export async function getDeploymentDetail(id: string) {
     db.select({
       id: modelDeployments.id, litellmDeploymentId: modelDeployments.litellmDeploymentId, providerModelId: modelDeployments.providerModelId,
       lifecycle: modelDeployments.lifecycle, health: modelDeployments.health, managed: modelDeployments.managed, providerName: providers.name, apiBase: modelDeployments.apiBase,
-      credentialFingerprint: sql<string | null>`${modelDeployments.rawMetadata}->'model_info'->>'credential_fingerprint'`,
+      credentialFingerprint: sql<string | null>`${modelDeployments.rawMetadata}->'model_info'->>'ratllm_credential_fingerprint'`,
     }).from(modelDeployments).innerJoin(providers, eq(modelDeployments.providerId, providers.id))
       .where(and(eq(modelDeployments.litellmModelName, self.litellmModelName), ne(modelDeployments.id, id)))
       .orderBy(modelDeployments.lifecycle, providers.name).limit(50),
@@ -162,8 +162,8 @@ const asText = (value: unknown) => typeof value === "string" && value ? value : 
  * with the current key) and says it is an inference. The key itself is decrypted only to fingerprint it and never returned.
  */
 async function describeCredential(db: ReturnType<typeof getDb>, self: { id: string; providerId: string; managed: boolean; createdAt: Date }, info: Record<string, unknown>) {
-  const fingerprint = asText(info.credential_fingerprint);
-  const recorded = fingerprint ? { credentialId: asText(info.credential_id), envVar: asText(info.credential_env), source: asText(info.credential_source), fingerprint } : null;
+  const fingerprint = asText(info.ratllm_credential_fingerprint);
+  const recorded = fingerprint ? { credentialId: asText(info.ratllm_credential_id), envVar: asText(info.ratllm_credential_env), source: asText(info.ratllm_credential_source), fingerprint } : null;
 
   const credentials = await db.select({ id: providerCredentialReferences.id, environmentVariable: providerCredentialReferences.environmentVariable, encryptedValue: providerCredentialReferences.encryptedValue })
     .from(providerCredentialReferences).where(eq(providerCredentialReferences.providerId, self.providerId)).orderBy(asc(providerCredentialReferences.createdAt));

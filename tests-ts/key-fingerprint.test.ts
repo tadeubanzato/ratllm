@@ -26,7 +26,7 @@ describe("credentialProvenance", () => {
 
   it("records which credential, its source, and a fingerprint — and never the secret", () => {
     const meta = credentialProvenance(credential, { secret: SECRET, source: "database" });
-    expect(meta).toEqual({ credential_id: credential.id, credential_env: "GOOGLE_AI_STUDIO_API_KEY", credential_source: "database", credential_fingerprint: keyFingerprint(SECRET) });
+    expect(meta).toEqual({ ratllm_credential_id: credential.id, ratllm_credential_env: "GOOGLE_AI_STUDIO_API_KEY", ratllm_credential_source: "database", ratllm_credential_fingerprint: keyFingerprint(SECRET) });
     expect(JSON.stringify(meta)).not.toContain(SECRET);
   });
 

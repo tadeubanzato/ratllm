@@ -33,7 +33,7 @@ const audit = (providerId: string, at: string) =>
   getDb().insert(auditEvents).values({ actor: "admin", action: "provider.credential.updated", entityType: "provider", entityId: providerId, correlationId: at, createdAt: new Date(at) });
 const setCreatedAt = (id: string, at: string) => getDb().update(modelDeployments).set({ createdAt: new Date(at) }).where(eq(modelDeployments.id, id));
 const recordedInfo = (credentialId: string, secret: string, source = "database") =>
-  ({ managed_by: CURATOR_MANAGED_BY, credential_id: credentialId, credential_env: ENV_VAR, credential_source: source, credential_fingerprint: keyFingerprint(secret) });
+  ({ managed_by: CURATOR_MANAGED_BY, ratllm_credential_id: credentialId, ratllm_credential_env: ENV_VAR, ratllm_credential_source: source, ratllm_credential_fingerprint: keyFingerprint(secret) });
 
 describe("deployment API key provenance", () => {
   it("MATCHES when the recorded fingerprint equals the provider's current key", async () => {
@@ -115,6 +115,24 @@ describe("deployment API key provenance", () => {
     await getDb().delete(modelDeployments);
     await syncLiteLLM({}, inventory(item("router-1", recordedInfo(credentialId!, KEY_A))));
     const stored = (await getDb().select().from(modelDeployments))[0].rawMetadata as { model_info: Record<string, unknown> };
-    expect(stored.model_info).toMatchObject({ credential_id: credentialId, credential_env: ENV_VAR, credential_source: "database", credential_fingerprint: keyFingerprint(KEY_A) });
+    expect(stored.model_info).toMatchObject({ ratllm_credential_id: credentialId, ratllm_credential_env: ENV_VAR, ratllm_credential_source: "database", ratllm_credential_fingerprint: keyFingerprint(KEY_A) });
+  });
+
+  it("ignores a foreign `credential_fingerprint` written by another tool — a name collision must not raise a false alarm", async () => {
+    // Another tool that adds models to the same LiteLLM already writes this field, with its own algorithm and no ratllm_ fields.
+    // RatLLM once read it as its own and reported "the provider's key has changed" on every such deployment.
+    const foreign = { credential_fingerprint: "db825379e2d0" };
+    const { deployment } = await seed(foreign); // unmanaged, with a stored provider credential present
+    const unmanaged = await getDeploymentDetail(deployment.id);
+    expect(unmanaged!.credential.recorded).toBeNull();
+    expect(unmanaged!.credential.status).toBe("external");
+
+    await getDb().update(modelDeployments).set({ managed: true }).where(eq(modelDeployments.id, deployment.id));
+    await audit(deployment.providerId, "2026-09-04T03:52:00Z");
+    await setCreatedAt(deployment.id, "2026-09-13T09:11:00Z");
+    const managed = await getDeploymentDetail(deployment.id);
+    expect(managed!.credential.recorded).toBeNull();
+    expect(managed!.credential.status).not.toBe("changed");
   });
 });
+
