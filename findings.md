@@ -3296,3 +3296,17 @@ Verifying the first deployment against the live server found a bug in the API-ke
 **Verified.** 7 unit tests for the polling helper; 11 integration tests for the request/worker cycle and route (7 fail if the tick ignores requests); 3 for the upgrade path.
 
 **Still open in F-06:** job attempts/steps as tables, cancellation, per-provider concurrency limits, fencing of a worker that lost its lease, and a queue for the other buttons that still run synchronously (discovery, sync, provider verification).
+
+### 21.14 Deployment safety: setup, environment identity, compose checks (F-05, F-19)
+
+**Setup was broken on a fresh machine (F-19).** The compose file marks the database volume `external: true` (added to silence an ownership warning), and Compose never creates an external volume — so `up` failed on any new machine, because `setup.sh` never created it. The script also still had the original hazard: a lost `.env` next to a surviving volume generates a new database password that cannot match the data on disk, and web and worker then restart-loop on auth errors. `setup.sh` now creates the volume before starting the stack, **refuses** the surviving-volume-without-`.env` combination with the exact (destructive) remedy spelled out, recognises a password mismatch in the web log and says so instead of a generic timeout, and points at `/api/status` afterwards. Tested by running the real script against a fake `docker`/`curl`/`sleep` (7 tests, including a fresh install, a surviving volume, an idempotent re-run, and both failure diagnoses).
+
+**Split-brain (F-05).** The failure was silent: a workstation build showed an empty, healthy-looking app because it was pointed at its own empty database while the data lived on the server, and nothing said which database a page was showing. Now:
+- A **deployment mode** (`server`, `workstation-remote`, `demo`) is set by the compose files and shown, with the database host/port/name (never credentials), on the Overview.
+- A **database ID** is stored *in the database itself* (seeded once, never rotated). A workstation reading the server's database shows the server's ID; a stray local stack shows a different one, so "why is it empty?" is a glance.
+- `/api/status` reports a remote-mode workstation whose `DATABASE_URL` points at the local container as **degraded**; a server whose database is on another host gets a note (two workers would double-run jobs).
+- The **worker refuses to start** on a remote-mode workstation — the server already owns scheduling for that database.
+- `scripts/check-compose.sh` renders all three topologies and asserts what each contains (server: db + web + worker in server mode; server+LAN: also publishes the database port; workstation-remote: *only* the web app, plain `pnpm start`, remote mode). CI runs it. Deliberately breaking the remote overlay makes it fail.
+- `.env.workstation.example` and a "Which environment am I looking at?" section in `DEPLOY.md`.
+
+**Verified.** 14 + 1 unit tests for the environment logic, 4 integration tests (identity stable across re-seeding; the status carries the id and reasons), 7 setup-script tests; the real worker was run in remote mode (refuses, with the message) and in server mode (starts).

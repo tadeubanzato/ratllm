@@ -18,6 +18,7 @@ services:
     environment:
       NODE_ENV: production
       DEMO_MODE: "false"
+      RATLLM_DEPLOYMENT_MODE: server
     ports: ["${CURATOR_PORT:-9090}:3000"]
     depends_on:
       curator-db: { condition: service_healthy }
@@ -36,6 +37,7 @@ services:
     environment:
       NODE_ENV: production
       DEMO_MODE: "false"
+      RATLLM_DEPLOYMENT_MODE: server
     depends_on:
       curator-db: { condition: service_healthy }
     healthcheck:

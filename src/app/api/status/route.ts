@@ -7,8 +7,8 @@ import { getOperationalStatus } from "@/server/operational-status";
 export async function GET() {
   if (env.DEMO_MODE) return NextResponse.json({ status: "healthy", reasons: [], demo: true, timestamp: new Date().toISOString() });
   try {
-    const { status, reasons, facts } = await getOperationalStatus();
-    return NextResponse.json({ status, reasons, facts: { ...facts, now: undefined }, timestamp: new Date().toISOString() }, { headers: { "cache-control": "no-store" } });
+    const { status, reasons, facts, environment } = await getOperationalStatus();
+    return NextResponse.json({ status, reasons, environment, facts: { ...facts, now: undefined }, timestamp: new Date().toISOString() }, { headers: { "cache-control": "no-store" } });
   } catch {
     return NextResponse.json({ status: "degraded", reasons: [{ severity: "degraded", area: "worker", message: "Status could not be computed — the database may be unreachable." }], timestamp: new Date().toISOString() }, { headers: { "cache-control": "no-store" } });
   }

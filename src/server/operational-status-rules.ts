@@ -12,6 +12,8 @@ export const LITELLM_CONFIRMATION_LIMIT_MS = 2 * 60 * 60_000;
 
 const LABEL: Record<string, string> = { MODEL_DISCOVERY: "Model discovery", HEALTH_MONITOR: "Health monitor", LITELLM_SYNC: "LiteLLM inventory sync", CANDIDATE_VERIFICATION: "Candidate verification" };
 
+import type { DeploymentProblem } from "./deployment-info";
+
 export interface StatusInput {
   now: number;
   worker: { status: "alive" | "stale" | "absent"; heartbeatAgeMs: number | null; overdueJobs: number } | null;
@@ -20,9 +22,11 @@ export interface StatusInput {
   failedRuns24h: Record<string, number>;
   credentials: { invalid: number; unverified: number };
   fleet: { live: number; notServing: number; unmanagedNotServing: number };
+  /** Problems with the environment itself (wrong mode for the database, missing DATABASE_URL). */
+  deployment?: { problems: DeploymentProblem[] };
 }
 
-export interface StatusReason { severity: "degraded" | "info"; area: "worker" | "litellm" | "freshness" | "runs" | "credentials" | "fleet"; message: string }
+export interface StatusReason { severity: "degraded" | "info"; area: "worker" | "litellm" | "freshness" | "runs" | "credentials" | "fleet" | "deployment"; message: string }
 
 const minutes = (ms: number) => ms < 90 * 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.round(ms / 3_600_000)} h`;
 
@@ -60,6 +64,8 @@ export function evaluateStatus(input: StatusInput): { status: "healthy" | "degra
   else {
     if (input.fleet.notServing > 0) add("info", "fleet", `${input.fleet.notServing} of ${input.fleet.live} live deployments are not serving${input.fleet.unmanagedNotServing ? ` (${input.fleet.unmanagedNotServing} not managed by RatLLM)` : ""}.`);
   }
+
+  for (const problem of input.deployment?.problems ?? []) add(problem.severity, "deployment", problem.message);
 
   return { status: reasons.some(reason => reason.severity === "degraded") ? "degraded" : "healthy", reasons };
 }

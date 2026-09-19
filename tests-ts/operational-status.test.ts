@@ -69,4 +69,12 @@ describe("evaluateStatus", () => {
     const broken: StatusInput = { ...healthy(), worker: null, litellm: { status: "UNAVAILABLE", lastSuccessAt: null, error: "timeout" }, failedRuns24h: { MODEL_DISCOVERY: 1 } };
     expect(areas(broken).sort()).toEqual(["litellm", "runs", "worker"]);
   });
+
+  it("turns environment problems into reasons, so a workstation pointed at the wrong database shows as degraded", () => {
+    const wrong = { ...healthy(), deployment: { problems: [{ severity: "degraded" as const, message: "This is a workstation in remote mode, but DATABASE_URL points at the local database container." }] } };
+    const result = evaluateStatus(wrong);
+    expect(result.status).toBe("degraded");
+    expect(result.reasons.find(reason => reason.area === "deployment")?.message).toMatch(/workstation in remote mode/);
+    expect(evaluateStatus({ ...healthy(), deployment: { problems: [{ severity: "info" as const, message: "note" }] } }).status).toBe("healthy");
+  });
 });

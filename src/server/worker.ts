@@ -1,8 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { tickScheduler } from "@/server/automation/service";
+import { describeDeployment, workerRefusal } from "@/server/deployment-info";
 import { writeWorkerHeartbeat } from "@/server/worker-heartbeat";
 const interval=Number(process.env.WORKER_POLL_MS??10_000);let running=false;
 async function tick(){if(running)return;running=true;try{const results=await tickScheduler();for(const result of results)if(result.status==="rejected")console.error("automation run failed",result.reason);console.info(`scheduler tick: ${results.length} due job(s)`);}catch(error){console.error("scheduler tick failed",error);}finally{running=false;}}
+// A worker owns scheduling for one database; on a remote-mode workstation the server's worker already does.
+const refusal=workerRefusal(describeDeployment(process.env));
+if(refusal){console.error(refusal);process.exit(1);}
 const workerId=`worker-${randomUUID().slice(0,8)}`;
 // Independent of tick(): a tick awaits every due job, so it can be silent for minutes while the worker is perfectly healthy.
 async function beat(){try{await writeWorkerHeartbeat(workerId);}catch(error){console.error("worker heartbeat failed",error);}}

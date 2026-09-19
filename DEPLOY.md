@@ -20,6 +20,18 @@ curl http://localhost:9090/api/ready
 
 The default host port is `9090`; set `CURATOR_PORT` to change it.
 
+## Which environment am I looking at?
+
+Three supported topologies, each with one command and its own env file:
+
+| Topology | What runs | Command | Env file |
+|---|---|---|---|
+| **server** | database + web + worker | `docker compose -f docker/docker-compose.yml up -d --build` (add `-f docker/docker-compose.lan.yml` to publish the database to your LAN) | `.env.example` |
+| **workstation, remote** | web only, reading the server's database | `docker compose -f docker/docker-compose.yml -f docker/docker-compose.remote.yml up -d --build curator-web` | `.env.workstation.example` |
+| **demo** | sample data, no database | `DEMO_MODE=true pnpm dev` | — |
+
+The Overview page always says which one you are looking at — *Environment: server · database curator-db/curator (local container) · database ID `1a2b3c4d`*. The **database ID** is stored in the database itself, so a workstation reading the server's database shows the same ID as the server. If it doesn't, you are looking at a different (probably empty) database. `/api/status` reports a remote-mode workstation pointed at `curator-db` as degraded, and the worker refuses to start on a remote-mode workstation, so two schedulers can't run against one database. `bash scripts/check-compose.sh` renders and checks all three topologies (CI runs it).
+
 ## Use the server database from a workstation
 
 The shared database lives on `192.168.5.48`. On that Linux server, keep
