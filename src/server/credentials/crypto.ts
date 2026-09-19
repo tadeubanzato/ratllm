@@ -19,4 +19,3 @@ export function decryptCredential(value: string) {
   return Buffer.concat([decipher.update(Buffer.from(ciphertext,"base64url")),decipher.final()]).toString("utf8");
 }
 
-export function credentialHint(value:string){return value.length<8?"••••":`${value.slice(0,3)}••••${value.slice(-3)}`}
