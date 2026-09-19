@@ -1,4 +1,5 @@
-import "server-only";
+// No `import "server-only"` here on purpose: the seed script (run by the container on every start: db:migrate && db:seed && pnpm start)
+// imports this module under plain tsx, where that marker throws — which would stop `pnpm start` and take the whole app down.
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
