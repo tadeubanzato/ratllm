@@ -24,10 +24,36 @@ const DEFAULT_SCHEDULES: Record<AutomationType, string> = {
 /** The code-owned default schedule for a job. The DB row is healed back to this whenever the user has not explicitly customised it. */
 export function defaultScheduleFor(type: AutomationType) { return DEFAULT_SCHEDULES[type]; }
 
-/** Small, deliberately strict five-field cron evaluator. Invalid schedules are rejected rather than guessed. */
-export function nextCron(schedule: string, from = new Date()): Date {
+export const DEFAULT_TIME_ZONE = "UTC";
+
+export function isValidTimeZone(timeZone: string) {
+  try { new Intl.DateTimeFormat("en-US", { timeZone }); return true; } catch { return false; }
+}
+
+const WEEKDAYS: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+const formatters = new Map<string, Intl.DateTimeFormat>();
+
+/** The wall-clock fields a cron expression is matched against, for `date` as seen in `timeZone`. */
+function wallClock(date: Date, timeZone: string) {
+  if (timeZone === "UTC") return { minute: date.getUTCMinutes(), hour: date.getUTCHours(), day: date.getUTCDate(), month: date.getUTCMonth() + 1, weekday: date.getUTCDay() };
+  let formatter = formatters.get(timeZone);
+  if (!formatter) { formatter = new Intl.DateTimeFormat("en-US", { timeZone, hourCycle: "h23", minute: "numeric", hour: "numeric", day: "numeric", month: "numeric", weekday: "short" }); formatters.set(timeZone, formatter); }
+  const get = (type: string) => formatter!.formatToParts(date).find(part => part.type === type)!.value;
+  return { minute: Number(get("minute")), hour: Number(get("hour")), day: Number(get("day")), month: Number(get("month")), weekday: WEEKDAYS[get("weekday")] };
+}
+
+/**
+ * Small, deliberately strict five-field cron evaluator. Invalid schedules are rejected rather than guessed.
+ *
+ * Fields are matched against the wall clock in `timeZone` (an IANA name, default UTC) — never the server process's own
+ * zone, which used to decide silently. Time advances in real minutes, so DST behaves like classic cron: a local time
+ * skipped by spring-forward (02:30 that day) doesn't occur and that day's run is skipped, and a repeated hour after
+ * fall-back matches twice.
+ */
+export function nextCron(schedule: string, from = new Date(), timeZone = DEFAULT_TIME_ZONE): Date {
   const fields = schedule.trim().split(/\s+/);
   if (fields.length !== 5) throw new Error("Schedule must be a five-field cron expression");
+  if (!isValidTimeZone(timeZone)) throw new Error(`Unknown time zone: ${timeZone}`);
   const matches = (value: number, field: string, min: number, max: number) => field.split(",").some(part => {
     const [base, stepText] = part.split("/");
     const step = stepText ? Number(stepText) : 1;
@@ -38,11 +64,12 @@ export function nextCron(schedule: string, from = new Date()): Date {
     return value >= min && value <= max && accepts(value) && ((value - min) % step === 0);
   });
   const at = new Date(from);
-  at.setSeconds(0, 0);
-  at.setMinutes(at.getMinutes() + 1);
+  at.setUTCSeconds(0, 0);
+  at.setUTCMinutes(at.getUTCMinutes() + 1);
   for (let i = 0; i < 527040; i++) {
-    if (matches(at.getMinutes(), fields[0], 0, 59) && matches(at.getHours(), fields[1], 0, 23) && matches(at.getDate(), fields[2], 1, 31) && matches(at.getMonth() + 1, fields[3], 1, 12) && matches(at.getDay(), fields[4], 0, 6)) return at;
-    at.setMinutes(at.getMinutes() + 1);
+    const w = wallClock(at, timeZone);
+    if (matches(w.minute, fields[0], 0, 59) && matches(w.hour, fields[1], 0, 23) && matches(w.day, fields[2], 1, 31) && matches(w.month, fields[3], 1, 12) && matches(w.weekday, fields[4], 0, 6)) return at;
+    at.setUTCMinutes(at.getUTCMinutes() + 1);
   }
   throw new Error("No next run found for cron expression");
 }

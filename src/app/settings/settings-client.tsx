@@ -31,7 +31,7 @@ const jobTypeDescriptions: Record<string, string> = {
   MODEL_DISCOVERY: "Scans provider catalogs for new free or discounted models.",
   CANDIDATE_VERIFICATION: "Tests discovered candidates directly against their provider for availability.",
   HEALTH_MONITOR: "Frequent connectivity checks against a rotating slice of live LiteLLM deployments.",
-  RATE_LIMIT_LEARNING: "Probes provider rate limits to refine safe RPM/TPM estimates.",
+  RATE_LIMIT_LEARNING: "Records each deployment's recent smoke-test results and last 429. It does not measure RPM/TPM limits yet, so it publishes no estimates.",
   PROVIDER_VERIFICATION: "Re-checks every enabled provider's credential against a safe, low-cost endpoint, keeping the Providers page status current automatically instead of only on manual click.",
   APPLY_APPROVED_PLANS: "Applies validated LiteLLM configuration changes.",
   DEEP_BENCHMARK: "The same health check as Health Monitor, run against nearly the entire inventory once a day — this is what populates the Benchmarks page.",
@@ -287,7 +287,7 @@ export function SettingsClient({environment, lanes, laneOverview, initialHistory
           <td><button type="button" className="settings-link-button" onClick={() => setSourceModal({mode: "edit", source})}>{source.name}</button>{source.adapterReference && <span className="settings-help" style={{marginLeft: 6}}>Built-in{candidateOnlyByAdapterReference[source.adapterReference] && " · candidate-only"}</span>}<br/><small>{source.adapterReference ? builtinSourceDescriptions[source.adapterReference] ?? source.url : source.url ?? "Manual source"}</small></td>
           <td>{source.type.replaceAll("_", " ")}</td>
           <td><input aria-label={`${source.name} enabled`} type="checkbox" checked={source.enabled} disabled={busy} onChange={event => void act(() => request("/api/settings/model-sources", {method: "POST", body: JSON.stringify({...source, enabled: event.target.checked})}))}/></td>
-          <td><StatusPill value={source.status}/>{source.status==="DEGRADED"&&<><br/><small>0 models found</small></>}</td>
+          <td><StatusPill value={source.status}/>{source.status==="DEGRADED"&&<><br/><small>0 models found</small></>}{source.status==="BLOCKED"&&<><br/><small>Waiting for a credential</small></>}</td>
           <td>{stamp(source.lastSyncAt)}</td>
           <td>{source.yield ? <div>
             <div className="mono" style={{fontSize:11,whiteSpace:"nowrap"}}>{source.yield.discovered} found <span style={{color:"var(--faint)"}}>→</span> {source.yield.verifiedFree} verified <span style={{color:"var(--faint)"}}>→</span> {source.yield.promoted} promoted</div>

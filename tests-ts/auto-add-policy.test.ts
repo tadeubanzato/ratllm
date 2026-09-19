@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FLAP_LIMIT, REMOVE_COOLDOWN_MS, inRemovalCooldown, isAutoReAddBlocked, isFlapLimited, removalHistoryOf, unprovenCheckReason } from "../src/server/discovery/auto-add-policy";
+import { AUTO_ADD_DEFER_MS, FLAP_LIMIT, REMOVE_COOLDOWN_MS, autoAddDeferredUntil, isAutoAddDeferred, inRemovalCooldown, isAutoReAddBlocked, isFlapLimited, removalHistoryOf, unprovenCheckReason } from "../src/server/discovery/auto-add-policy";
 
 const NOW = new Date("2026-09-13T12:00:00Z").getTime();
 const hoursAgo = (h: number) => new Date(NOW - h * 60 * 60_000).toISOString();
@@ -98,5 +98,25 @@ describe("unprovenCheckReason", () => {
 
   it("clears once the most recent check actually passed", () => {
     expect(unprovenCheckReason({ lastStatus: "available" })).toBeNull();
+  });
+});
+
+describe("auto-add deferral", () => {
+  const T0 = new Date("2026-09-18T12:00:00Z").getTime();
+
+  it("is not deferred without a marker", () => {
+    expect(isAutoAddDeferred({}, T0)).toBe(false);
+  });
+
+  it("is deferred until the marker time, then eligible again", () => {
+    const until = autoAddDeferredUntil(T0);
+    expect(new Date(until).getTime() - T0).toBe(AUTO_ADD_DEFER_MS);
+    expect(isAutoAddDeferred({ autoAddDeferredUntil: until }, T0 + AUTO_ADD_DEFER_MS - 1)).toBe(true);
+    expect(isAutoAddDeferred({ autoAddDeferredUntil: until }, T0 + AUTO_ADD_DEFER_MS)).toBe(false);
+  });
+
+  it("ignores a malformed marker instead of blocking forever", () => {
+    expect(isAutoAddDeferred({ autoAddDeferredUntil: "garbage" }, T0)).toBe(false);
+    expect(isAutoAddDeferred({ autoAddDeferredUntil: 12345 }, T0)).toBe(false);
   });
 });

@@ -1,13 +1,13 @@
 import "server-only";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
 import { candidateChecks, modelCandidates, providerCredentialReferences, providers } from "@/server/db/schema";
 import { getModelCandidates } from "@/server/queries";
 import { resolveProvider } from "@/server/providers/catalog";
-import { promoteCandidate } from "@/server/lanes/promote";
+import { PromotionDeferred, promoteCandidate } from "@/server/lanes/promote";
 import { getLiteLLMManagementSettings } from "@/server/settings/litellm-management";
 import { log } from "@/server/logging";
-import { isAutoReAddBlocked } from "./auto-add-policy";
+import { autoAddDeferredUntil, isAutoAddDeferred, isAutoReAddBlocked } from "./auto-add-policy";
 import { verifyCandidateDirectly, type CandidateVerificationStatus } from "./verify";
 
 const SUCCESS_RECHECK_MS=6*60*60_000;
@@ -39,16 +39,29 @@ async function skippedByProvider<T extends {providerId:string|null}>(db:ReturnTy
  *  already in LiteLLM — gets promoted into its recommended lanes automatically, the same as clicking
  *  "Add to LiteLLM" and accepting the pre-checked lanes. Silently does nothing if it's not actually promotable
  *  yet (no verified credential, no resolved provider, etc.) — `promoteCandidate` re-verifies live before adding. */
+/** Records that auto-add hit an expected waiting state for this candidate, so it isn't retried for a while. A jsonb merge
+ *  rather than read-modify-write: the caller's copy of the row's evidence is stale by the time this runs. */
+export async function markAutoAddDeferred(db:ReturnType<typeof getDb>,candidateId:string){
+  await db.update(modelCandidates).set({evidence:sql`${modelCandidates.evidence} || ${JSON.stringify({autoAddDeferredUntil:autoAddDeferredUntil()})}::jsonb`}).where(eq(modelCandidates.id,candidateId));
+}
 async function autoAddIfEligible(db:ReturnType<typeof getDb>,row:Candidate){
   if(row.liteLLMDeploymentId||!row.promotable)return;
   // A candidate that's been auto-removed before doesn't get an immediate second chance the instant checks pass
   // again — see auto-add-policy.ts and docs/FREE-MODEL-LIFECYCLE.md §5 for why (cooldown against same-cycle
   // flapping, flap limit against a model that's fine standalone but repeatedly broken specifically through LiteLLM).
   if(isAutoReAddBlocked(row.evidence))return;
+  // A recent deferral (lanes full, credential not ready) is a waiting state, not something to retry every cycle.
+  if(isAutoAddDeferred(row.evidence))return;
   const recent=await db.select({status:candidateChecks.status}).from(candidateChecks).where(eq(candidateChecks.candidateId,row.id)).orderBy(desc(candidateChecks.createdAt)).limit(AUTO_ADD_AFTER_SUCCESSES);
   if(recent.length<AUTO_ADD_AFTER_SUCCESSES||recent.some(item=>item.status!=="available"))return;
   try{await promoteCandidate(row.id,{trigger:"auto"});log("info","Auto-added candidate to LiteLLM",{candidateId:row.id,modelRef:row.modelRef});}
-  catch(error){log("warn","Auto-add did not go through",{candidateId:row.id,error:error instanceof Error?error.message:String(error)});}
+  catch(error){
+    if(error instanceof PromotionDeferred){
+      // jsonb merge, not a read-modify-write: checkCandidate has just rewritten this row's evidence and `row` is the stale copy.
+      await markAutoAddDeferred(db,row.id);
+      log("info","Auto-add deferred",{candidateId:row.id,reason:error.message});return;
+    }
+    log("warn","Auto-add did not go through",{candidateId:row.id,error:error instanceof Error?error.message:String(error)});}
 }
 
 /** Runs one direct test for a candidate, then persists the evidence and a candidate_checks row (which is what the
