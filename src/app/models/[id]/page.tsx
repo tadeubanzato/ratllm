@@ -68,7 +68,7 @@ export default async function ModelDetail({ params }: { params: Promise<{ id: st
 
   return <PageShell title={row.modelName} eyebrow={`${row.providerName} · ${row.providerModelId}`} actions={<SmokeButton deploymentId={row.id} model={row.litellmModelName} />}>
     {duplicateGroup && <p role="alert" className="settings-feedback" style={{ borderColor: "var(--amber)", marginBottom: 14 }}>
-      <strong>Deployed {duplicateGroup.count} times.</strong> {row.providerModelId} has {duplicateGroup.count} live copies behind “{row.litellmModelName}”, all through the same {row.providerName} endpoint, each with its own LiteLLM ID (listed under Alias pool). Identical copies share one rate limit and one cost, so they add no capacity — they only skew routing toward this model. (The same model from a different provider or endpoint is fine and is not counted.) Delete the extra copies by LiteLLM ID.
+      <strong>Deployed {duplicateGroup.count} times.</strong> {row.providerModelId} has {duplicateGroup.count} live copies behind “{row.litellmModelName}”, all through the same {row.providerName} endpoint, each with its own LiteLLM ID (listed under Alias pool). {duplicateGroup.keyKnown ? "They use the same API key, so they share one rate limit and add no capacity — they only skew routing toward this model." : "This deployment doesn't record which API key it uses, so they may be on different keys (separate quotas) — check the key in LiteLLM before deleting any."} (The same model from a different provider or endpoint is fine and is not counted.) Delete the extra copies by LiteLLM ID.
     </p>}
     <div className="detail-grid">
       <section className="panel">
