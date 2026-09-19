@@ -1,5 +1,5 @@
 import "server-only";
-import { and, eq, lt, lte, ne, sql } from "drizzle-orm";
+import { and, eq, isNotNull, lt, lte, ne, or, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { getDb } from "@/server/db/client";
 import { log } from "@/server/logging";
@@ -56,10 +56,21 @@ export async function runAutomation(type:AutomationType, trigger="SCHEDULED", op
   const started=new Date();const correlationId=randomUUID();
   const renewer=setInterval(()=>{void renew(type,owner).then(held=>{if(!held)log("warn","Automation lease was lost while the job was still running",{type,owner});}).catch(error=>log("warn","Automation lease renewal failed",{type,error:error instanceof Error?error.message:String(error)}));},LEASE_RENEW_MS);
   const run=SELF_LOGGING_TYPES.has(type)?null:(await db.insert(syncRuns).values({type, status:"RUNNING",correlationId,startedAt:started,summary:{trigger,affectedEntities:[]}}).returning())[0];
-  await db.update(automationJobs).set({status:"RUNNING",lastRunAt:started,lastError:null,updatedAt:started}).where(eq(automationJobs.type,type));
+  // The job is ours now: a pending "run now" request is satisfied by this very run (whether it was triggered by it or the schedule).
+  await db.update(automationJobs).set({status:"RUNNING",lastRunAt:started,lastError:null,runRequestedAt:null,requestedOptions:null,updatedAt:started}).where(eq(automationJobs.type,type));
   try {const summary=await execute(type,options);const finished=new Date();const durationMs=finished.getTime()-started.getTime();if(run)await db.update(syncRuns).set({status:"SUCCEEDED",finishedAt:finished,summary:{trigger,result:summary},updatedAt:finished}).where(eq(syncRuns.id,run.id));await db.update(automationJobs).set({status:"SUCCEEDED",lastRunAt:started,nextRunAt:await nextRunFor(type,finished),durationMs,failureCount:0,lastError:null,updatedAt:finished}).where(eq(automationJobs.type,type));return {started:true,runId:run?.id??null,summary};
   } catch(error) {const finished=new Date();const message=error instanceof Error?error.message:"Automation failed";if(run)await db.update(syncRuns).set({status:"FAILED",finishedAt:finished,error:message,updatedAt:finished}).where(eq(syncRuns.id,run.id));await db.update(automationJobs).set({status:"FAILED",durationMs:finished.getTime()-started.getTime(),failureCount:sql`${automationJobs.failureCount}+1`,lastError:message,nextRunAt:await nextRunFor(type,finished),updatedAt:finished}).where(eq(automationJobs.type,type));throw error;
   } finally {clearInterval(renewer);await release(type,owner);}
 }
-export async function tickScheduler(){await ensureAutomationJobs();const due=await getDb().select().from(automationJobs).where(and(eq(automationJobs.enabled,true),lte(automationJobs.nextRunAt,new Date())));return Promise.allSettled(due.map(job=>runAutomation(job.type as AutomationType)));
+/** Ask for an immediate run. Returns at once; the worker starts it on its next tick, under the same lease and reporting as a
+ *  scheduled run. Asking twice before it starts is one run, not two. Works even when the job's schedule is disabled. */
+export async function requestRun(type:AutomationType,options?:AutomationOptions){
+  await ensureAutomationJobs();
+  const db=getDb();
+  const [before]=await db.select({at:automationJobs.runRequestedAt}).from(automationJobs).where(eq(automationJobs.type,type));
+  await db.update(automationJobs).set({runRequestedAt:before?.at??new Date(),requestedOptions:options??null,updatedAt:new Date()}).where(eq(automationJobs.type,type));
+  return {queued:true as const,alreadyQueued:Boolean(before?.at)};
+}
+
+export async function tickScheduler(){await ensureAutomationJobs();const now=new Date();const due=await getDb().select().from(automationJobs).where(or(and(eq(automationJobs.enabled,true),lte(automationJobs.nextRunAt,now)),isNotNull(automationJobs.runRequestedAt)));return Promise.allSettled(due.map(job=>runAutomation(job.type as AutomationType,job.runRequestedAt?"MANUAL":"SCHEDULED",job.requestedOptions??undefined)));
 }

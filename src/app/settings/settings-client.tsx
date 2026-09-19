@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import { runJobAndWait } from "@/lib/run-job";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { StatusHistoryStrip, type StatusHistoryItem } from "@/components/status-history-strip";
@@ -127,13 +128,14 @@ export function SettingsClient({environment, lanes, laneOverview, initialHistory
   async function runJobNow(type: string) {
     setBusy(true); setMessage("");
     try {
-      const result = await request("/api/settings/automation/run", {method: "POST", body: JSON.stringify({type})});
-      if (result.started) {
-        setJobHistory(current => [{at: new Date().toISOString(), status: "SUCCEEDED", label: type}, ...current]);
-        setMessage("Saved.");
-      } else {
-        setMessage(result.reason === "already_running" ? "That job is already running." : "Saved.");
-      }
+      // "Run now" queues the job for the worker and returns at once; this follows the real job until it finishes, instead of
+      // holding a web request open and painting "succeeded" before anything has run.
+      const outcome = await runJobAndWait(type, {
+        onQueued: info => setMessage(info.workerAlive ? "Queued — the worker starts it within a few seconds." : "Queued, but no worker is running — it will start as soon as one is."),
+        onPhase: phase => setMessage(phase === "running" ? "Running…" : "Queued — waiting for the worker…"),
+      });
+      if (outcome.state !== "timeout") setJobHistory(current => [{at: new Date().toISOString(), status: outcome.state === "succeeded" ? "SUCCEEDED" : "FAILED", label: type, detail: outcome.message ?? undefined}, ...current]);
+      setMessage(outcome.state === "succeeded" ? "Finished." : outcome.message ?? "The job failed.");
       setJobs(await request("/api/settings/automation"));
       refreshJobHistory();
     } catch (error) {

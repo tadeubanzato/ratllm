@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
-import { eq } from "drizzle-orm";
+import { desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/server/db/client";
-import { automationJobs } from "@/server/db/schema";
+import { automationJobs, syncRuns } from "@/server/db/schema";
 import { defaultScheduleFor, ensureAutomationJobs, JOB_TYPES, nextCron, type AutomationType } from "@/server/automation/service";
 import { apiError, correlationId } from "@/server/http";
 
@@ -17,8 +17,13 @@ const knownType = (type: string): type is AutomationType => (JOB_TYPES as readon
 
 export async function GET() {
   await ensureAutomationJobs();
-  const rows = await getDb().select().from(automationJobs).orderBy(automationJobs.type);
-  return NextResponse.json(rows.map(row => ({ ...row, defaultSchedule: knownType(row.type) ? defaultScheduleFor(row.type) : null })));
+  const db = getDb();
+  const rows = await db.select().from(automationJobs).orderBy(automationJobs.type);
+  // The most recent run of each job type, so a caller that queued a run can show its result once it finishes.
+  const latest = await db.selectDistinctOn([syncRuns.type], { type: syncRuns.type, status: syncRuns.status, summary: syncRuns.summary, error: syncRuns.error, finishedAt: syncRuns.finishedAt })
+    .from(syncRuns).where(inArray(syncRuns.type, rows.map(row => row.type))).orderBy(syncRuns.type, desc(syncRuns.createdAt));
+  const byType = new Map(latest.map(run => [run.type, run]));
+  return NextResponse.json(rows.map(row => ({ ...row, defaultSchedule: knownType(row.type) ? defaultScheduleFor(row.type) : null, lastRun: byType.get(row.type) ?? null })));
 }
 
 export async function PATCH(request: Request) {
