@@ -3234,6 +3234,21 @@ Found while building the deployment detail page and checking it against live dat
 
 **Limits.** (1) Only deployments added after this ships record provenance — and the promoter runs in the *server's* worker, so it takes effect once that worker is redeployed. (2) The comparison uses the environment of the server rendering the page; the worker's environment could differ. (3) The promoter still chooses among multiple credentials for one provider with an unordered query; the record now makes the choice visible, but doesn't make it deterministic.
 
+### 21.9 Quarantine policy: failure classification and incident protection (2026-09-19, branch `quarantine-policy`)
+
+Part of §18 (quarantine). Reading `monitor.ts` against §18.5 found two ways auto-removal could delete healthy models:
+
+1. **A dead credential removed working models.** The stored error code is the health category, and the failure streak skipped only `RATE_LIMITED`. A 401/403 (`AUTH_ERROR`) counted as a genuine failure, so a revoked or expired provider key would fail every deployment made with it for 5 hourly checks and get them all auto-removed and quarantined.
+2. **No protection against incidents.** Removal was decided per deployment, inside the probe loop, before the rest of the run was known. A provider outage, or the server losing its internet connection, made every model look dead for 5 checks. (A router that is fully down was only accidentally safe, because the removal call itself would fail while the failure rows still accumulated.)
+
+**Fix.** `AUTH_ERROR` no longer counts toward a removal streak. The monitor is now three phases — probe everything, judge the run as a whole, then decide removals. A run where LiteLLM is unreachable, where at least 60% of six or more probes fail, or where every probe of a provider (three or more) fails, is an incident: its failures are tagged `SYSTEMIC`, excluded from streaks, logged, and audited. Protection is limited to deployments that passed within 24 hours, so a provider that retires all its models is still cleaned up. Documented in `docs/FREE-MODEL-LIFECYCLE.md` §5a.
+
+**Verified.** 20 unit tests for the policy (thresholds and boundary cases, including the 24-hour edge) and 7 integration tests running the real monitor against a real database with a fake router: one broken model is still removed after 5 failures; a revoked key never removes anything over 12 runs; a widespread outage, an unreachable router and a provider-wide outage remove nothing and recover cleanly; a provider dead for over 24 hours is removed. With the old rules restored, 5 of those 7 fail — i.e. the mass-deletion scenarios really did happen.
+
+**Behaviour to know about.** A deployment that is permanently forbidden (a per-model 403, e.g. a model that needs a paid tier) now stays `AUTH_ERROR` instead of being auto-removed. That is deliberate — a 403 can equally mean a broken key — but it means such models need a manual decision.
+
+**Still open in §18:** a first-class quarantine record and state machine (suspect → quarantined → recovery probing), a 429 cooldown/backoff schedule, recovery probes independent of the hourly monitor, observe-only quarantine for unmanaged models, and an operator action to quarantine or release. Auto-remove is still opt-in and off by default.
+
 ### 21.10 Post-deploy correction: metadata field-name collision (2026-09-19)
 
 Verifying the first deployment against the live server found a bug in the API-key provenance feature (§21.8). Its metadata fields were named `credential_id`, `credential_env`, `credential_source` and `credential_fingerprint` — but that metadata is shared with every other tool that adds models to the same LiteLLM. A second tool, `smart-free-sync` (visible as `managed_by` on those deployments), already writes its own `credential_fingerprint` (a different algorithm) on 58 deployments (33 active, all unmanaged from RatLLM's point of view). RatLLM read that foreign value as its own and, on every such deployment, displayed "recorded when RatLLM added this deployment" and "the provider's key has changed since this was added" — a false alarm.

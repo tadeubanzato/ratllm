@@ -1,4 +1,5 @@
 import { SELF_HOSTED_PROVIDERS } from "@/server/providers/wiring";
+import { NEUTRAL_ERROR_CODES } from "./probe-policy";
 
 export const AUTO_REMOVE_AFTER_FAILURES = 5;
 
@@ -13,14 +14,17 @@ export function isAutoRemoveEligible(deployment: { managed: boolean; litellmDepl
 }
 
 /** Pure streak logic, kept dependency-free for unit testing: most-recent-first smoke test rows in, consecutive-
- *  genuine-failure count out. A 429 proves the provider is alive and answering — the opposite of evidence the
- *  deployment is dead — so it neither counts toward the streak nor breaks one already building from genuine
- *  failures (a truly broken deployment shouldn't dodge auto-remove just because it happens to answer with 429
- *  sometimes). */
+ *  genuine-failure count out. Rows whose error code is neutral (see probe-policy.ts) neither count toward the streak
+ *  nor break one already building from genuine failures:
+ *    - a 429 proves the provider is alive and answering;
+ *    - an auth error (401/403) is a credential problem, not a dead model — every deployment sharing that key fails
+ *      the same way, and deleting them would punish the models for something only the operator can fix;
+ *    - a failure recorded during a router-wide or provider-wide incident says nothing about this deployment.
+ *  A truly broken deployment still can't dodge auto-remove by answering with one of these now and then. */
 export function computeFailureStreak(recent: readonly { status: string; errorCode: string | null }[]): number {
   let streak = 0;
   for (const row of recent) {
-    if (row.errorCode === "RATE_LIMITED") continue;
+    if (row.errorCode !== null && NEUTRAL_ERROR_CODES.has(row.errorCode)) continue;
     if (row.status !== "FAILED") break;
     if (++streak >= AUTO_REMOVE_AFTER_FAILURES) break;
   }
