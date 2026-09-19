@@ -24,7 +24,9 @@ interface Entry{id:string;isNew:boolean;source:string;modelRef:string;providerNa
 const BATCH_SIZE=500;
 const chunk=<T,>(list:T[],size=BATCH_SIZE)=>Array.from({length:Math.ceil(list.length/size)},(_,i)=>list.slice(i*size,(i+1)*size));
 const keyOf=(source:string,modelRef:string)=>`${source}\u0000${modelRef}`;
-const columnsFor=(item:DiscoveredCandidate,providerId:string|null):CandidateColumns=>({displayName:item.displayName,providerName:item.providerName??null,providerId,freeType:item.freeType,verifiedFree:item.verifiedFree,contextWindow:item.contextWindow??null,maxOutputTokens:item.maxOutputTokens??null,supportsVision:item.supportsVision??null,supportsTools:item.supportsTools??null,supportsReasoning:item.supportsReasoning??null,sourceUrl:item.sourceUrl});
+const columnsFor=(item:DiscoveredCandidate,providerId:string|null):CandidateColumns=>({displayName:item.displayName,providerName:item.providerName??null,providerId,freeType:item.freeType,verifiedFree:item.verifiedFree,contextWindow:positiveOrNull(item.contextWindow),maxOutputTokens:positiveOrNull(item.maxOutputTokens),supportsVision:item.supportsVision??null,supportsTools:item.supportsTools??null,supportsReasoning:item.supportsReasoning??null,sourceUrl:item.sourceUrl});
+/** A source that reports 0 (or a negative) for a token limit means "unknown", which the database stores as NULL. */
+function positiveOrNull(value:number|undefined|null){return typeof value==="number"&&Number.isFinite(value)&&value>0?value:null;}
 
 /** Writes one source's discovered items into model_candidates (insert, refresh, or merge into a same-model duplicate) and
  *  returns how many items were persisted. Mutates `state` so later sources in the same run reuse resolved provider ids.
@@ -102,7 +104,7 @@ export async function persistDiscoveredItems(db:ReturnType<typeof getDb>,items:D
     const now=new Date();
     const changed=[...entries.values()];
     for(const batch of chunk(changed.filter(entry=>entry.isNew)))
-      await tx.insert(modelCandidates).values(batch.map(entry=>({id:entry.id,source:entry.source,modelRef:entry.modelRef,...entry.columns!,lifecycle:"DISCOVERED" as const,evidence:entry.evidence,lastSeenAt:now,updatedAt:now})));
+      await tx.insert(modelCandidates).values(batch.map(entry=>({id:entry.id,source:entry.source,modelRef:entry.modelRef,...entry.columns!,lifecycle:"DISCOVERED" as const,evidence:entry.evidence,firstSeenAt:now,lastSeenAt:now,updatedAt:now})));
     for(const batch of chunk(changed.filter(entry=>!entry.isNew&&entry.columns))){
       const payload=JSON.stringify(batch.map(entry=>({id:entry.id,...entry.columns!,evidence:entry.evidence})));
       await tx.execute(sql`update model_candidates m set display_name=v."displayName", provider_name=v."providerName", provider_id=v."providerId", lifecycle='DISCOVERED', free_type=v."freeType"::free_type, verified_free=v."verifiedFree", context_window=v."contextWindow", max_output_tokens=v."maxOutputTokens", supports_vision=v."supportsVision", supports_tools=v."supportsTools", supports_reasoning=v."supportsReasoning", source_url=v."sourceUrl", evidence=v.evidence, last_seen_at=now(), updated_at=now() from jsonb_to_recordset(${payload}::jsonb) as v("id" uuid, "displayName" text, "providerName" text, "providerId" uuid, "freeType" text, "verifiedFree" boolean, "contextWindow" integer, "maxOutputTokens" integer, "supportsVision" boolean, "supportsTools" boolean, "supportsReasoning" boolean, "sourceUrl" text, evidence jsonb) where m.id=v."id"`);

@@ -127,7 +127,7 @@ describe("deployment API key provenance", () => {
     expect(unmanaged!.credential.recorded).toBeNull();
     expect(unmanaged!.credential.status).toBe("external");
 
-    await getDb().update(modelDeployments).set({ managed: true }).where(eq(modelDeployments.id, deployment.id));
+    await getDb().update(modelDeployments).set({ managed: true, managedBy: CURATOR_MANAGED_BY }).where(eq(modelDeployments.id, deployment.id)); // a managed row always records its manager (now a database rule)
     await audit(deployment.providerId, "2026-09-04T03:52:00Z");
     await setCreatedAt(deployment.id, "2026-09-13T09:11:00Z");
     const managed = await getDeploymentDetail(deployment.id);
