@@ -54,7 +54,7 @@ Each is enforced by code and covered by a test named for it (`tests-ts/*`, `test
 | I7 | **Streak.** `consecutive_passes` counts consecutive real `available` results. Any other real result resets it to 0. |
 | I8 | **Promotion gate.** A candidate is eligible after `PROMOTION_PASSES` (5) consecutive passes. Eligible means the button is shown, or the model is added automatically when `autoAdd` is on. A candidate that was removed from LiteLLM keeps the documented human-override button (its last check passed). |
 | I9 | **Free is evidence.** `free_type` other than `UNKNOWN` requires a source that states it. Provider offers keep the source's wording. |
-| I10 | **Identity.** A candidate is unique per `(provider_id, model_key)`. The same model at two providers is two rows and two deployments and never merges across providers. |
+| I10 | **Identity.** A candidate is one model at one provider as one source lists it: unique on `(source, model_ref, provider)`, and rows from different sources that are the same model at the same provider (`provider_id` + `model_key`) merge into one, keeping every source as corroboration. The same model at two providers is two rows and two deployments and never merges across providers, *including when a single source lists it under both* (models.dev lists `gemini-flash-latest` under Google and Vertex). A source cannot corroborate itself. |
 | I11 | **Added.** A successful promotion stamps `added_to_litellm_at` and `added_by` (`auto` or `manual`) on the candidate. |
 | I12 | **Scale.** No request path loads the whole candidates table. The Discovered Models page is paginated and filtered in SQL, and every hot query is indexed. |
 
@@ -104,3 +104,43 @@ every 90 min; trial and quota providers recheck every 24h and prove every 6h; `r
 `model_key` (= `bareModelKey(modelRef)`, stored) plus `provider_id` identify a candidate. The Discovered Models page shows
 "also listed by N other providers" for a shared `model_key`, worded as *listed*, because the key deliberately ignores
 org prefixes and two different uploads can share it. LiteLLM deployments are per provider and already independent.
+
+## 8. What the real-data runs taught us
+
+Everything above was checked against a restored copy of the production database with the real sources over the real network
+(`docs/DISCOVERY-PIPELINE.md` is the spec; these are the findings that shaped it). Each is now covered by a test.
+
+- **Candidate identity must include the provider.** Unique on `(source, model_ref)`, models.dev's 7,865 listings collapsed into ~3,700
+  rows: one provider's entry overwrote another's whenever they shared a model id, and the row flipped provider between runs. Nine
+  thousand real candidates exist once the provider is part of the identity.
+- **One resolver decides the provider.** Five copies used to disagree; consolidation wiped `provider_id` on every run because it
+  re-resolved from a stored display name the catalog did not recognise (the identical 44 merges and 44 backfills, every 6 hours).
+- **A source's own catalog names its provider.** Five scrapers set no provider hint, so 579 candidates had no provider at all.
+- **models.dev publishes provider endpoints** (`api`, and the `npm` SDK that says whether it speaks the OpenAI protocol). Ingesting
+  them took "no known endpoint" from 3,615 candidates to 1,638. Those base URLs are SDK-style (the SDK appends `/chat/completions`,
+  with no `/v1` assumption), unlike the Base URL a person types on the provider page, which is a host. `endpointBaseHint` keeps the
+  two apart.
+- **Discovery is idempotent, measured.** After the first run cleans legacy state, a second and third run leave a hash over every
+  candidate's structure and evidence unchanged (only OpenRouter's own per-run `lastCatalogCheck` timestamp moves).
+- **Identity changes need a "New" baseline.** Correcting identity surfaces thousands of previously hidden (provider, model) pairs in
+  the first run. Migration 0017 stores `discovery.baseline_epoch`; each source's first run since then is a baseline, so deploying
+  does not put "New" on 4,000 models for a day.
+- **Providers that need no key were untestable.** The verifier demanded a credential row even for Pollinations, LLM7, Kilo's free
+  models and Chutes, which serve anonymous requests.
+- **Non-chat models were being sent chat calls** (Whisper, TTS, embeddings, image and rerank models): a fifth of all 400s. Sources'
+  own `type`/modalities now say so at ingestion, with a name heuristic (tested against chat models that share substrings) as backup.
+- **A prefix the verifier strips can be part of the id** (`groq/compound`, NVIDIA's `nvidia/...`), so a 400/404 is retried once with
+  the id as discovered before it is recorded as a failure.
+
+## 9. Operating it
+
+- **A source shows BLOCKED** when it needs a key you have not stored (Baseten, Fireworks, MiniMax, Nebius today). Store one under
+  Settings → Providers; the next run picks it up, and the state clears by itself.
+- **A source shows FAILED** with the recorded reason. Nothing from that run was stored, and the last good data is untouched.
+- **A provider shows "Needs base URL"** when no source has published where to send requests. Set one on its provider page.
+- **Testing burns quota** for trial and recurring-quota providers, which is why they are tested a quarter as often (§6).
+- **Removing a source from `registry.ts`** removes its Settings row on the next run and, after a week without being listed anywhere,
+  its models (unless they are in LiteLLM).
+- **Known limits.** "Free" is only what a source states. The free-offer text is quoted, never parsed into limits. The 5-pass gate,
+  the Added stamp and automatic promotion are verified against a stand-in for LiteLLM, and the promotion path has not been exercised
+  against a live router in this refactor.

@@ -69,3 +69,29 @@ describe("newlyDiscoveredIds", () => {
     expect(result.has(outside.id)).toBe(false);
   });
 });
+
+describe("newlyDiscoveredIds — the identity epoch", () => {
+  const epoch = new Date(NOW - 20 * 3_600_000);
+  it("treats a source's first run since the epoch as a baseline, and later runs as discoveries", () => {
+    const old = row({ source: "models_dev", firstSeenAt: hoursAgo(24 * 30) });
+    const firstRunSinceEpoch = row({ source: "models_dev", firstSeenAt: hoursAgo(19) });
+    const sameRun = row({ source: "models_dev", firstSeenAt: new Date(hoursAgo(19).getTime() + SOURCE_BASELINE_MS - 1) });
+    const laterRun = row({ source: "models_dev", firstSeenAt: hoursAgo(2) });
+    const result = newlyDiscoveredIds([old, firstRunSinceEpoch, sameRun, laterRun], NOW, epoch);
+    expect(result.has(firstRunSinceEpoch.id)).toBe(false);
+    expect(result.has(sameRun.id)).toBe(false);
+    expect(result.has(laterRun.id)).toBe(true);
+  });
+
+  it("without an epoch it is exactly the original rule, so the first post-change run would have flooded", () => {
+    const old = row({ source: "models_dev", firstSeenAt: hoursAgo(24 * 30) });
+    const firstRun = row({ source: "models_dev", firstSeenAt: hoursAgo(19) });
+    expect(newlyDiscoveredIds([old, firstRun], NOW, null).has(firstRun.id)).toBe(true);
+  });
+
+  it("falls back to the source's first-ever ingest when nothing was ingested since the epoch", () => {
+    const old = row({ source: "groq", firstSeenAt: hoursAgo(24 * 30) });
+    const recentButBeforeEpoch = row({ source: "groq", firstSeenAt: hoursAgo(22) });
+    expect(newlyDiscoveredIds([old, recentButBeforeEpoch], NOW, epoch).has(recentButBeforeEpoch.id)).toBe(true);
+  });
+});

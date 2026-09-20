@@ -1,5 +1,5 @@
 {
-  "id": "0b5fd71f-ba26-4f5e-a009-710de85ce3be",
+  "id": "d980f6a3-69de-4a40-a47d-68b39d036d42",
   "prevId": "810afa08-90f6-4bf4-867b-6e58283a3f89",
   "version": "7",
   "dialect": "postgresql",
@@ -1000,6 +1000,12 @@
               "expression": "model_ref",
               "isExpression": false,
               "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "coalesce(\"provider_id\", '00000000-0000-0000-0000-000000000000'::uuid)",
+              "asc": true,
+              "isExpression": true,
               "nulls": "last"
             }
           ],

@@ -17,6 +17,7 @@ CREATE TABLE "provider_offers" (
 	"observed_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
+DROP INDEX "candidate_source_model_uidx";--> statement-breakpoint
 ALTER TABLE "model_candidates" ADD COLUMN "model_key" text DEFAULT '' NOT NULL;--> statement-breakpoint
 ALTER TABLE "model_candidates" ADD COLUMN "last_check_status" text;--> statement-breakpoint
 ALTER TABLE "model_candidates" ADD COLUMN "last_checked_at" timestamp with time zone;--> statement-breakpoint
@@ -37,6 +38,7 @@ CREATE INDEX "candidate_model_key_idx" ON "model_candidates" USING btree ("model
 CREATE INDEX "candidate_next_check_idx" ON "model_candidates" USING btree ("next_check_at");--> statement-breakpoint
 CREATE INDEX "candidate_rank_idx" ON "model_candidates" USING btree ("consecutive_passes","last_passed_at");--> statement-breakpoint
 CREATE INDEX "candidate_first_seen_idx" ON "model_candidates" USING btree ("first_seen_at");--> statement-breakpoint
+CREATE UNIQUE INDEX "candidate_source_model_uidx" ON "model_candidates" USING btree ("source","model_ref",coalesce("provider_id", '00000000-0000-0000-0000-000000000000'::uuid));--> statement-breakpoint
 -- ── Data migration ─────────────────────────────────────────────────────────────────────────────────────────────────
 -- 1. model_key: the same rule as bareModelKey() in src/server/discovery/model-key.ts. tests-integration/discovery-pipeline
 --    checks this SQL against the TypeScript on every stored model_ref, so the two cannot drift apart.
@@ -86,3 +88,10 @@ WHERE "evidence"->>'nextCheckAt' ~ '^\d{4}-\d{2}-\d{2}T';
 --    deployment is kept, and everything else is handled by the normal retirement rule after a week.
 DELETE FROM "model_candidates" WHERE "provider_id" IS NULL AND "last_passed_at" IS NULL AND "added_to_litellm_at" IS NULL
   AND "source" IN ('groq','nvidia_nim','alibaba','zai','kilo','modelscope','nebius','baseten','pollinations','fireworks_ai','together_ai','chutes_ai');
+--> statement-breakpoint
+-- 5. Candidate identity is now (source, model id, provider). Models a source always listed under several providers were hidden by the
+--    old one-row-per-model-id rule and surface for the first time in the next discovery run. That run is a baseline, not 4,000
+--    discoveries, so the moment of the change is recorded and the "New" rule measures each source's first ingest from it.
+INSERT INTO "system_settings" ("key", "value", "description")
+VALUES ('discovery.baseline_epoch', to_jsonb(to_char(now() AT TIME ZONE 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')), 'When candidate identity changed to include the provider; each source''s first run after it is a baseline for "New".')
+ON CONFLICT ("key") DO NOTHING;

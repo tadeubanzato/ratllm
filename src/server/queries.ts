@@ -3,7 +3,7 @@ import { candidateOnlyBlockReason } from "@/server/discovery/promotion-gate";
 import { liveLaneMember } from "@/server/lanes/membership";
 import { desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { getDb } from "./db/client";
-import { canonicalModels, laneAssignments, lanes, modelCandidates, modelDeployments, providerOffers, providers, providerCredentialReferences, rateLimitProfiles, smokeTests, syncRuns } from "./db/schema";
+import { canonicalModels, laneAssignments, lanes, modelCandidates, modelDeployments, providerOffers, providers, providerCredentialReferences, rateLimitProfiles, smokeTests, syncRuns, systemSettings } from "./db/schema";
 import { bareModelKey, matchDeployment, matchDeployments } from "./discovery/model-key";
 import { isFlapLimited, removalHistoryOf } from "./discovery/auto-add-policy";
 import { BLOCKER_LABELS, providerBlocker, type CheckBlocker } from "./discovery/blockers";
@@ -31,24 +31,27 @@ export interface DashboardData {
 
 export async function getProviders(): Promise<ProviderRow[]> {
   const db = getDb();
+  // The subqueries below correlate with the outer providers row. A drizzle column reference in a single-table select renders unqualified
+  // ("id"), which inside a subquery silently binds to the *inner* table's own id and matches nothing, so the outer row is named explicitly.
+  const outerId = sql.raw('"providers"."id"');
   // Per-provider subqueries rather than one join across deployments, credentials and candidates: that join multiplies rows
   // (candidates x deployments x credentials per provider) and its cost grows with the largest table. Each subquery here is one
   // indexed lookup, so a provider costs the same however many models exist elsewhere (docs/DISCOVERY-PIPELINE.md I12).
   const rows = await db.select({
     id: providers.id, slug: providers.slug, name: providers.name, status: providers.status, adapterCapability: providers.adapterCapability,
     enabled: providers.enabled, origin: providers.origin, baseUrl: providers.baseUrl, lastDiscoveryAt: providers.lastDiscoveryAt,
-    modelCount: sql<number>`(select count(*)::int from model_deployments d where d.provider_id = ${providers.id})`,
-    healthyCount: sql<number>`(select count(*)::int from model_deployments d where d.provider_id = ${providers.id} and d.health = 'HEALTHY')`,
+    modelCount: sql<number>`(select count(*)::int from model_deployments d where d.provider_id = ${outerId})`,
+    healthyCount: sql<number>`(select count(*)::int from model_deployments d where d.provider_id = ${outerId} and d.health = 'HEALTHY')`,
     // "Known" and "verified" cover the discovery pipeline upstream of promotion — a provider can have real, discovered leads well
     // before (or instead of) anything reaching modelDeployments, which is what once made "0 models" indistinguishable between
     // "nothing known" and "known but never promoted".
-    knownCount: sql<number>`(select count(*)::int from model_candidates c where c.provider_id = ${providers.id})`,
-    verifiedCount: sql<number>`(select count(*)::int from model_candidates c where c.provider_id = ${providers.id} and c.verified_free)`,
-    passingCount: sql<number>`(select count(*)::int from model_candidates c where c.provider_id = ${providers.id} and c.last_check_status = 'available')`,
-    readyCount: sql<number>`(select count(*)::int from model_candidates c where c.provider_id = ${providers.id} and c.consecutive_passes >= ${PROMOTION_PASSES})`,
-    sourceHealth: sql<string | null>`(select ms.status::text from model_sources ms where ms.provider_id = ${providers.id} order by ms.last_sync_at desc limit 1)`,
-    sourceLastSync: sql<Date | null>`(select ms.last_sync_at from model_sources ms where ms.provider_id = ${providers.id} order by ms.last_sync_at desc limit 1)`,
-  }).from(providers).orderBy(sql`(select count(*) from model_candidates c where c.provider_id = ${providers.id}) desc`, providers.name);
+    knownCount: sql<number>`(select count(*)::int from model_candidates c where c.provider_id = ${outerId})`,
+    verifiedCount: sql<number>`(select count(*)::int from model_candidates c where c.provider_id = ${outerId} and c.verified_free)`,
+    passingCount: sql<number>`(select count(*)::int from model_candidates c where c.provider_id = ${outerId} and c.last_check_status = 'available')`,
+    readyCount: sql<number>`(select count(*)::int from model_candidates c where c.provider_id = ${outerId} and c.consecutive_passes >= ${PROMOTION_PASSES})`,
+    sourceHealth: sql<string | null>`(select ms.status::text from model_sources ms where ms.provider_id = ${outerId} order by ms.last_sync_at desc limit 1)`,
+    sourceLastSync: sql<Date | null>`(select ms.last_sync_at from model_sources ms where ms.provider_id = ${outerId} order by ms.last_sync_at desc limit 1)`,
+  }).from(providers).orderBy(sql`(select count(*) from model_candidates c where c.provider_id = ${outerId}) desc`, providers.name);
   const [refs, offerRows] = await Promise.all([db.select().from(providerCredentialReferences), db.select().from(providerOffers)]);
   return rows.map(({ baseUrl, ...row }) => {
     const available = refs.filter(ref => ref.providerId === row.id && !ref.disabled && (ref.encryptedValue || process.env[ref.environmentVariable]));
@@ -138,28 +141,18 @@ export interface SourceYield { source: string; discovered: number; verifiedFree:
  *  reached a live LiteLLM deployment, and which providers it actually touched. Turns each discovery source's tier
  *  (an editorial trust claim) into a measured outcome, and lets the Providers page show provenance back to here. */
 export async function getSourceYield(): Promise<Map<string, SourceYield>> {
-  const db=getDb();
-  const [rows,providerRows,deploymentRows]=await Promise.all([
-    db.select({source:modelCandidates.source,providerId:modelCandidates.providerId,providerName:modelCandidates.providerName,modelRef:modelCandidates.modelRef,verifiedFree:modelCandidates.verifiedFree}).from(modelCandidates),
-    db.select({id:providers.id,name:providers.name}).from(providers),
-    db.select({id:modelDeployments.id,providerId:modelDeployments.providerId,providerModelId:modelDeployments.providerModelId,health:modelDeployments.health,managed:modelDeployments.managed,litellmModelName:modelDeployments.litellmModelName,lifecycle:modelDeployments.lifecycle}).from(modelDeployments),
-  ]);
-  const providerNameById=new Map(providerRows.map(p=>[p.id,p.name]));
-  const working=new Map<string,SourceYield&{providerSet:Set<string>}>();
-  for(const row of rows){
-    const entry=working.get(row.source)??{source:row.source,discovered:0,verifiedFree:0,promoted:0,providers:[],providerSet:new Set<string>()};
-    entry.discovered++;
-    if(row.verifiedFree)entry.verifiedFree++;
-    // A deployment that's since been deactivated/removed in LiteLLM isn't a durable "promoted" outcome any more —
-    // counting it would make this measured track record just as stale as the editorial tier claims it replaced.
-    if(row.providerId&&matchDeployments(deploymentRows,row.providerId,row.modelRef).some(item=>item.lifecycle==="ACTIVE"))entry.promoted++;
-    const name=row.providerId?providerNameById.get(row.providerId):row.providerName??undefined;
-    if(name)entry.providerSet.add(name);
-    working.set(row.source,entry);
-  }
-  const result=new Map<string,SourceYield>();
-  for(const[key,value]of working)result.set(key,{source:value.source,discovered:value.discovered,verifiedFree:value.verifiedFree,promoted:value.promoted,providers:[...value.providerSet].sort()});
-  return result;
+  const db = getDb();
+  // One aggregate over the candidates instead of loading every row and matching deployments in memory (docs/DISCOVERY-PIPELINE.md I12).
+  // "Promoted" is a candidate that is live in LiteLLM right now; the deployments table is tiny, so it becomes a literal VALUES list.
+  const deploymentRows = await db.select({ providerId: modelDeployments.providerId, providerModelId: modelDeployments.providerModelId }).from(modelDeployments).where(eq(modelDeployments.lifecycle, "ACTIVE"));
+  const live = pairList(deploymentRows.map(row => [row.providerId, bareModelKey(row.providerModelId)] as const));
+  const promoted = live ? sql`(c.provider_id, c.model_key) in (${live})` : sql`false`;
+  const rows = await db.execute(sql`
+    select c.source, count(*)::int as discovered, (count(*) filter (where c.verified_free))::int as "verifiedFree", (count(*) filter (where ${promoted}))::int as promoted,
+      coalesce(array_agg(distinct coalesce(p.name, c.provider_name)) filter (where coalesce(p.name, c.provider_name) is not null), '{}') as providers
+    from model_candidates c left join providers p on p.id = c.provider_id group by c.source
+  `) as unknown as Array<{ source: string; discovered: number; verifiedFree: number; promoted: number; providers: string[] }>;
+  return new Map(rows.map(row => [row.source, { source: row.source, discovered: row.discovered, verifiedFree: row.verifiedFree, promoted: row.promoted, providers: [...row.providers].sort() }]));
 }
 
 export interface SourceHistoryPoint { at: string; status: "succeeded" | "failed"; detail: string }
@@ -200,6 +193,8 @@ export const CANDIDATE_VIEWS: ReadonlyArray<{ id: CandidateView; label: string; 
 export interface CandidateQuery { view?: CandidateView; q?: string; provider?: string; page?: number; pageSize?: number }
 export const DEFAULT_PAGE_SIZE = 100;
 const NEW_WINDOW_HOURS = 24;
+/** system_settings key holding the moment candidate identity changed to (source, model id, provider). Written by migration 0017. */
+export const BASELINE_EPOCH_KEY = "discovery.baseline_epoch";
 const SOURCE_BASELINE_MINUTES = 30;
 
 const escapeLike = (value: string) => value.replace(/[\\%_]/g, "\\$&");
@@ -241,7 +236,10 @@ export async function getCandidatePage(query: CandidateQuery = {}) {
     ...(text ? [sql`(c.display_name ilike ${`%${escapeLike(text)}%`} or c.model_ref ilike ${`%${escapeLike(text)}%`} or c.provider_name ilike ${`%${escapeLike(text)}%`})`] : []),
     ...(query.provider ? [sql`c.provider_id = (select id from providers where slug = ${query.provider})`] : [])];
   const where = sql.join(filters, sql` and `);
-  const withSources = sql`with src as (select source, min(first_seen_at) as first_ingest from model_candidates group by source)`;
+  // A source's baseline is its first ingest since the identity epoch when it has one, otherwise its first ingest ever (new-candidates.ts).
+  const epochRow = (await db.select({ value: systemSettings.value }).from(systemSettings).where(eq(systemSettings.key, BASELINE_EPOCH_KEY)).limit(1))[0];
+  const epoch = typeof epochRow?.value === "string" && !Number.isNaN(Date.parse(epochRow.value)) ? new Date(epochRow.value).toISOString() : null;
+  const withSources = sql`with src as (select source, coalesce(min(first_seen_at) filter (where first_seen_at >= ${epoch}::timestamptz), min(first_seen_at)) as first_ingest from model_candidates group by source)`;
 
   const countWhere = async (filter: ReturnType<typeof sql>) => Number(((await db.execute(sql`${withSources} select count(*)::int as n from model_candidates c join src on src.source = c.source where ${filter}`)) as unknown as Array<{ n: number }>)[0]?.n ?? 0);
   const total = await countWhere(where);

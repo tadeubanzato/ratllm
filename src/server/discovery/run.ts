@@ -28,7 +28,9 @@ const SOURCE_CONCURRENCY=8;
 /** A source that rejects more than this share of the rows it returned is DEGRADED: it works, but is dropping data. */
 const DEGRADED_REJECT_SHARE=0.2;
 const chunk=<T,>(list:T[],size=BATCH_SIZE)=>Array.from({length:Math.ceil(list.length/size)},(_,i)=>list.slice(i*size,(i+1)*size));
-const keyOf=(source:string,modelRef:string)=>`${source}\u0000${modelRef}`;
+const NO_PROVIDER="-";
+/** A candidate is one model at one provider as one source lists it (I10), so the provider is part of its identity. */
+const keyOf=(source:string,modelRef:string,providerId:string|null)=>`${source}\u0000${modelRef}\u0000${providerId??NO_PROVIDER}`;
 const groupKey=(providerId:string,modelKey:string)=>`${providerId}\u0000${modelKey}`;
 const columnsFor=(item:DiscoveredCandidate,providerId:string|null):CandidateColumns=>({displayName:item.displayName,providerName:item.providerName??null,providerId,modelKey:bareModelKey(item.modelRef),freeType:item.freeType,verifiedFree:item.verifiedFree,contextWindow:positiveOrNull(item.contextWindow),maxOutputTokens:positiveOrNull(item.maxOutputTokens),supportsVision:item.supportsVision??null,supportsTools:item.supportsTools??null,supportsReasoning:item.supportsReasoning??null,sourceUrl:item.sourceUrl??null});
 /** A source that reports 0 (or a negative) for a token limit means "unknown", which the database stores as NULL. */
@@ -88,7 +90,7 @@ export async function persistDiscoveredItems(db:ReturnType<typeof getDb>,items:D
     const byModel=new Map<string,Entry[]>();
     const link=(entry:Entry)=>{if(!entry.providerId)return;const key=groupKey(entry.providerId,entry.modelKey);byModel.set(key,[...(byModel.get(key)??[]),entry]);};
     const unlink=(entry:Entry)=>{if(!entry.providerId)return;const key=groupKey(entry.providerId,entry.modelKey);const rest=(byModel.get(key)??[]).filter(other=>other!==entry);if(rest.length)byModel.set(key,rest);else byModel.delete(key);};
-    const register=(entry:Entry)=>{byKey.set(keyOf(entry.source,entry.modelRef),entry);link(entry);};
+    const register=(entry:Entry)=>{byKey.set(keyOf(entry.source,entry.modelRef,entry.providerId),entry);link(entry);};
     for(const row of loaded)register({id:row.id,isNew:false,source:row.source,modelRef:row.modelRef,modelKey:row.modelKey||bareModelKey(row.modelRef),providerId:row.providerId,evidence:row.evidence??{}});
 
     const entries=new Map<string,Entry>(); // every entry that changed, in first-touched order
@@ -101,10 +103,14 @@ export async function persistDiscoveredItems(db:ReturnType<typeof getDb>,items:D
       const modelKey=bareModelKey(item.modelRef);
       const evidence=evidenceFor(item);
 
-      const existing=byKey.get(keyOf(item.source,item.modelRef));
+      let existing=byKey.get(keyOf(item.source,item.modelRef,providerId));
+      if(!existing&&providerId){
+        // A row this source stored before its provider was known is this same candidate, now attributed: adopt it instead of
+        // creating a second row that consolidation would only have to merge back.
+        const unattributed=byKey.get(keyOf(item.source,item.modelRef,null));
+        if(unattributed){byKey.delete(keyOf(item.source,item.modelRef,null));unlink(unattributed);unattributed.providerId=providerId;byKey.set(keyOf(item.source,item.modelRef,providerId),unattributed);link(unattributed);existing=unattributed;}
+      }
       if(existing){
-        // A refresh can change which provider the row belongs to; later same-model lookups must follow it.
-        if(existing.providerId!==providerId){unlink(existing);existing.providerId=providerId;link(existing);}
         existing.columns=columnsFor(item,providerId);
         existing.evidence={...existing.evidence,...evidence};
         entries.set(existing.id,existing);discovered++;continue;
@@ -112,7 +118,8 @@ export async function persistDiscoveredItems(db:ReturnType<typeof getDb>,items:D
       const duplicate=providerId?byModel.get(groupKey(providerId,modelKey))?.[0]:undefined;
       if(duplicate){
         const prior=Array.isArray(duplicate.evidence.corroboratingSources)?duplicate.evidence.corroboratingSources as {source:string;sourceUrl:string}[]:[];
-        const corroboratingSources=prior.some(c=>c.source===item.source)?prior:[...prior,{source:item.source,sourceUrl:item.sourceUrl}];
+        // A source cannot corroborate itself: the same source listing the same model under another spelling adds nothing (consolidation applies the same rule).
+        const corroboratingSources=prior.some(c=>c.source===item.source)||item.source===duplicate.source?prior:[...prior,{source:item.source,sourceUrl:item.sourceUrl}];
         duplicate.evidence={...duplicate.evidence,corroboratingSources};
         entries.set(duplicate.id,duplicate);discovered++;continue;
       }
@@ -185,11 +192,12 @@ async function fetchSource(source:DiscoverySource):Promise<SourceOutcome>{
     let rejected=result.rejected;
     for(const item of result.candidates){
       if(!isUsableItem(item)){rejected++;continue;}
-      const key=item.modelRef.trim();
+      // The same id under two providers is two candidates (I10); only an exact repeat (same id, same provider) is dropped.
+      const key=`${(item.providerName??"").trim().toLowerCase()}\u0000${item.modelRef.trim()}`;
       if(seen.has(key))continue;
       seen.add(key);
       // A source that is one provider's own catalog owns every model it lists (I1): its label wins over anything an adapter guessed.
-      items.push({...item,modelRef:key,...(catalog?{providerName:catalog.name}:{})});
+      items.push({...item,modelRef:item.modelRef.trim(),...(catalog?{providerName:catalog.name}:{})});
     }
     return {sourceId:source.id,kind:"ok",items,offers:result.offers,rejected,minExpected:source.minExpected??1};
   }catch(error){

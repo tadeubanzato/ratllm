@@ -90,8 +90,9 @@ describe("persistDiscoveredItems (behavior contract)", () => {
     const { discovered } = await persist([item(), item({ modelRef: "groq/llama-3.3-70b-versatile" })]);
     expect(discovered).toBe(2);
     const all = await rows();
-    expect(all).toHaveLength(1);
-    expect(all[0].evidence).toMatchObject({ corroboratingSources: [{ source: "src-a" }] });
+    expect(all).toHaveLength(1); // the same source's second spelling still merges instead of creating a near-duplicate
+    // ...but a source cannot corroborate itself, so it is not listed as its own corroboration.
+    expect(all[0].evidence.corroboratingSources ?? []).toEqual([]);
   });
 
   it("treats a repeated identical item in one batch as a refresh, merging evidence in order", async () => {
@@ -138,17 +139,29 @@ describe("persistDiscoveredItems (behavior contract)", () => {
     expect((await persist([])).discovered).toBe(0);
   });
 
-  it("moves a refreshed row to its new provider, so later same-model items in the same batch follow it", async () => {
+  it("keeps the same model id listed under two providers by one source as two candidates, in one batch and across batches (I10)", async () => {
+    const both = [
+      item({ modelRef: "shared-model-9b", providerName: "Groq" }),
+      item({ modelRef: "shared-model-9b", providerName: "Cerebras" }),
+    ];
+    await persist(both);
+    await persist(both);
+    const all = await rows();
+    expect(all.map(row => `${row.source}|${row.modelRef}|${row.providerName}`).sort()).toEqual(["src-a|shared-model-9b|Cerebras", "src-a|shared-model-9b|Groq"]);
+  });
+
+  it("adopts a row stored before its provider was known instead of creating a second one, and later same-model items follow it", async () => {
     // Everything happens inside ONE batch, which is what exercises the in-memory index (separate calls reload from the DB).
+    await getDb().insert(modelCandidates).values({ source: "src-a", modelRef: "shared-9-7b", displayName: "old", sourceUrl: "u", modelKey: "shared97b", providerId: null });
     const { discovered } = await persist([
-      item({ modelRef: "groq/shared-9", providerName: undefined }),        // resolves to Groq from the model prefix
-      item({ modelRef: "groq/shared-9", providerName: "Cerebras" }),       // same (source, modelRef): refresh, now Cerebras
-      item({ source: "src-b", modelRef: "GROQ/shared-9", providerName: "Groq" }),       // Groq: must NOT merge into the Cerebras row
-      item({ source: "src-c", modelRef: "cerebras/shared-9", providerName: "Cerebras" }), // Cerebras: must merge into it
+      item({ modelRef: "shared-9-7b", providerName: "Cerebras" }),                                // adopts the unattributed row
+      item({ source: "src-b", modelRef: "Shared-9-7B", providerName: "Groq" }),                   // Groq: must NOT merge into the Cerebras row
+      item({ source: "src-c", modelRef: "cerebras/shared-9-7b", providerName: "Cerebras" }),      // Cerebras: must merge into it
     ]);
-    expect(discovered).toBe(4);
+    expect(discovered).toBe(3);
     const all = await rows();
     expect(all.map(row => `${row.source}|${row.providerName}`)).toEqual(["src-a|Cerebras", "src-b|Groq"]);
+    expect(all[0].displayName).toBe("Llama 3.3 70B");
     expect(all[0].evidence).toMatchObject({ corroboratingSources: [{ source: "src-c" }] });
     expect(all[1].evidence).not.toHaveProperty("corroboratingSources");
   });

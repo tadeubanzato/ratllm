@@ -3,7 +3,7 @@
 // rows as this one. It implements the current semantics (docs/DISCOVERY-PIPELINE.md I1, I3, I10): the provider is decided by
 // attributeProvider, a model is identified by (provider_id, model_key). Do not "improve" this file; it exists to stay slow
 // and obviously correct, and it deliberately shares no code with run.ts beyond the pure decision functions.
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, isNull } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
 import { modelCandidates, providers } from "@/server/db/schema";
 import { attributeProvider } from "@/server/providers/attribution";
@@ -31,14 +31,18 @@ export async function legacyPersistDiscoveredItems(db:ReturnType<typeof getDb>,i
     const evidence={...item.evidence,nonChatReason:item.nonChatReason??nonChatModelReason({modelRef:item.modelRef,displayName:item.displayName,description})??null};
     const values={displayName:item.displayName,providerName:item.providerName??null,providerId,modelKey,lifecycle:"DISCOVERED" as const,freeType:item.freeType,verifiedFree:item.verifiedFree,contextWindow:positiveOrNull(item.contextWindow),maxOutputTokens:positiveOrNull(item.maxOutputTokens),supportsVision:item.supportsVision??null,supportsTools:item.supportsTools??null,supportsReasoning:item.supportsReasoning??null,sourceUrl:item.sourceUrl??null};
 
-    const existing=(await db.select({id:modelCandidates.id,evidence:modelCandidates.evidence}).from(modelCandidates).where(and(eq(modelCandidates.source,item.source),eq(modelCandidates.modelRef,item.modelRef))).limit(1))[0];
+    // A candidate is one model at one provider as one source lists it. A row this source stored before the provider was known is
+    // this same candidate, now attributed.
+    const sameSource=and(eq(modelCandidates.source,item.source),eq(modelCandidates.modelRef,item.modelRef));
+    const existing=(await db.select({id:modelCandidates.id,evidence:modelCandidates.evidence}).from(modelCandidates).where(and(sameSource,providerId?eq(modelCandidates.providerId,providerId):isNull(modelCandidates.providerId))).limit(1))[0]
+      ?? (providerId?(await db.select({id:modelCandidates.id,evidence:modelCandidates.evidence}).from(modelCandidates).where(and(sameSource,isNull(modelCandidates.providerId))).limit(1))[0]:undefined);
     if(existing){await db.update(modelCandidates).set({...values,evidence:{...existing.evidence,...evidence},lastSeenAt:new Date(),updatedAt:new Date()}).where(eq(modelCandidates.id,existing.id));discovered++;continue;}
 
     // The same model at the same provider, from any source (deliberately including this one, under a different spelling).
-    const duplicate=providerId?(await db.select({id:modelCandidates.id,evidence:modelCandidates.evidence}).from(modelCandidates).where(and(eq(modelCandidates.providerId,providerId),eq(modelCandidates.modelKey,modelKey))).orderBy(asc(modelCandidates.firstSeenAt),asc(modelCandidates.createdAt)).limit(1))[0]:undefined;
+    const duplicate=providerId?(await db.select({id:modelCandidates.id,source:modelCandidates.source,evidence:modelCandidates.evidence}).from(modelCandidates).where(and(eq(modelCandidates.providerId,providerId),eq(modelCandidates.modelKey,modelKey))).orderBy(asc(modelCandidates.firstSeenAt),asc(modelCandidates.createdAt)).limit(1))[0]:undefined;
     if(duplicate){
       const prior=Array.isArray(duplicate.evidence.corroboratingSources)?duplicate.evidence.corroboratingSources as {source:string;sourceUrl:string}[]:[];
-      const corroboratingSources=prior.some(c=>c.source===item.source)?prior:[...prior,{source:item.source,sourceUrl:item.sourceUrl}];
+      const corroboratingSources=prior.some(c=>c.source===item.source)||item.source===duplicate.source?prior:[...prior,{source:item.source,sourceUrl:item.sourceUrl}];
       await db.update(modelCandidates).set({evidence:{...duplicate.evidence,corroboratingSources},lastSeenAt:new Date(),updatedAt:new Date()}).where(eq(modelCandidates.id,duplicate.id));
       discovered++;continue;
     }

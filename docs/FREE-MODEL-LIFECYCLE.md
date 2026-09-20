@@ -63,11 +63,14 @@ is exactly the signal that tells you *where* the problem is.
 
 ## 3. Status label taxonomy
 
-**Direct-provider availability** (`/models` → Availability column, from `availabilityFor()`):
-`AVAILABLE`, `RATE_LIMITED`, `UNAVAILABLE`, `AUTH_ERROR`, `CREDENTIAL_MISSING`, `CREDENTIAL_UNVERIFIED`,
-`PROVIDER_UNRESOLVED`, `VERIFIER_NOT_CONFIGURED`, `QUEUED`. This taxonomy is fine as-is.
+**Direct-provider outcomes** (`candidate_checks`, the Availability bars): only real calls are recorded — `available`,
+`unavailable`, `rate_limited`, `auth_error`, and `out_of_credits` (a provider-account fact, not a model failure).
+States where no call could be made (no provider, not a chat model, no endpoint, no credential, credential not verified) are a
+**blocker on the candidate** (`check_blocker`), never history; see `docs/DISCOVERY-PIPELINE.md` §6. The Discovered Models page shows
+only what a person can act on (Add credential, Verify credential, Set base URL); every other blocker stays in the database.
 
-**LiteLLM lifecycle** (`/models` → LiteLLM column, `/litellm` page):
+**LiteLLM lifecycle** (`/models` → LiteLLM column, `/litellm` page). The `/models` column shows one short pill with the explanation on
+hover (`Added <date>`, `Will retry`, `Needs review`, `Deleted`, `Deactivated`); the tables below use the long names:
 
 | State | Badge | Manual "Add to LiteLLM" button shown? |
 |---|---|---|
@@ -151,6 +154,10 @@ be cleaned up. After 24 hours without a pass, failures count again and the norma
 passed is never shielded.
 
 ## 6. Fast-track ramp for new candidates
+
+> Superseded in part by `docs/DISCOVERY-PIPELINE.md` §6: the streak is stored (`consecutive_passes`) rather than re-read from history, a
+> candidate is eligible after `PROMOTION_PASSES` (5) consecutive *real* passes, and trial / recurring-quota providers are tested a
+> quarter as often (24h recheck, 6h while proving) because a test spends their quota. The rest of this section still holds.
 
 Decision: **fast-track only candidates still proving themselves**, not everyone — steady-state request
 volume against providers must not multiply just because most candidates are already known-good or

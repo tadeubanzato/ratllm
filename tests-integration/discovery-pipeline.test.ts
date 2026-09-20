@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
-import { candidateChecks, canonicalModels, modelCandidates, modelDeployments, modelSources, providerCredentialReferences, providerOffers, providers, sourceChecks, syncRuns } from "@/server/db/schema";
+import { candidateChecks, canonicalModels, modelCandidates, modelDeployments, modelSources, providerCredentialReferences, providerOffers, providers, sourceChecks, syncRuns, systemSettings } from "@/server/db/schema";
 import { runDiscovery, persistProviderOffers, persistDiscoveredItems } from "@/server/discovery/run";
 import { consolidateModelCandidates, RETIRE_AFTER_MS } from "@/server/discovery/consolidate";
 import { reconcileCheckBlockers } from "@/server/discovery/blockers";
 import { ensureModelSources } from "@/server/discovery/model-sources";
 import { verifyConnectedCandidates, verifyDueCandidates } from "@/server/discovery/verify-due";
-import { getCandidatePage } from "@/server/queries";
+import { BASELINE_EPOCH_KEY, getCandidatePage } from "@/server/queries";
 import { newlyDiscoveredIds } from "@/server/discovery/new-candidates";
 import { bareModelKey } from "@/server/discovery/model-key";
 import { PROMOTION_PASSES } from "@/server/discovery/verification-policy";
@@ -99,6 +99,43 @@ describe("I1/I2 — discovery is idempotent and never undoes itself", () => {
     const eden = await db().select().from(providers).where(eq(providers.slug, "eden-ai"));
     expect(eden).toHaveLength(1);
     expect(eden[0]).toMatchObject({ name: "Eden AI", origin: "DISCOVERED", adapterCapability: "MANUAL" });
+  });
+
+  it("a source that lists one model id under several providers keeps all of them, and stays stable — the models.dev shape", async () => {
+    // models.dev lists "gemini-flash-latest" under both Google and Vertex; the id alone used to be the candidate's identity, so one
+    // provider overwrote the other and the row flipped between runs.
+    const sources = [source("models_dev", [
+      item("models_dev", "gemini-flash-latest", { providerName: "Google" }),
+      item("models_dev", "gemini-flash-latest", { providerName: "Google Vertex" }),
+      item("models_dev", "gemini-flash-latest", { providerName: "Vertex Mirror Co" }),
+      item("models_dev", "gemini-flash-latest", { providerName: "Google" }), // an exact repeat is still just one candidate
+    ])];
+    await runDiscovery({ sources });
+    const first = await snapshot();
+    expect(first).toHaveLength(3);
+    await runDiscovery({ sources }); await runDiscovery({ sources });
+    expect(await snapshot()).toEqual(first);
+  });
+
+  it("a source never appears as its own corroboration when it lists the same model under another spelling", async () => {
+    const sources = [source("models_dev", [item("models_dev", "qwen3.6-27b", { providerName: "Alibaba" }), item("models_dev", "qwen3.6-27b:thinking", { providerName: "Alibaba" })])];
+    await runDiscovery({ sources }); await runDiscovery({ sources });
+    const rows = await db().select().from(modelCandidates);
+    expect(rows).toHaveLength(2); // ":thinking" is a different model id, so it is its own candidate
+    for (const r of rows) expect(r.evidence.corroboratingSources ?? []).toEqual([]);
+    // and the genuinely same-key spelling of the same source folds in without naming itself
+    const merged = [source("models_dev", [item("models_dev", "GPT-OSS-120B", { providerName: "Groq" }), item("models_dev", "gpt-oss-120b", { providerName: "Groq" })])];
+    await runDiscovery({ sources: merged });
+    const gpt = (await db().select().from(modelCandidates)).filter(r => r.modelKey === "gptoss120b");
+    expect(gpt).toHaveLength(1);
+    expect(gpt[0].evidence.corroboratingSources ?? []).toEqual([]);
+  });
+
+  it("a later source listing the same model at the same provider joins the existing row, not a new one", async () => {
+    await runDiscovery({ sources: [source("models_dev", [item("models_dev", "gemini-flash-latest", { providerName: "Google" }), item("models_dev", "gemini-flash-latest", { providerName: "Google Vertex" })])] });
+    await runDiscovery({ sources: [source("gemini", [item("gemini", "gemini-flash-latest", { providerName: "Google AI Studio" })], { providerSlug: "google-ai-studio" })] });
+    const rows = await db().select().from(modelCandidates);
+    expect(rows).toHaveLength(2); // Google (with Gemini as corroboration) and Vertex
   });
 
   it("consolidation on its own is idempotent on data it has already cleaned", async () => {
@@ -662,6 +699,27 @@ describe("'New' — the SQL the page runs equals the pure specification", () => 
   });
 });
 
+describe("'New' — the identity epoch: the first run after the change is a baseline", () => {
+  it("does not flag what the first post-change run surfaced, does flag a later run, and the SQL still equals the specification", async () => {
+    const models = await provider("groq", "Groq");
+    const ago = (h: number) => new Date(Date.now() - h * HOUR);
+    const epoch = ago(20);
+    await db().insert(systemSettings).values({ key: BASELINE_EPOCH_KEY, value: epoch.toISOString() });
+    await candidate({ modelRef: "old-7b", providerId: models.id, source: "models_dev", firstSeenAt: ago(24 * 30) });                 // long-standing
+    await candidate({ modelRef: "hidden-1-7b", providerId: models.id, source: "models_dev", firstSeenAt: ago(19) });               // surfaced by the first post-change run
+    await candidate({ modelRef: "hidden-2-7b", providerId: models.id, source: "models_dev", firstSeenAt: new Date(ago(19).getTime() + 60_000) });
+    await candidate({ modelRef: "really-new-7b", providerId: models.id, source: "models_dev", firstSeenAt: ago(2) });             // found by a later run: a genuine discovery
+    await candidate({ modelRef: "quiet-old-7b", providerId: models.id, source: "cerebras", firstSeenAt: ago(24 * 5) });            // a source with nothing since the epoch keeps its old baseline
+    await candidate({ modelRef: "quiet-new-7b", providerId: models.id, source: "cerebras", firstSeenAt: ago(22) });   // before the epoch, inside the 24h window
+
+    const page = await getCandidatePage({ view: "new", pageSize: 500 });
+    const rows = await db().select().from(modelCandidates);
+    const expected = newlyDiscoveredIds(rows.map(r => ({ id: r.id, source: r.source, providerId: r.providerId, modelRef: r.modelRef, firstSeenAt: r.firstSeenAt, liteLLMLifecycle: null, liteLLMDeploymentId: null })), Date.now(), epoch);
+    expect(new Set(page.rows.map(r => r.id))).toEqual(expected);
+    expect(page.rows.map(r => r.modelRef).sort()).toEqual(["quiet-new-7b", "really-new-7b"]);
+  });
+});
+
 // ── the SQL model_key equals the TypeScript rule ───────────────────────────────────────────────────────────────────────
 describe("model_key — the SQL backfill equals bareModelKey()", () => {
   it("agrees on awkward ids: prefixes, case, punctuation, spaces, unicode, short names", async () => {
@@ -682,5 +740,67 @@ describe("persistDiscoveredItems keeps a stable identity when a source's own spe
     await persistDiscoveredItems(db(), [item("groq", "llama-3.3-70b-versatile")], state);
     await persistDiscoveredItems(db(), [item("groq", "Llama-3.3-70B-Versatile"), item("groq", "groq/llama-3.3-70b-versatile")], state);
     expect(await db().select().from(modelCandidates)).toHaveLength(1);
+  });
+});
+
+// ── the Providers page's data ──────────────────────────────────────────────────────────────────────────────────────────
+import { getProviders } from "@/server/queries";
+
+describe("getProviders — counts come from the right rows", () => {
+  it("counts each provider's own candidates, passes, ready models and deployments, and reads its linked source's health", async () => {
+    const groq = await provider("groq", "Groq"); const cerebras = await provider("cerebras", "Cerebras");
+    await provider("eden-ai", "Eden AI", { origin: "DISCOVERED", adapterKey: "manual", adapterCapability: "MANUAL" });
+    await credential(groq.id, true);
+    await candidate({ modelRef: "a-7b", providerId: groq.id, lastCheckStatus: "available", consecutivePasses: 6, verifiedFree: true });
+    await candidate({ modelRef: "b-7b", providerId: groq.id, lastCheckStatus: "unavailable" });
+    await candidate({ modelRef: "c-7b", providerId: cerebras.id });
+    await deployment(groq.id, "openai/a-7b");
+    await db().insert(modelSources).values({ name: "Groq Model Catalog", type: "CUSTOM_ADAPTER", adapterReference: "groq", providerId: groq.id, status: "HEALTHY", lastSyncAt: new Date() });
+    await db().insert(providerOffers).values({ providerId: groq.id, source: "freellmapihub", freeType: "RECURRING_CREDIT", rateLimitsText: "30 RPM" });
+
+    const rows = await getProviders();
+    const by = (slug: string) => rows.find(r => r.slug === slug)!;
+    expect(by("groq")).toMatchObject({ knownCount: 2, verifiedCount: 1, passingCount: 1, readyCount: 1, modelCount: 1, credentialVerified: true, readiness: "READY", freeKind: "RECURRING", availability: "verified", origin: "CATALOG" });
+    expect(by("groq").offer).toMatchObject({ rateLimitsText: "30 RPM", source: "freellmapihub" });
+    expect(by("cerebras")).toMatchObject({ knownCount: 1, passingCount: 0, readyCount: 0, modelCount: 0, readiness: "NEEDS_CREDENTIAL" });
+    expect(by("eden-ai")).toMatchObject({ knownCount: 0, readiness: "NO_ENDPOINT", origin: "DISCOVERED" });
+    // providers with models are listed first
+    expect(rows.map(r => r.slug)).toEqual(["groq", "cerebras", "eden-ai"]);
+  });
+
+  it("a linked source's health reaches the provider, and a published base URL makes a derived provider testable", async () => {
+    const derived = await provider("eden-ai", "Eden AI", { origin: "DISCOVERED", adapterKey: "manual", adapterCapability: "MANUAL" });
+    await credential(derived.id, null, "K_EDEN2");
+    await db().insert(providerOffers).values({ providerId: derived.id, source: "models_dev", freeType: "UNKNOWN", openaiBaseUrl: "https://api.eden.example/v1" });
+    await db().insert(modelSources).values({ name: "Eden", type: "CUSTOM_ADAPTER", adapterReference: "eden", providerId: derived.id, status: "FAILED", lastSyncAt: new Date() });
+    const [row] = await getProviders();
+    // Endpoint known and a credential stored. A derived provider has no credential-check endpoint, so nothing can be "verified" in advance:
+    // the real completions call is its only verification (the verifier applies the same rule), and it is testable right now.
+    expect(row.readiness).toBe("READY");
+    expect(row.availability).toBe("failed");
+  });
+});
+
+import { getSourceYield } from "@/server/queries";
+
+describe("getSourceYield — one aggregate, correct per source", () => {
+  it("counts what each source found, how much of it is verified free, what is live in LiteLLM, and which providers it touched", async () => {
+    const groq = await provider("groq", "Groq"); const cerebras = await provider("cerebras", "Cerebras");
+    await candidate({ modelRef: "a-7b", providerId: groq.id, source: "openrouter", verifiedFree: true });
+    await candidate({ modelRef: "b-7b", providerId: groq.id, source: "openrouter" });
+    await candidate({ modelRef: "c-7b", providerId: cerebras.id, source: "openrouter", verifiedFree: true });
+    await candidate({ modelRef: "d-7b", providerId: cerebras.id, source: "cerebras" });
+    await deployment(groq.id, "openai/a-7b"); await deployment(groq.id, "openai/b-7b", "REMOVED");
+    const yields = await getSourceYield();
+    expect(yields.get("openrouter")).toEqual({ source: "openrouter", discovered: 3, verifiedFree: 2, promoted: 1, providers: ["Cerebras", "Groq"] });
+    expect(yields.get("cerebras")).toEqual({ source: "cerebras", discovered: 1, verifiedFree: 0, promoted: 0, providers: ["Cerebras"] });
+    expect(yields.has("groq")).toBe(false);
+  });
+
+  it("works with no deployments and no candidates", async () => {
+    expect((await getSourceYield()).size).toBe(0);
+    const groq = await provider("groq", "Groq");
+    await candidate({ modelRef: "a-7b", providerId: groq.id, source: "openrouter" });
+    expect((await getSourceYield()).get("openrouter")).toMatchObject({ discovered: 1, promoted: 0 });
   });
 });

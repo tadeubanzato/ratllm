@@ -94,7 +94,11 @@ export const modelCandidates = pgTable("model_candidates", {
   addedBy: text("added_by"),
   ...timestamps,
 }, (table) => [
-  uniqueIndex("candidate_source_model_uidx").on(table.source, table.modelRef), index("candidate_lifecycle_idx").on(table.lifecycle),
+  // A candidate is one model at one provider as one source lists it (docs/DISCOVERY-PIPELINE.md I10). A source that lists the same
+  // model id under several providers (models.dev lists "gemini-flash-latest" under Google and under Vertex) therefore has one row for
+  // each. Unique on the model id alone, the providers overwrote each other and the last one written won. `provider_id` is nullable,
+  // so it is coalesced to a fixed value: two unattributed rows with the same id are still one candidate.
+  uniqueIndex("candidate_source_model_uidx").on(table.source, table.modelRef, sql`coalesce(${table.providerId}, '00000000-0000-0000-0000-000000000000'::uuid)`), index("candidate_lifecycle_idx").on(table.lifecycle),
   index("candidate_free_idx").on(table.freeType, table.verifiedFree), index("candidate_provider_idx").on(table.providerId),
   index("candidate_provider_key_idx").on(table.providerId, table.modelKey),
   index("candidate_model_key_idx").on(table.modelKey),
