@@ -324,13 +324,20 @@ class ProviderDatasetSource implements DiscoverySource {
 class ModelsDevSource implements DiscoverySource {
   constructor(private config: SourceConfig) {}
   get id() { return this.config.id; }
-  async discover(): Promise<DiscoveredCandidate[]> {
+  async discover(): Promise<DiscoveryResult> {
     const body = await getJson(this.config.url) as Record<string, unknown>;
     const out: DiscoveredCandidate[] = [];
+    const offers: ProviderOffer[] = [];
     for (const providerEntry of Object.values(body)) {
       if (!providerEntry || typeof providerEntry !== "object") continue;
       const providerRaw = providerEntry as Record<string, unknown>;
       const providerName = typeof providerRaw.name === "string" ? providerRaw.name : typeof providerRaw.id === "string" ? providerRaw.id : undefined;
+      // The provider's own published endpoint. Only providers that speak the OpenAI chat-completions protocol are testable by us,
+      // so the base URL is kept only for those SDKs; Anthropic-, Azure- or Watsonx-style providers keep their models but no URL.
+      const sdk = typeof providerRaw.npm === "string" ? providerRaw.npm : "";
+      const api = typeof providerRaw.api === "string" && /^https:\/\//.test(providerRaw.api) ? providerRaw.api : undefined;
+      if (providerName) offers.push({source: this.id, providerName, slugHint: typeof providerRaw.id === "string" ? providerRaw.id : undefined, freeType: "UNKNOWN",
+        openaiBaseUrl: api && (sdk === "@ai-sdk/openai-compatible" || sdk === "@ai-sdk/openai") ? api : undefined, docsUrl: typeof providerRaw.doc === "string" ? providerRaw.doc : undefined});
       const models = providerRaw.models && typeof providerRaw.models === "object" ? providerRaw.models as Record<string, unknown> : {};
       for (const [modelId, modelEntry] of Object.entries(models)) {
         if (!modelEntry || typeof modelEntry !== "object") continue;
@@ -350,7 +357,7 @@ class ModelsDevSource implements DiscoverySource {
         });
       }
     }
-    return out;
+    return {candidates: out, offers};
   }
 }
 

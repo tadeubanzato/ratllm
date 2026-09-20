@@ -1,20 +1,22 @@
 import "server-only";
 import { candidateOnlyBlockReason } from "@/server/discovery/promotion-gate";
 import { liveLaneMember } from "@/server/lanes/membership";
-import { desc, eq, isNotNull, sql } from "drizzle-orm";
+import { desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { getDb } from "./db/client";
-import { canonicalModels, laneAssignments, lanes, modelCandidates, modelDeployments, providers, providerCredentialReferences, rateLimitProfiles, smokeTests, syncRuns } from "./db/schema";
-import { providerDefinitionBySlug, providerSlug, resolveProvider } from "./providers/catalog";
-import { matchDeployment, matchDeployments } from "./discovery/model-key";
-import { resolveVerificationEndpoint } from "./discovery/verify";
-import { isFlapLimited, removalHistoryOf, unprovenCheckReason } from "./discovery/auto-add-policy";
-import { nonChatModelReason } from "./discovery/model-type";
+import { canonicalModels, laneAssignments, lanes, modelCandidates, modelDeployments, providerOffers, providers, providerCredentialReferences, rateLimitProfiles, smokeTests, syncRuns } from "./db/schema";
+import { bareModelKey, matchDeployment, matchDeployments } from "./discovery/model-key";
+import { isFlapLimited, removalHistoryOf } from "./discovery/auto-add-policy";
+import { BLOCKER_LABELS, providerBlocker, type CheckBlocker } from "./discovery/blockers";
+import { effectiveFreeKind, promotionGateReason, PROMOTION_PASSES, type FreeKind } from "./discovery/verification-policy";
 import { providerWiring, CUSTOM_ADAPTER_PROVIDERS } from "./providers/wiring";
 import { sourceRegistry } from "./discovery/registry";
 import { laneStatus, type LaneStatus } from "./status";
 import { historyTimestamp } from "@/lib/utils";
 
-export interface ProviderRow { id: string; slug: string; name: string; status: string; adapterCapability: string; modelCount: number; healthyCount: number; knownCount: number; verifiedCount: number; credentialConfigured: boolean; credentialVerified?: boolean; enabled?: boolean; credentialState?: string; lastDiscoveryAt: Date | null; availability: string; sourceLastSync: Date | null }
+/** Where a provider stands before any model of it can be tested: derived from what is known (endpoint, credential), never stored. */
+export type ProviderReadiness = "READY" | "UNVERIFIED" | "NEEDS_CREDENTIAL" | "NO_ENDPOINT";
+export interface ProviderOfferSummary { freeType: string; freeTierText: string | null; rateLimitsText: string | null; expiresAt: string | null; cardRequired: boolean | null; commercialOk: boolean | null; source: string; sourceLastVerified: string | null }
+export interface ProviderRow { id: string; slug: string; name: string; status: string; adapterCapability: string; modelCount: number; healthyCount: number; knownCount: number; verifiedCount: number; credentialConfigured: boolean; credentialVerified?: boolean; enabled?: boolean; credentialState?: string; lastDiscoveryAt: Date | null; availability: string; sourceLastSync: Date | null; origin?: string; passingCount?: number; readyCount?: number; readiness?: ProviderReadiness; offer?: ProviderOfferSummary | null; freeKind?: FreeKind }
 export interface ProviderSourceBreakdown { source: string; tier: string; count: number }
 export interface DeploymentRow { id: string; slug: string; modelName: string; providerModelId: string; litellmModelName: string; litellmDeploymentId: string | null; providerName: string; managed: boolean; health: string; lifecycle?: string; owner?: string | null; credentialFingerprint?: string | null; managedBy?: string | null; curatorVersion?: string | null; firstSeenAt?: Date; lastSeenAt?: Date; score: number | null; freeType: string; contextWindow: number | null; rpmLimit: number | null; tpmLimit: number | null; safeRpm: number | null; safeTpm: number | null; confidence: string; lastTestedAt: Date | null; benchmarkRunCount: number; lastBenchmarkStatus: string | null; apiBase?: string | null; backend?: string | null; host?: string | null; rateLimitProfileId: string | null; observedRpm: number | null; observedTpm: number | null; manualRpm: number | null; manualTpm: number | null; lastProbeAt: Date | null; avgLatencyMs: number | null; avgFirstTokenMs: number | null; latencySampleCount: number }
 export interface LaneSummary { id: string; slug: string; name: string; enabled: boolean; healthy: number; total: number; minimumHealthy: number; status: LaneStatus; confidence: string }
@@ -29,43 +31,45 @@ export interface DashboardData {
 
 export async function getProviders(): Promise<ProviderRow[]> {
   const db = getDb();
+  // Per-provider subqueries rather than one join across deployments, credentials and candidates: that join multiplies rows
+  // (candidates x deployments x credentials per provider) and its cost grows with the largest table. Each subquery here is one
+  // indexed lookup, so a provider costs the same however many models exist elsewhere (docs/DISCOVERY-PIPELINE.md I12).
   const rows = await db.select({
     id: providers.id, slug: providers.slug, name: providers.name, status: providers.status, adapterCapability: providers.adapterCapability,
-    enabled: providers.enabled, modelCount: sql<number>`count(distinct ${modelDeployments.id})::int`,
-    healthyCount: sql<number>`count(distinct ${modelDeployments.id}) filter (where ${modelDeployments.health} = 'HEALTHY')`,
-    // "Known" and "verified" cover the discovery pipeline upstream of promotion — a provider can have real, discovered
-    // leads sitting here well before (or instead of) anything reaching modelDeployments, which is what previously
-    // made "0 models" indistinguishable between "nothing known" and "known but never promoted".
-    knownCount: sql<number>`count(distinct ${modelCandidates.id})::int`,
-    verifiedCount: sql<number>`count(distinct ${modelCandidates.id}) filter (where ${modelCandidates.verifiedFree} = true)::int`,
-    credentialConfigured: sql<boolean>`count(${providerCredentialReferences.id}) filter (where ${providerCredentialReferences.disabled} = false) > 0`,credentialVerified:sql<boolean>`coalesce(bool_or(${providerCredentialReferences.valid}) filter (where ${providerCredentialReferences.disabled} = false),false)`, lastDiscoveryAt: providers.lastDiscoveryAt,
-    // Availability: derived from credential verification + linked discovery source health.
+    enabled: providers.enabled, origin: providers.origin, baseUrl: providers.baseUrl, lastDiscoveryAt: providers.lastDiscoveryAt,
+    modelCount: sql<number>`(select count(*)::int from model_deployments d where d.provider_id = ${providers.id})`,
+    healthyCount: sql<number>`(select count(*)::int from model_deployments d where d.provider_id = ${providers.id} and d.health = 'HEALTHY')`,
+    // "Known" and "verified" cover the discovery pipeline upstream of promotion — a provider can have real, discovered leads well
+    // before (or instead of) anything reaching modelDeployments, which is what once made "0 models" indistinguishable between
+    // "nothing known" and "known but never promoted".
+    knownCount: sql<number>`(select count(*)::int from model_candidates c where c.provider_id = ${providers.id})`,
+    verifiedCount: sql<number>`(select count(*)::int from model_candidates c where c.provider_id = ${providers.id} and c.verified_free)`,
+    passingCount: sql<number>`(select count(*)::int from model_candidates c where c.provider_id = ${providers.id} and c.last_check_status = 'available')`,
+    readyCount: sql<number>`(select count(*)::int from model_candidates c where c.provider_id = ${providers.id} and c.consecutive_passes >= ${PROMOTION_PASSES})`,
     sourceHealth: sql<string | null>`(select ms.status::text from model_sources ms where ms.provider_id = ${providers.id} order by ms.last_sync_at desc limit 1)`,
     sourceLastSync: sql<Date | null>`(select ms.last_sync_at from model_sources ms where ms.provider_id = ${providers.id} order by ms.last_sync_at desc limit 1)`,
-  }).from(providers).leftJoin(modelDeployments, eq(providers.id, modelDeployments.providerId)).leftJoin(providerCredentialReferences, eq(providers.id, providerCredentialReferences.providerId)).leftJoin(modelCandidates, eq(providers.id, modelCandidates.providerId)).groupBy(providers.id).orderBy(providers.name);
-  const refs = await db.select().from(providerCredentialReferences);
-  return rows.map(row => {
+  }).from(providers).orderBy(sql`(select count(*) from model_candidates c where c.provider_id = ${providers.id}) desc`, providers.name);
+  const [refs, offerRows] = await Promise.all([db.select().from(providerCredentialReferences), db.select().from(providerOffers)]);
+  return rows.map(({ baseUrl, ...row }) => {
     const available = refs.filter(ref => ref.providerId === row.id && !ref.disabled && (ref.encryptedValue || process.env[ref.environmentVariable]));
     const credentialState = !available.length ? "MISSING" : available.some(ref => ref.valid === true) ? "CONFIGURED" : available.some(ref => ref.valid === false) ? "INVALID" : "UNKNOWN";
+    const offers = offerRows.filter(offer => offer.providerId === row.id);
+    const offer = offers.find(item => item.freeType !== "UNKNOWN") ?? offers[0] ?? null;
+    const blocker = providerBlocker({ slug: row.slug, baseUrl, offerBaseUrl: offers.find(item => item.openaiBaseUrl)?.openaiBaseUrl ?? null, hasCredential: available.length > 0, credentialVerified: available.some(ref => ref.valid === true) });
+    const readiness: ProviderReadiness = blocker === "NO_ENDPOINT" ? "NO_ENDPOINT" : blocker === "CREDENTIAL_MISSING" ? "NEEDS_CREDENTIAL" : blocker === "CREDENTIAL_UNVERIFIED" ? "UNVERIFIED" : "READY";
     let availability: "verified" | "configured" | "discovering" | "no_credential" | "failed" | "blocked" | "unknown";
-    if (available.some(ref => ref.valid === true)) {
-      availability = "verified";
-    } else if (row.sourceHealth === "HEALTHY") {
-      availability = "discovering";
-    } else if (row.sourceHealth === "DEGRADED") {
-      availability = "discovering";
-    } else if (row.sourceHealth === "FAILED") {
-      availability = "failed";
-    } else if (row.sourceHealth === "BLOCKED") {
-      availability = "blocked";
-    } else if (credentialState === "CONFIGURED") {
-      availability = "configured";
-    } else if (credentialState === "MISSING") {
-      availability = "no_credential";
-    } else {
-      availability = "unknown";
-    }
-    return {...row, healthyCount: Number(row.healthyCount), credentialConfigured: available.length > 0, credentialVerified: available.some(ref => ref.valid === true), credentialState, availability, sourceLastSync: row.sourceLastSync};
+    if (available.some(ref => ref.valid === true)) availability = "verified";
+    else if (row.sourceHealth === "HEALTHY" || row.sourceHealth === "DEGRADED") availability = "discovering";
+    else if (row.sourceHealth === "FAILED") availability = "failed";
+    else if (row.sourceHealth === "BLOCKED") availability = "blocked";
+    else if (credentialState === "CONFIGURED") availability = "configured";
+    else if (credentialState === "MISSING") availability = "no_credential";
+    else availability = "unknown";
+    return {
+      ...row, healthyCount: Number(row.healthyCount), credentialConfigured: available.length > 0, credentialVerified: available.some(ref => ref.valid === true), credentialState, availability, readiness,
+      freeKind: effectiveFreeKind(null, offers.map(item => item.freeType)),
+      offer: offer ? { freeType: offer.freeType, freeTierText: offer.freeTierText, rateLimitsText: offer.rateLimitsText, expiresAt: offer.expiresAt, cardRequired: offer.cardRequired, commercialOk: offer.commercialOk, source: offer.source, sourceLastVerified: offer.sourceLastVerified } : null,
+    };
   });
 }
 
@@ -182,88 +186,150 @@ export async function getSourceRunHistory(limit = 30): Promise<Map<string, Sourc
   return bySource;
 }
 
-export async function getModelCandidates(){
-  const db=getDb();const [rows,providerRows,credentialRows,deploymentRows,laneRows]=await Promise.all([
-    db.select().from(modelCandidates).orderBy(desc(modelCandidates.verifiedFree),modelCandidates.source,modelCandidates.displayName),
-    db.select({id:providers.id,slug:providers.slug,name:providers.name,baseUrl:providers.baseUrl}).from(providers),
-    db.select({providerId:providerCredentialReferences.providerId,valid:providerCredentialReferences.valid}).from(providerCredentialReferences),
-    db.select({id:modelDeployments.id,providerId:modelDeployments.providerId,providerModelId:modelDeployments.providerModelId,health:modelDeployments.health,managed:modelDeployments.managed,litellmModelName:modelDeployments.litellmModelName,litellmDeploymentId:modelDeployments.litellmDeploymentId,lifecycle:modelDeployments.lifecycle,rawMetadata:modelDeployments.rawMetadata}).from(modelDeployments),
+// ── Discovered Models ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+export type CandidateView = "all" | "new" | "ready" | "added" | "passing" | "setup";
+export const CANDIDATE_VIEWS: ReadonlyArray<{ id: CandidateView; label: string; hint: string }> = [
+  { id: "all", label: "All", hint: "Every discovered model" },
+  { id: "new", label: "New", hint: "First found by discovery in the last 24 hours, not already in LiteLLM" },
+  { id: "ready", label: "Ready to add", hint: `${PROMOTION_PASSES} passes in a row and not in LiteLLM yet` },
+  { id: "added", label: "In LiteLLM", hint: "Live in LiteLLM right now" },
+  { id: "passing", label: "Passing", hint: "Its latest test passed" },
+  { id: "setup", label: "Needs setup", hint: "Waiting on a credential or a base URL" },
+];
+export interface CandidateQuery { view?: CandidateView; q?: string; provider?: string; page?: number; pageSize?: number }
+export const DEFAULT_PAGE_SIZE = 100;
+const NEW_WINDOW_HOURS = 24;
+const SOURCE_BASELINE_MINUTES = 30;
+
+const escapeLike = (value: string) => value.replace(/[\\%_]/g, "\\$&");
+const pairList = (pairs: ReadonlyArray<readonly [string, string]>) => pairs.length ? sql.join(pairs.map(([providerId, key]) => sql`(${providerId}::uuid, ${key}::text)`), sql`, `) : null;
+
+/** The rows on one page of the Discovered Models list, enriched. Everything that scales with the number of candidates happens
+ *  in SQL (filtering, ordering, counting, "is this new", "who else lists it") and is paginated (docs/DISCOVERY-PIPELINE.md I12);
+ *  only the rows of the page are then joined, in memory, to the small tables that do not grow with candidates: providers,
+ *  credentials, offers, LiteLLM deployments and lanes. */
+export async function getCandidatePage(query: CandidateQuery = {}) {
+  const db = getDb();
+  const pageSize = Math.min(Math.max(query.pageSize ?? DEFAULT_PAGE_SIZE, 1), 500);
+  const view = query.view ?? "all";
+  const [providerRows, credentialRows, offerRows, deploymentRows, laneRows] = await Promise.all([
+    db.select({id:providers.id,slug:providers.slug,name:providers.name,baseUrl:providers.baseUrl,origin:providers.origin}).from(providers),
+    db.select({providerId:providerCredentialReferences.providerId,valid:providerCredentialReferences.valid}).from(providerCredentialReferences).where(eq(providerCredentialReferences.disabled,false)),
+    db.select().from(providerOffers),
+    db.select({id:modelDeployments.id,providerId:modelDeployments.providerId,providerModelId:modelDeployments.providerModelId,health:modelDeployments.health,managed:modelDeployments.managed,litellmModelName:modelDeployments.litellmModelName,litellmDeploymentId:modelDeployments.litellmDeploymentId,lifecycle:modelDeployments.lifecycle,rawMetadata:modelDeployments.rawMetadata,createdAt:modelDeployments.createdAt}).from(modelDeployments),
     db.select({deploymentId:laneAssignments.deploymentId,slug:lanes.slug,excluded:laneAssignments.excluded}).from(laneAssignments).innerJoin(lanes,eq(laneAssignments.laneId,lanes.id)),
   ]);
-  return rows.map(row=>{
-    // providerId is resolved and stored at write time (runDiscovery/consolidateModelCandidates); only fall back to
-    // re-guessing from text here for rows a backfill pass hasn't reached yet (self-heals on the next discovery run).
-    const provider=row.providerId
-      ? providerRows.find(item=>item.id===row.providerId)
-      : (() => {const slug=row.source==="openrouter"?"openrouter":providerSlug(row.providerName,row.modelRef);return providerRows.find(item=>item.slug===slug||item.name.toLowerCase()===String(row.providerName??"").toLowerCase());})();
-    const credentials=provider?credentialRows.filter(item=>item.providerId===provider.id):[];
-    const credentialVerified=credentials.some(item=>item.valid===true);
-    // Some providers (llm7, Pollinations, Kilo) are confirmed reachable with zero credential — a missing/unverified
-    // key there isn't a real blocker, so promotion shouldn't gate on it the way it does for everyone else.
-    const wiring=provider?providerWiring[provider.slug]:undefined;
-    const credentialRequired=Boolean(wiring?.check)&&!wiring?.credentialOptional;
-    const deployments=provider?matchDeployments(deploymentRows,provider.id,row.modelRef):[];
-    const deployment=provider?matchDeployment(deploymentRows,provider.id,row.modelRef):null;
-    const deploymentIds=new Set(deployments.map(item=>item.id));
-    const laneMemberships=laneRows.filter(lane=>!lane.excluded&&deploymentIds.has(lane.deploymentId)).map(lane=>({slug:lane.slug,health:deployments.find(item=>item.id===lane.deploymentId)?.health??"UNKNOWN"}));
-    const definition=resolveProvider(row.source==="openrouter"?"openrouter":row.providerName,row.modelRef)??providerDefinitionBySlug(provider?.slug);
-    const endpoint=definition?resolveVerificationEndpoint(definition,provider?.baseUrl??null):null;
-    const promotableReason=candidateOnlyBlockReason(row)??(!provider?"Provider not resolved"
-      :CUSTOM_ADAPTER_PROVIDERS[provider.slug]??(nonChatModelReason({modelRef:row.modelRef,displayName:row.displayName,description:typeof row.evidence?.description==="string"?row.evidence.description:null})??(credentialRequired&&!credentialVerified?"Credential not verified":!endpoint?"No known endpoint for this provider":unprovenCheckReason(row.evidence))));
-    // liteLLMDeploymentId means "currently live in LiteLLM" (the real router id, gated on ACTIVE) — never just
-    // "a deployment row exists for this candidate". matchDeployment() deliberately falls back to a stale
-    // REMOVED/DEACTIVATED row so liteLLMLifecycle can still show real history, but that same stale row must never
-    // read as "added" here — autoAddIfEligible (verify-due.ts) uses this exact field to decide whether a
-    // recovered candidate is eligible to be auto-re-added, and a permanently-truthy id would block that forever.
-    const liveLiteLLMDeploymentId=deployment?.lifecycle==="ACTIVE"?deployment.litellmDeploymentId??null:null;
-    // Distinguishes an auto-remove (health/monitor.ts always stamps a removedReason) from a plain manual delete
-    // (never does) so the UI can tell "automation pulled this, might come back" from "someone deleted this on
-    // purpose" — see docs/FREE-MODEL-LIFECYCLE.md §3.
-    const liteLLMRemovedReason=deployment?.lifecycle==="REMOVED"&&typeof deployment.rawMetadata?.removedReason==="string"?deployment.rawMetadata.removedReason:null;
-    const liteLLMNeedsReview=isFlapLimited(removalHistoryOf(row.evidence));
-    return {...row,providerId:provider?.id??null,credentialConfigured:credentials.length>0,credentialVerified,credentialRequired,liteLLMDeploymentId:liveLiteLLMDeploymentId,liteLLMHealth:deployment?.health??null,liteLLMManaged:deployment?.managed??null,liteLLMLifecycle:deployment?.lifecycle??null,liteLLMRemovedReason,liteLLMNeedsReview,laneMemberships,promotable:promotableReason===null,promotableReason};
+
+  // (provider, model key) of every model that is in LiteLLM — in any state for "was ever added", live for "is added now". The
+  // deployments table is tiny, so these become a literal VALUES list instead of a join.
+  const keyOf = (row: { providerId: string; providerModelId: string }) => [row.providerId, bareModelKey(row.providerModelId)] as const;
+  const anyPairs = pairList(deploymentRows.map(keyOf));
+  const livePairs = pairList(deploymentRows.filter(row => row.lifecycle === "ACTIVE").map(keyOf));
+  const inAny = anyPairs ? sql`(c.provider_id, c.model_key) in (${anyPairs})` : sql`false`;
+  const inLive = livePairs ? sql`(c.provider_id, c.model_key) in (${livePairs})` : sql`false`;
+  // The specification of "New" is newlyDiscoveredIds in discovery/new-candidates.ts; tests-integration/discovery-pipeline.test.ts
+  // checks this SQL against it. Written once here so the badge and the "New" filter can never disagree.
+  const isNew = sql`(c.provider_id is not null and c.first_seen_at > now() - (${NEW_WINDOW_HOURS} * interval '1 hour')
+    and c.first_seen_at - src.first_ingest >= (${SOURCE_BASELINE_MINUTES} * interval '1 minute')
+    and not exists (select 1 from model_candidates o where o.provider_id = c.provider_id and o.model_key = c.model_key and o.first_seen_at < c.first_seen_at)
+    and not ${inAny})`;
+  const viewFilter = { all: sql`true`, new: isNew, ready: sql`(c.consecutive_passes >= ${PROMOTION_PASSES} and not ${inLive})`, added: inLive,
+    passing: sql`c.last_check_status = 'available'`, setup: sql`c.check_blocker in ('CREDENTIAL_MISSING', 'CREDENTIAL_UNVERIFIED', 'NO_ENDPOINT')` }[view];
+  const text = query.q?.trim();
+  const filters = [viewFilter,
+    ...(text ? [sql`(c.display_name ilike ${`%${escapeLike(text)}%`} or c.model_ref ilike ${`%${escapeLike(text)}%`} or c.provider_name ilike ${`%${escapeLike(text)}%`})`] : []),
+    ...(query.provider ? [sql`c.provider_id = (select id from providers where slug = ${query.provider})`] : [])];
+  const where = sql.join(filters, sql` and `);
+  const withSources = sql`with src as (select source, min(first_seen_at) as first_ingest from model_candidates group by source)`;
+
+  const countWhere = async (filter: ReturnType<typeof sql>) => Number(((await db.execute(sql`${withSources} select count(*)::int as n from model_candidates c join src on src.source = c.source where ${filter}`)) as unknown as Array<{ n: number }>)[0]?.n ?? 0);
+  const total = await countWhere(where);
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const page = Math.min(Math.max(query.page ?? 1, 1), pageCount);
+  const order = view === "new" ? sql`c.first_seen_at desc, c.id` : sql`c.consecutive_passes desc, c.last_passed_at desc nulls last, c.verified_free desc, c.display_name asc, c.id`;
+  const pageIds = await db.execute(sql`${withSources}
+    select c.id, ${isNew} as is_new,
+      (select count(distinct o.provider_id)::int from model_candidates o where o.model_key = c.model_key and o.provider_id is not null and o.provider_id is distinct from c.provider_id) as also_at
+    from model_candidates c join src on src.source = c.source where ${where} order by ${order} limit ${pageSize} offset ${(page - 1) * pageSize}`) as unknown as Array<{ id: string; is_new: boolean; also_at: number }>;
+  const rows = pageIds.length ? await db.select().from(modelCandidates).where(inArray(modelCandidates.id, pageIds.map(row => row.id))) : [];
+  const byId = new Map(rows.map(row => [row.id, row]));
+  const extra = new Map(pageIds.map(row => [row.id, row]));
+
+  const counts = Object.fromEntries(await Promise.all((Object.keys({ all: 0, new: 0, ready: 0, added: 0, passing: 0, setup: 0 }) as CandidateView[]).map(async id => {
+    const filter = { all: sql`true`, new: isNew, ready: sql`(c.consecutive_passes >= ${PROMOTION_PASSES} and not ${inLive})`, added: inLive, passing: sql`c.last_check_status = 'available'`, setup: sql`c.check_blocker in ('CREDENTIAL_MISSING', 'CREDENTIAL_UNVERIFIED', 'NO_ENDPOINT')` }[id];
+    return [id, await countWhere(filter)] as const;
+  }))) as Record<CandidateView, number>;
+
+  const enriched = pageIds.map(({ id }) => byId.get(id)).filter((row): row is typeof modelCandidates.$inferSelect => Boolean(row)).map(row => {
+    const provider = row.providerId ? providerRows.find(item => item.id === row.providerId) ?? null : null;
+    const credentials = provider ? credentialRows.filter(item => item.providerId === provider.id) : [];
+    const credentialVerified = credentials.some(item => item.valid === true);
+    // Some providers (llm7, Pollinations, Kilo) are confirmed reachable with zero credential — a missing/unverified key there isn't a real blocker.
+    const wiring = provider ? providerWiring[provider.slug] : undefined;
+    const credentialRequired = Boolean(wiring?.check) && !wiring?.credentialOptional;
+    const offers = provider ? offerRows.filter(item => item.providerId === provider.id) : [];
+    const deployments = provider ? matchDeployments(deploymentRows, provider.id, row.modelRef) : [];
+    const deployment = provider ? matchDeployment(deploymentRows, provider.id, row.modelRef) : null;
+    const deploymentIds = new Set(deployments.map(item => item.id));
+    const laneMemberships = laneRows.filter(lane => !lane.excluded && deploymentIds.has(lane.deploymentId)).map(lane => ({ slug: lane.slug, health: deployments.find(item => item.id === lane.deploymentId)?.health ?? "UNKNOWN" }));
+    // liteLLMDeploymentId means "currently live in LiteLLM" (the real router id, gated on ACTIVE) — never just "a deployment row exists".
+    // matchDeployment() deliberately falls back to a stale REMOVED/DEACTIVATED row so liteLLMLifecycle can still show real history, but
+    // that stale row must never read as "added": autoAddIfEligible uses this to decide whether a recovered candidate may be auto-re-added.
+    const liveLiteLLMDeploymentId = deployment?.lifecycle === "ACTIVE" ? deployment.litellmDeploymentId ?? null : null;
+    const liteLLMRemovedReason = deployment?.lifecycle === "REMOVED" && typeof deployment.rawMetadata?.removedReason === "string" ? deployment.rawMetadata.removedReason : null;
+    const liteLLMNeedsReview = isFlapLimited(removalHistoryOf(row.evidence));
+    const everInLiteLLM = deployments.length > 0 || removalHistoryOf(row.evidence).length > 0 || row.addedToLitellmAt !== null;
+    const blocker = row.checkBlocker as CheckBlocker | null;
+    const promotableReason = candidateOnlyBlockReason(row) ?? (!provider ? "Provider not resolved" : CUSTOM_ADAPTER_PROVIDERS[provider.slug] ?? (blocker ? BLOCKER_LABELS[blocker] ?? blocker
+      : promotionGateReason({ consecutivePasses: row.consecutivePasses, lastCheckStatus: row.lastCheckStatus, previouslyInLiteLLM: everInLiteLLM })));
+    // "Added <date>": the stamp a promotion left, else the oldest live deployment (models added before the stamp existed).
+    const liveDeployments = deployments.filter(item => item.lifecycle === "ACTIVE");
+    const addedAt = liveLiteLLMDeploymentId ? row.addedToLitellmAt ?? (liveDeployments.length ? new Date(Math.min(...liveDeployments.map(item => item.createdAt.getTime()))) : null) : null;
+    const meta = extra.get(row.id);
+    return {
+      ...row, providerId: provider?.id ?? null, providerSlug: provider?.slug ?? null, providerOrigin: provider?.origin ?? null,
+      credentialConfigured: credentials.length > 0, credentialVerified, credentialRequired,
+      freeKind: effectiveFreeKind(row.freeType, offers.map(offer => offer.freeType)),
+      offer: offers.find(offer => offer.freeType !== "UNKNOWN") ?? offers[0] ?? null,
+      liteLLMDeploymentId: liveLiteLLMDeploymentId, liteLLMHealth: deployment?.health ?? null, liteLLMManaged: deployment?.managed ?? null,
+      liteLLMLifecycle: deployment?.lifecycle ?? null, liteLLMRemovedReason, liteLLMNeedsReview, laneMemberships,
+      addedAt, addedBy: liveLiteLLMDeploymentId ? row.addedBy : null,
+      isNew: Boolean(meta?.is_new), alsoAt: Number(meta?.also_at ?? 0),
+      promotable: promotableReason === null, promotableReason,
+    };
   });
+  return { rows: enriched, total, page, pageSize, pageCount, counts };
 }
+export type CandidateRow = Awaited<ReturnType<typeof getCandidatePage>>["rows"][number];
 
 export interface CandidateCheckPoint { at: Date; status: string; httpStatus: number | null; error: string | null }
 
-/** Recent per-candidate availability-check history for uptime strips.
+/** Recent availability-check history for uptime strips, for the given candidates only (the rows on the page).
  *
- *  Ranked per candidate in SQL (the same row_number() shape getBenchmarkStats uses) rather than by taking the newest
- *  N rows table-wide and bucketing them in memory. That older approach silently starved every row once the table
- *  outgrew its global cap: candidate verification writes ~5.4k checks/day across ~2.3k candidates, so a 4,000-row
- *  window held barely a day and a half of history no matter how much was actually stored — every uptime strip on
- *  the Discovered Models page collapsed to one or two bars while 15+ days of checks sat unread in the table.
- *  A per-candidate window can't degrade that way: each candidate gets its own newest `perCandidate` rows, so what
- *  the strip shows depends only on what was recorded for that candidate, never on how many other candidates exist. */
-export async function getCandidateCheckHistory(perCandidate = 30): Promise<Map<string, CandidateCheckPoint[]>> {
+ *  Ranked per candidate in SQL (the same row_number() shape getBenchmarkStats uses) rather than by taking the newest N rows
+ *  table-wide and bucketing them in memory. That older approach silently starved every row once the table outgrew its global
+ *  cap, collapsing every strip to one or two bars while weeks of checks sat unread. A per-candidate window can't degrade that
+ *  way, and restricting it to the page's ids keeps it cheap however many candidates and checks exist. */
+export async function getCandidateCheckHistory(candidateIds: string[], perCandidate = 12): Promise<Map<string, CandidateCheckPoint[]>> {
+  const byCandidate = new Map<string, CandidateCheckPoint[]>();
+  if (!candidateIds.length) return byCandidate;
+  const ids = sql.join(candidateIds.map(id => sql`${id}::uuid`), sql`, `);
   const rows = await getDb().execute(sql`
     with ranked as (
       select candidate_id, created_at, status, http_status, error,
         row_number() over (partition by candidate_id order by created_at desc) as rn
-      from candidate_checks
+      from candidate_checks where candidate_id in (${ids})
     )
     select candidate_id as "candidateId", created_at as "at", status, http_status as "httpStatus", error
     from ranked where rn <= ${perCandidate} order by candidate_id, created_at desc
   `) as unknown as Array<Omit<CandidateCheckPoint,"at"> & { at: Date | string; candidateId: string }>;
-  const byCandidate = new Map<string, CandidateCheckPoint[]>();
   for (const { candidateId, ...point } of rows) {
     const list = byCandidate.get(candidateId) ?? [];
     list.push({...point, at: historyTimestamp(point.at)});
     byCandidate.set(candidateId, list);
   }
   return byCandidate;
-}
-
-/** When each candidate's direct availability check last actually passed. Separate from getCandidateCheckHistory on
- *  purpose: that one is a bounded window for drawing bars, so a candidate that passed 3 weeks ago and has failed every
- *  check since would have no pass in its window at all. One grouped scan over candidate_checks (~40k rows). */
-export async function getCandidateLastPassed(): Promise<Map<string, Date>> {
-  const rows = await getDb().execute(sql`
-    select candidate_id as "candidateId", max(created_at) as "at"
-    from candidate_checks where status = 'available' group by candidate_id
-  `) as unknown as Array<{ candidateId: string; at: Date | string }>;
-  return new Map(rows.map(row => [row.candidateId, historyTimestamp(row.at)]));
 }
 
 export async function getLanes(): Promise<LaneSummary[]> {

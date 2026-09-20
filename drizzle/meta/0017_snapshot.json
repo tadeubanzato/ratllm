@@ -1,5 +1,5 @@
 {
-  "id": "cad33b38-1200-4549-ac6d-ac823a6bfc3a",
+  "id": "0b5fd71f-ba26-4f5e-a009-710de85ce3be",
   "prevId": "810afa08-90f6-4bf4-867b-6e58283a3f89",
   "version": "7",
   "dialect": "postgresql",
@@ -1068,6 +1068,21 @@
               "asc": true,
               "nulls": "last"
             },
+            {
+              "expression": "model_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "candidate_model_key_idx": {
+          "name": "candidate_model_key_idx",
+          "columns": [
             {
               "expression": "model_key",
               "isExpression": false,

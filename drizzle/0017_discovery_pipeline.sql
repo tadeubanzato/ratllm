@@ -33,6 +33,7 @@ ALTER TABLE "providers" ADD COLUMN "origin" text DEFAULT 'CATALOG' NOT NULL;--> 
 ALTER TABLE "provider_offers" ADD CONSTRAINT "provider_offers_provider_id_providers_id_fk" FOREIGN KEY ("provider_id") REFERENCES "public"."providers"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE UNIQUE INDEX "provider_offer_uidx" ON "provider_offers" USING btree ("provider_id","source");--> statement-breakpoint
 CREATE INDEX "candidate_provider_key_idx" ON "model_candidates" USING btree ("provider_id","model_key");--> statement-breakpoint
+CREATE INDEX "candidate_model_key_idx" ON "model_candidates" USING btree ("model_key");--> statement-breakpoint
 CREATE INDEX "candidate_next_check_idx" ON "model_candidates" USING btree ("next_check_at");--> statement-breakpoint
 CREATE INDEX "candidate_rank_idx" ON "model_candidates" USING btree ("consecutive_passes","last_passed_at");--> statement-breakpoint
 CREATE INDEX "candidate_first_seen_idx" ON "model_candidates" USING btree ("first_seen_at");--> statement-breakpoint
@@ -78,3 +79,10 @@ UPDATE "model_candidates" SET "ever_failed" = EXISTS (SELECT 1 FROM "candidate_c
 -- The recheck schedule carries over from the old evidence blob (guarded: a malformed value must not fail the migration).
 UPDATE "model_candidates" SET "next_check_at" = ("evidence"->>'nextCheckAt')::timestamptz
 WHERE "evidence"->>'nextCheckAt' ~ '^\d{4}-\d{2}-\d{2}T';
+--> statement-breakpoint
+-- 4. Scrape-era leftovers. These sources used to scrape a marketing page and now read the provider's own API, whose ids do not
+--    match the scraped tokens, so nothing can ever refresh such a row again. Rows that have no provider, never passed a check and
+--    were never in LiteLLM are junk from the old parser and are removed once here; anything with a provider, a pass or a
+--    deployment is kept, and everything else is handled by the normal retirement rule after a week.
+DELETE FROM "model_candidates" WHERE "provider_id" IS NULL AND "last_passed_at" IS NULL AND "added_to_litellm_at" IS NULL
+  AND "source" IN ('groq','nvidia_nim','alibaba','zai','kilo','modelscope','nebius','baseten','pollinations','fireworks_ai','together_ai','chutes_ai');

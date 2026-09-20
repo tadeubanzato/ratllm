@@ -97,6 +97,7 @@ export const modelCandidates = pgTable("model_candidates", {
   uniqueIndex("candidate_source_model_uidx").on(table.source, table.modelRef), index("candidate_lifecycle_idx").on(table.lifecycle),
   index("candidate_free_idx").on(table.freeType, table.verifiedFree), index("candidate_provider_idx").on(table.providerId),
   index("candidate_provider_key_idx").on(table.providerId, table.modelKey),
+  index("candidate_model_key_idx").on(table.modelKey),
   index("candidate_next_check_idx").on(table.nextCheckAt),
   index("candidate_rank_idx").on(table.consecutivePasses, table.lastPassedAt),
   index("candidate_first_seen_idx").on(table.firstSeenAt),

@@ -140,6 +140,10 @@ export const WIRING_PENDING: Readonly<Record<string, string>> = {
   // across third-party integration configs, but platform.01.ai / platform.lingyiwanwu.com's own docs are
   // JS-rendered and couldn't be independently confirmed, and no free tier/trial credit was found anywhere
   // (billing reads as prepay-only) — still not enough to wire a check/completions pair with confidence.
+  // Added with the discovery-pipeline refactor: catalogued, but no completions endpoint has been confirmed with a real key.
+  nebius: "Its model list is read from api.tokenfactory.nebius.com/v1/models (needs an API key), but its chat-completions endpoint has not been confirmed with a real key — set the Base URL on the provider page once you have one",
+  "btl-runtime": "No completions endpoint has been confirmed for this provider yet — set the Base URL on the provider page",
+  cline: "No completions endpoint has been confirmed for this provider yet — set the Base URL on the provider page",
   yi: "OpenAI-compatible surface plausible (api.lingyiwanwu.com/v1 per third-party integrations) but unconfirmed from 01.AI's own docs, and no free tier found — needs further research before wiring",
 };
 
@@ -175,8 +179,26 @@ export function resolveCheck(slug: string, baseUrl?: string | null): ProviderChe
 /** The chat-completions URL a provider is reachable at — an explicit Base URL always wins (account-scoped or
  *  self-hosted providers), falling back to the wired default for everyone else. */
 export function resolveCompletionsEndpoint(slug: string, baseUrl: string | null): string | null {
+  // A complete completions URL (see endpointBaseHint) is used exactly as given.
+  if (baseUrl && /\/chat\/completions\/?$/.test(baseUrl)) return baseUrl.replace(/\/$/, "");
   if (baseUrl) return `${baseUrl.replace(/\/$/, "").replace(/\/v1$/, "")}/v1/chat/completions`;
   return providerWiring[slug]?.completions ?? null;
+}
+
+/** SDK-style base URLs are what providers and datasets publish ("https://api.z.ai/api/paas/v4"): the OpenAI SDK appends
+ *  `/chat/completions` to whatever it is given, with no assumption about a `/v1`. That is different from the Base URL a person
+ *  types on the provider page, which resolveCompletionsEndpoint treats as a host. */
+export function completionsUrlFromSdkBase(base: string): string {
+  return `${base.trim().replace(/\/+$/, "")}/chat/completions`;
+}
+
+/** The value to pass as `baseUrl` to resolveCompletionsEndpoint for a provider, given what is known about it. Precedence: an
+ *  explicit Base URL a person set; then the catalog's own wiring (nothing to pass); then the OpenAI-compatible base URL a
+ *  source published for it, as a complete completions URL. Null when nothing is known, which is "no endpoint" (I3). */
+export function endpointBaseHint(slug: string, baseUrl: string | null, offerBaseUrl: string | null): string | null {
+  if (baseUrl) return baseUrl;
+  if (providerWiring[slug]?.completions) return null;
+  return offerBaseUrl ? completionsUrlFromSdkBase(offerBaseUrl) : null;
 }
 
 /**

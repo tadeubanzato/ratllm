@@ -2,13 +2,14 @@ import "server-only";
 import { eq, inArray, and, isNull, sql } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
 import { candidateChecks, modelCandidates, modelDeployments, providers } from "@/server/db/schema";
-import { attributeProvider } from "@/server/providers/attribution";
+import { attributeProvider, catalogIdentity } from "@/server/providers/attribution";
 import { bareModelKey } from "./model-key";
 import { sourceRegistry } from "./registry";
 import { isPlausibleScrapedModelId } from "./sources";
 import { recomputeCheckState } from "./check-state";
 
 const activeSourceIds = new Set(sourceRegistry.map(source => source.id));
+const ownProviderOfSource = new Map(sourceRegistry.filter(source => source.providerSlug).map(source => [source.id, source.providerSlug!]));
 const textCandidateSourceIds = new Set(sourceRegistry.filter(source => source.adapter === "text_candidates").map(source => source.id));
 const tierRank: Record<string, number> = Object.fromEntries(sourceRegistry.map(source => [source.id, source.tier === "A1" ? 0 : source.tier === "A2" ? 1 : source.tier === "B" ? 2 : 3]));
 
@@ -51,7 +52,9 @@ export async function consolidateModelCandidates(options: { succeededSourceIds?:
   const providerIdOf = new Map<string, string | null>(survivors.map(row => [row.id, row.providerId]));
   let providerIdBackfilled = 0;
   for (const row of survivors.filter(item => !item.providerId)) {
-    const identity = attributeProvider(row.providerName, row.modelRef);
+    // A source that is one provider's own catalog owns its rows even when an older run stored no provider name for them.
+    const ownSlug = ownProviderOfSource.get(row.source);
+    const identity = (ownSlug ? catalogIdentity(ownSlug) : null) ?? attributeProvider(row.providerName, row.modelRef);
     if (!identity) continue;
     let id = providerIdBySlug.get(identity.slug);
     if (!id) {

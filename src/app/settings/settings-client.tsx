@@ -41,7 +41,7 @@ const jobTypeDescriptions: Record<string, string> = {
 };
 type SourceYield = {source: string; discovered: number; verifiedFree: number; promoted: number; providers: string[]};
 type SourceHistoryPoint = {at: string; status: "succeeded" | "failed"; detail: string};
-type Source = {id: string; name: string; type: string; providerId: string | null; url: string | null; enabled: boolean; priority: number; status: string; discoveredModelCount: number; lastSyncAt: string | null; adapterReference: string | null; credentialReference: string | null; tier: "A1" | "A2" | "B" | "C" | null; yield: SourceYield | null; history: SourceHistoryPoint[]};
+type Source = {id: string; name: string; type: string; providerId: string | null; url: string | null; enabled: boolean; priority: number; status: string; discoveredModelCount: number; lastSyncAt: string | null; lastError: string | null; lastSuccessAt: string | null; adapterReference: string | null; credentialReference: string | null; tier: "A1" | "A2" | "B" | "C" | null; yield: SourceYield | null; history: SourceHistoryPoint[]};
 const tierRank: Record<string, number> = {A1: 0, A2: 1, B: 2, C: 3};
 const tierTone: Record<string, string> = {A1: "good", A2: "info", B: "warn", C: "neutral"};
 
@@ -289,7 +289,7 @@ export function SettingsClient({environment, lanes, laneOverview, initialHistory
           <td><button type="button" className="settings-link-button" onClick={() => setSourceModal({mode: "edit", source})}>{source.name}</button>{source.adapterReference && <span className="settings-help" style={{marginLeft: 6}}>Built-in{candidateOnlyByAdapterReference[source.adapterReference] && " · candidate-only"}</span>}<br/><small>{source.adapterReference ? builtinSourceDescriptions[source.adapterReference] ?? source.url : source.url ?? "Manual source"}</small></td>
           <td>{source.type.replaceAll("_", " ")}</td>
           <td><input aria-label={`${source.name} enabled`} type="checkbox" checked={source.enabled} disabled={busy} onChange={event => void act(() => request("/api/settings/model-sources", {method: "POST", body: JSON.stringify({...source, enabled: event.target.checked})}))}/></td>
-          <td><StatusPill value={source.status}/>{source.status==="DEGRADED"&&<><br/><small>0 models found</small></>}{source.status==="BLOCKED"&&<><br/><small>Waiting for a credential</small></>}</td>
+          <td><StatusPill value={source.status}/>{source.status==="HEALTHY"&&<><br/><small>{source.discoveredModelCount.toLocaleString()} models</small></>}{(source.status==="DEGRADED"||source.status==="FAILED"||source.status==="BLOCKED")&&<><br/><small title={source.lastError??undefined} style={{display:"inline-block",maxWidth:240,whiteSpace:"normal"}}>{source.lastError?source.lastError.length>140?`${source.lastError.slice(0,140)}…`:source.lastError:source.status==="BLOCKED"?"Waiting for a credential":"No reason recorded"}</small></>}</td>
           <td>{stamp(source.lastSyncAt)}</td>
           <td>{source.yield ? <div>
             <div className="mono" style={{fontSize:11,whiteSpace:"nowrap"}}>{source.yield.discovered} found <span style={{color:"var(--faint)"}}>→</span> {source.yield.verifiedFree} verified <span style={{color:"var(--faint)"}}>→</span> {source.yield.promoted} promoted</div>
@@ -340,8 +340,11 @@ export function SettingsClient({environment, lanes, laneOverview, initialHistory
             {registryEntry?.authEnv && <><dt>Authentication</dt><dd>{registryEntry.authEnv} environment variable{registryEntry.authOptional ? " (optional — works unauthenticated too)" : " (required)"}</dd></>}
             {registryEntry?.registrationUrl && <><dt>Get credential</dt><dd><a href={registryEntry.registrationUrl} target="_blank" rel="noopener noreferrer">{registryEntry.registrationUrl} ↗</a></dd></>}
             <dt>Status</dt><dd><StatusPill value={source.status}/></dd>
-            <dt>Last sync</dt><dd>{stamp(source.lastSyncAt)}</dd>
+            {source.lastError && <><dt>{source.status==="BLOCKED"?"Waiting for":"Last problem"}</dt><dd>{source.lastError}</dd></>}
+            <dt>Last run</dt><dd>{stamp(source.lastSyncAt)}</dd>
+            <dt>Last success</dt><dd>{stamp(source.lastSuccessAt)}</dd>
             <dt>Discovered models</dt><dd>{source.discoveredModelCount}</dd>
+            {registryEntry && <><dt>Contract</dt><dd>Fewer than {registryEntry.minExpected} usable models counts as a failure and nothing from that run is stored.</dd></>}
           </dl>
           <div className="modal-actions">
             {!registryEntry && <button type="button" className="button" disabled={busy} onClick={() => void act(() => request("/api/settings/model-sources/action", {method: "POST", body: JSON.stringify({sourceId: source.id, action: "sync"})}))}>Test / sync now</button>}

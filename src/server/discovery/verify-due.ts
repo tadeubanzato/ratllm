@@ -1,137 +1,198 @@
 import "server-only";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
-import { candidateChecks, modelCandidates, providerCredentialReferences, providers } from "@/server/db/schema";
-import { getModelCandidates } from "@/server/queries";
-import { providerDefinitionBySlug, resolveProvider } from "@/server/providers/catalog";
+import { candidateChecks, modelCandidates, modelDeployments, providerCredentialReferences, providerOffers, providers } from "@/server/db/schema";
+import { definitionForProvider } from "@/server/providers/attribution";
+import { endpointBaseHint } from "@/server/providers/wiring";
 import { PromotionDeferred, promoteCandidate } from "@/server/lanes/promote";
 import { getLiteLLMManagementSettings } from "@/server/settings/litellm-management";
 import { log } from "@/server/logging";
 import { autoAddDeferredUntil, isAutoAddDeferred, isAutoReAddBlocked } from "./auto-add-policy";
+import { candidateOnlyBlockReason } from "./promotion-gate";
+import { bareModelKey } from "./model-key";
+import { reconcileCheckBlockers, type CheckBlocker } from "./blockers";
 import { verifyCandidateDirectly, type CandidateVerificationStatus } from "./verify";
+import { applyCheckOutcome, effectiveFreeKind, PROMOTION_PASSES, type CheckOutcome } from "./verification-policy";
 
-const SUCCESS_RECHECK_MS=6*60*60_000;
-const FAILURE_RECHECK_MS=6*60*60_000;
-const RATE_LIMIT_RECHECK_MS=24*60*60_000;
-// A candidate that has never yet failed and hasn't earned its first AUTO_ADD_AFTER_SUCCESSES-in-a-row is still
-// "proving" — rechecked far more often than a stable one so a good new model doesn't sit at the SUCCESS_RECHECK_MS
-// pace for ~30h before it can even be considered for auto-add. The moment it fails once, or gets promoted, it
-// permanently drops to the standard cadence — this never applies to the steady-state population, only new arrivals.
-// See docs/FREE-MODEL-LIFECYCLE.md §6.
-const PROVING_RECHECK_MS=90*60_000;
-const AUTO_ADD_AFTER_SUCCESSES=5;
+type Candidate = typeof modelCandidates.$inferSelect;
+type ProviderRow = typeof providers.$inferSelect;
+type CredentialRow = typeof providerCredentialReferences.$inferSelect;
+type VerificationRow = { id: string; model: string; provider: string | null; status: CandidateVerificationStatus; httpStatus: number | null; error: string | null; nextCheckAt: string | null };
 
-type VerificationRow={id:string;model:string;provider:string|null;status:CandidateVerificationStatus;httpStatus:number|null;error:string|null;nextCheckAt:string};
-type Candidate=Awaited<ReturnType<typeof getModelCandidates>>[number];
+/** Everything a check needs that is not the candidate itself. These tables are small (providers, their credentials, offers,
+ *  LiteLLM deployments) however many candidates exist, so a pass loads them once instead of once per candidate (I12). */
+interface Context {
+  providers: Map<string, ProviderRow>;
+  credentials: Map<string, CredentialRow>;
+  offerBaseUrls: Map<string, string>;
+  offerFreeTypes: Map<string, string[]>;
+  /** (provider, model key) of every model that is live in LiteLLM right now. */
+  live: Set<string>;
+}
+const liveKey = (providerId: string, modelKey: string) => `${providerId}\u0000${modelKey}`;
 
-function roundRobinQueue<T extends {source:string;providerName:string|null;modelRef:string;id:string}>(list:T[]){const queues=new Map<string,T[]>();for(const row of list){const key=resolveProvider(row.source==="openrouter"?"openrouter":row.providerName,row.modelRef)?.slug??("unresolved-"+row.id);const queue=queues.get(key)??[];queue.push(row);queues.set(key,queue);}return queues;}
-function drain<T>(queues:Map<string,T[]>,into:T[],cap:number){while(into.length<cap){let added=false;for(const queue of queues.values()){const row=queue.shift();if(row){into.push(row);added=true;if(into.length>=cap)break;}}if(!added)break;}}
-
-/** Providers marked "skip automation" in the UI should never be hit by a scheduled or manual test — a candidate
- *  with a resolved provider that's been skipped is excluded outright; one with no resolved provider is unaffected. */
-async function skippedByProvider<T extends {providerId:string|null}>(db:ReturnType<typeof getDb>,rows:T[]):Promise<T[]>{
-  const disabled=new Set((await db.select({id:providers.id}).from(providers).where(eq(providers.enabled,false))).map(row=>row.id));
-  if(!disabled.size)return rows;
-  return rows.filter(row=>!row.providerId||!disabled.has(row.providerId));
+async function loadContext(db: ReturnType<typeof getDb>): Promise<Context> {
+  const [providerRows, credentialRows, offerRows, deploymentRows] = await Promise.all([
+    db.select().from(providers),
+    db.select().from(providerCredentialReferences).where(eq(providerCredentialReferences.disabled, false)),
+    db.select({providerId: providerOffers.providerId, openaiBaseUrl: providerOffers.openaiBaseUrl, freeType: providerOffers.freeType}).from(providerOffers),
+    db.select({providerId: modelDeployments.providerId, providerModelId: modelDeployments.providerModelId}).from(modelDeployments).where(eq(modelDeployments.lifecycle, "ACTIVE")),
+  ]);
+  const credentials = new Map<string, CredentialRow>();
+  // A verified credential beats an unverified one when a provider has several.
+  for (const row of [...credentialRows].sort((a, b) => Number(b.valid === true) - Number(a.valid === true))) if (!credentials.has(row.providerId)) credentials.set(row.providerId, row);
+  const offerBaseUrls = new Map<string, string>(), offerFreeTypes = new Map<string, string[]>();
+  for (const offer of offerRows) {
+    if (offer.openaiBaseUrl && !offerBaseUrls.has(offer.providerId)) offerBaseUrls.set(offer.providerId, offer.openaiBaseUrl);
+    offerFreeTypes.set(offer.providerId, [...(offerFreeTypes.get(offer.providerId) ?? []), offer.freeType]);
+  }
+  return {
+    providers: new Map(providerRows.map(row => [row.id, row])), credentials, offerBaseUrls, offerFreeTypes,
+    live: new Set(deploymentRows.map(row => liveKey(row.providerId, bareModelKey(row.providerModelId)))),
+  };
 }
 
-/** A candidate that has now passed its last AUTO_ADD_AFTER_SUCCESSES availability checks in a row — and isn't
- *  already in LiteLLM — gets promoted into its recommended lanes automatically, the same as clicking
- *  "Add to LiteLLM" and accepting the pre-checked lanes. Silently does nothing if it's not actually promotable
- *  yet (no verified credential, no resolved provider, etc.) — `promoteCandidate` re-verifies live before adding. */
 /** Records that auto-add hit an expected waiting state for this candidate, so it isn't retried for a while. A jsonb merge
  *  rather than read-modify-write: the caller's copy of the row's evidence is stale by the time this runs. */
-export async function markAutoAddDeferred(db:ReturnType<typeof getDb>,candidateId:string){
-  await db.update(modelCandidates).set({evidence:sql`${modelCandidates.evidence} || ${JSON.stringify({autoAddDeferredUntil:autoAddDeferredUntil()})}::jsonb`}).where(eq(modelCandidates.id,candidateId));
+export async function markAutoAddDeferred(db: ReturnType<typeof getDb>, candidateId: string) {
+  await db.update(modelCandidates).set({evidence: sql`${modelCandidates.evidence} || ${JSON.stringify({autoAddDeferredUntil: autoAddDeferredUntil()})}::jsonb`}).where(eq(modelCandidates.id, candidateId));
 }
-async function autoAddIfEligible(db:ReturnType<typeof getDb>,row:Candidate){
-  if(row.liteLLMDeploymentId||!row.promotable)return;
-  // A candidate that's been auto-removed before doesn't get an immediate second chance the instant checks pass
-  // again — see auto-add-policy.ts and docs/FREE-MODEL-LIFECYCLE.md §5 for why (cooldown against same-cycle
-  // flapping, flap limit against a model that's fine standalone but repeatedly broken specifically through LiteLLM).
-  if(isAutoReAddBlocked(row.evidence))return;
+
+/** A candidate that has now passed PROMOTION_PASSES real checks in a row, and isn't already in LiteLLM, is added
+ *  automatically — the same as clicking "Add to LiteLLM" and accepting the pre-checked lanes (docs/DISCOVERY-PIPELINE.md I8).
+ *  `promoteCandidate` re-verifies live before touching the router, so this never adds anything that would not pass right now. */
+async function autoAddIfEligible(db: ReturnType<typeof getDb>, row: Candidate, streak: number, context: Context) {
+  if (streak < PROMOTION_PASSES || !row.providerId) return;
+  const key = liveKey(row.providerId, row.modelKey);
+  if (context.live.has(key)) return;
+  // A candidate that's been auto-removed before doesn't get an immediate second chance the instant checks pass again — see
+  // auto-add-policy.ts and docs/FREE-MODEL-LIFECYCLE.md §5 (cooldown against same-cycle flapping, flap limit against a model
+  // that is fine standalone but repeatedly broken specifically through LiteLLM).
+  if (isAutoReAddBlocked(row.evidence)) return;
   // A recent deferral (lanes full, credential not ready) is a waiting state, not something to retry every cycle.
-  if(isAutoAddDeferred(row.evidence))return;
-  const recent=await db.select({status:candidateChecks.status}).from(candidateChecks).where(eq(candidateChecks.candidateId,row.id)).orderBy(desc(candidateChecks.createdAt)).limit(AUTO_ADD_AFTER_SUCCESSES);
-  if(recent.length<AUTO_ADD_AFTER_SUCCESSES||recent.some(item=>item.status!=="available"))return;
-  try{await promoteCandidate(row.id,{trigger:"auto"});log("info","Auto-added candidate to LiteLLM",{candidateId:row.id,modelRef:row.modelRef});}
-  catch(error){
-    if(error instanceof PromotionDeferred){
-      // jsonb merge, not a read-modify-write: checkCandidate has just rewritten this row's evidence and `row` is the stale copy.
-      await markAutoAddDeferred(db,row.id);
-      log("info","Auto-add deferred",{candidateId:row.id,reason:error.message});return;
+  if (isAutoAddDeferred(row.evidence)) return;
+  if (candidateOnlyBlockReason(row)) return;
+  try {
+    await promoteCandidate(row.id, {trigger: "auto"});
+    context.live.add(key);
+    log("info", "Auto-added candidate to LiteLLM", {candidateId: row.id, modelRef: row.modelRef});
+  } catch (error) {
+    if (error instanceof PromotionDeferred) {
+      // jsonb merge, not a read-modify-write: the row's evidence in hand is a stale copy.
+      await markAutoAddDeferred(db, row.id);
+      log("info", "Auto-add deferred", {candidateId: row.id, reason: error.message});
+      return;
     }
-    log("warn","Auto-add did not go through",{candidateId:row.id,error:error instanceof Error?error.message:String(error)});}
+    log("warn", "Auto-add did not go through", {candidateId: row.id, error: error instanceof Error ? error.message : String(error)});
+  }
 }
 
-/** Runs one direct test for a candidate, then persists the evidence and a candidate_checks row (which is what the
- *  availability status bars are built from). When `providerBackoff` is a Map, a provider that returned 429 earlier in
- *  the batch is skipped without another call; pass `null` to force a real request for every candidate regardless. */
-async function checkCandidate(db:ReturnType<typeof getDb>,row:Candidate,providerBackoff:Map<string,string>|null,autoAdd:boolean):Promise<VerificationRow>{
-  const testedAt=new Date().toISOString();
-  // Text resolution first, then the provider row getModelCandidates already matched (by id, or by name) — the page and the
-  // verifier used to resolve independently and disagree, so a candidate could look connected on the page while every
-  // scheduled check recorded "provider unresolved".
-  const linkedSlug=row.providerId?(await db.select({slug:providers.slug}).from(providers).where(eq(providers.id,row.providerId)).limit(1))[0]?.slug??null:null;
-  const definition=resolveProvider(row.source==="openrouter"?"openrouter":row.providerName,row.modelRef)??providerDefinitionBySlug(linkedSlug);const providerKey=definition?.slug??null;let result:Awaited<ReturnType<typeof verifyCandidateDirectly>>;let credentialId:string|null=null;
-  if(providerKey&&providerBackoff?.has(providerKey))result={status:"rate_limited",httpStatus:429,error:"Provider rate limit reached earlier in this run; retry deferred"};else{const provider=providerKey?(await db.select().from(providers).where(eq(providers.slug,providerKey)).limit(1))[0]??null:null;const credential=provider?(await db.select().from(providerCredentialReferences).where(and(eq(providerCredentialReferences.providerId,provider.id),eq(providerCredentialReferences.disabled,false))).limit(1))[0]??null:null;credentialId=credential?.id??null;result=await verifyCandidateDirectly({modelRef:row.modelRef,source:row.source,provider:definition,providerBaseUrl:provider?.baseUrl??null,credential});}
-  // A real completions call failing with 401/403 is stronger, more current evidence than whatever set `valid` true
-  // earlier (a manual "Test credential" from before the key was revoked/rotated, or before the Base URL changed) —
-  // invalidate it immediately rather than leaving the provider page's VERIFIED badge contradicting what discovery
-  // just proved false until someone happens to click "Test credential" again.
-  if(result.status==="auth_error"&&credentialId)await db.update(providerCredentialReferences).set({valid:false,lastValidatedAt:new Date(),updatedAt:new Date()}).where(eq(providerCredentialReferences.id,credentialId));
-  // Fast-track ramp (docs/FREE-MODEL-LIFECYCLE.md §6): tracked entirely in evidence, no extra query. A candidate
-  // that has never failed and hasn't yet strung together AUTO_ADD_AFTER_SUCCESSES passes is still "proving" and
-  // gets rechecked at PROVING_RECHECK_MS instead of the standard SUCCESS_RECHECK_MS pace. Any failure — this one
-  // included — permanently ends proving for this candidate, same as reaching the pass count or getting promoted.
-  const everFailedBefore=Boolean(row.evidence.everFailed);
-  const priorConsecutiveAvailable=typeof row.evidence.consecutiveAvailable==="number"?row.evidence.consecutiveAvailable:0;
-  const consecutiveAvailable=result.status==="available"?priorConsecutiveAvailable+1:0;
-  const everFailed=everFailedBefore||result.status!=="available";
-  const proving=result.status==="available"&&!everFailedBefore&&!row.liteLLMDeploymentId&&consecutiveAvailable<AUTO_ADD_AFTER_SUCCESSES;
-  const delay=proving?PROVING_RECHECK_MS:result.status==="available"?SUCCESS_RECHECK_MS:result.status==="rate_limited"?RATE_LIMIT_RECHECK_MS:FAILURE_RECHECK_MS;const nextCheckAt=new Date(Date.now()+delay).toISOString();if(result.status==="rate_limited"&&providerKey&&providerBackoff)providerBackoff.set(providerKey,nextCheckAt);const requiredAction=result.status==="credential_missing"?"ADD_CREDENTIAL":result.status==="credential_unverified"?"VERIFY_CREDENTIAL":result.status==="provider_unresolved"?"RESOLVE_PROVIDER":result.status==="provider_not_configured"?"CONFIGURE_VERIFIER":null;
-  await db.update(modelCandidates).set({evidence:{...row.evidence,testedAt,lastStatus:result.status,lastHttpStatus:result.httpStatus,lastError:result.error?.slice(0,500)??null,retryAt:result.status==="rate_limited"?nextCheckAt:null,nextCheckAt,providerSlug:providerKey,requiredAction,everFailed,consecutiveAvailable},updatedAt:new Date()}).where(eq(modelCandidates.id,row.id));await db.insert(candidateChecks).values({candidateId:row.id,status:result.status,httpStatus:result.httpStatus,error:result.error?.slice(0,500)??null});
-  if(autoAdd&&result.status==="available")await autoAddIfEligible(db,row);
-  return {id:row.id,model:row.modelRef,provider:providerKey,status:result.status,httpStatus:result.httpStatus,error:result.error,nextCheckAt};
+const BLOCKER_OF_NON_CALL: Partial<Record<CandidateVerificationStatus, CheckBlocker>> = {
+  provider_unresolved: "PROVIDER_UNRESOLVED", provider_not_configured: "NO_ENDPOINT", credential_missing: "CREDENTIAL_MISSING", credential_unverified: "CREDENTIAL_UNVERIFIED",
+};
+
+/** Runs one real test call for a candidate and records its outcome (invariants I6, I7): a candidate_checks row, and the stored
+ *  state (latest result, latest pass, streak, next check). When `providerBackoff` is a Map, a provider that answered 429
+ *  earlier in the batch is not called again: the candidate is only rescheduled, and no check is recorded, because no call was
+ *  made. Pass `null` to force a real request for every candidate regardless. */
+async function checkCandidate(db: ReturnType<typeof getDb>, row: Candidate, context: Context, providerBackoff: Map<string, string> | null, autoAdd: boolean): Promise<VerificationRow | null> {
+  const provider = row.providerId ? context.providers.get(row.providerId) : undefined;
+  if (!provider) return null; // no provider means a blocker, which reconcileCheckBlockers owns
+  const base = {id: row.id, model: row.modelRef, provider: provider.slug};
+  const backoffUntil = providerBackoff?.get(provider.slug);
+  if (backoffUntil) {
+    await db.update(modelCandidates).set({nextCheckAt: new Date(backoffUntil), updatedAt: new Date()}).where(eq(modelCandidates.id, row.id));
+    return {...base, status: "rate_limited", httpStatus: 429, error: "Provider rate limit reached earlier in this run; retry deferred", nextCheckAt: backoffUntil};
+  }
+  const credential = context.credentials.get(provider.id) ?? null;
+  const result = await verifyCandidateDirectly({
+    modelRef: row.modelRef, source: row.source, provider: definitionForProvider(provider),
+    providerBaseUrl: endpointBaseHint(provider.slug, provider.baseUrl, context.offerBaseUrls.get(provider.id) ?? null), credential,
+  });
+
+  // The world changed between reconciling blockers and this call (a key was removed): record the blocker, not a check.
+  const blocker = BLOCKER_OF_NON_CALL[result.status];
+  if (blocker) {
+    await db.update(modelCandidates).set({checkBlocker: blocker, updatedAt: new Date()}).where(eq(modelCandidates.id, row.id));
+    return {...base, status: result.status, httpStatus: null, error: result.error, nextCheckAt: null};
+  }
+  const outcome = result.status as CheckOutcome;
+  // A real completions call failing with 401/403 is stronger, more current evidence than whatever set `valid` true earlier (a
+  // manual "Test credential" from before the key was revoked or rotated) — invalidate it now rather than leave the provider
+  // page showing VERIFIED until someone happens to click "Test credential" again.
+  if (outcome === "auth_error" && credential) await db.update(providerCredentialReferences).set({valid: false, lastValidatedAt: new Date(), updatedAt: new Date()}).where(eq(providerCredentialReferences.id, credential.id));
+
+  const kind = effectiveFreeKind(row.freeType, context.offerFreeTypes.get(provider.id));
+  const transition = applyCheckOutcome(
+    {consecutivePasses: row.consecutivePasses, everFailed: row.everFailed, lastPassedAt: row.lastPassedAt}, outcome,
+    {kind, alreadyInLiteLLM: context.live.has(liveKey(provider.id, row.modelKey))},
+  );
+  await db.update(modelCandidates).set({
+    lastCheckStatus: transition.lastCheckStatus, lastCheckedAt: transition.lastCheckedAt, lastPassedAt: transition.lastPassedAt,
+    consecutivePasses: transition.consecutivePasses, everFailed: transition.everFailed, nextCheckAt: transition.nextCheckAt, checkBlocker: null, updatedAt: new Date(),
+  }).where(eq(modelCandidates.id, row.id));
+  await db.insert(candidateChecks).values({candidateId: row.id, status: outcome, httpStatus: result.httpStatus, error: result.error?.slice(0, 500) ?? null});
+  if ((outcome === "rate_limited") && providerBackoff) providerBackoff.set(provider.slug, transition.nextCheckAt.toISOString());
+  if (autoAdd && outcome === "available") await autoAddIfEligible(db, {...row, consecutivePasses: transition.consecutivePasses}, transition.consecutivePasses, context);
+  return {...base, status: outcome, httpStatus: result.httpStatus, error: result.error, nextCheckAt: transition.nextCheckAt.toISOString()};
 }
 
-/** Tests candidates directly; a 429 backs off only that provider, never the whole batch. Candidates for a provider we already have a verified credential for are guaranteed the first slots — hundreds of candidates with no usable credential shouldn't crowd out the ones we can actually test.
- *  limit/concurrency default high enough to actually cycle through the credential-verified population (in the
- *  thousands, not dozens) within a reasonable number of cron firings — 20 sequential checks per run left most of
- *  it untested indefinitely, so "5 consecutive passes" could take weeks to ever be reached for a perfectly good
- *  candidate. Concurrency-bounded the same way verifyConnectedCandidates already is, so a large limit doesn't
- *  open hundreds of sockets at once; the shared providerBackoff map still gives real (if not perfectly atomic)
- *  per-provider courtesy under concurrency. */
-export async function verifyDueCandidates(limit=300,concurrency=8){
-  const db=getDb();const rows=await getModelCandidates();const now=Date.now();const dueForCheck=rows.filter(row=>{const nextCheckAt=row.evidence.nextCheckAt??row.evidence.retryAt??row.evidence.testedAt;return !nextCheckAt||new Date(String(nextCheckAt)).getTime()<=now;});
-  const eligible=await skippedByProvider(db,dueForCheck);
-  const priority=eligible.filter(row=>row.credentialVerified);const rest=eligible.filter(row=>!row.credentialVerified);
-  const due:typeof eligible=[];drain(roundRobinQueue(priority),due,limit);if(due.length<limit)drain(roundRobinQueue(rest),due,limit);
-  const { autoAdd }=await getLiteLLMManagementSettings();
-  const providerBackoff=new Map<string,string>();const results:VerificationRow[]=[];
-  let cursor=0;
-  async function worker(){while(cursor<due.length){const row=due[cursor++];results.push(await checkCandidate(db,row,providerBackoff,autoAdd));}}
-  await Promise.all(Array.from({length:Math.min(Math.max(concurrency,1),due.length||1)},()=>worker()));
-  return {processed:results.length,results,nextEligibleAt:results.find(item=>item.status==="rate_limited")?.nextCheckAt??null};
+/** Runs `work` for every id with at most `concurrency` in flight. */
+async function runAll(rows: Candidate[], concurrency: number, work: (row: Candidate) => Promise<VerificationRow | null>): Promise<VerificationRow[]> {
+  const results: VerificationRow[] = [];
+  let cursor = 0;
+  await Promise.all(Array.from({length: Math.min(Math.max(concurrency, 1), rows.length || 1)}, async () => {
+    while (cursor < rows.length) { const result = await work(rows[cursor++]!); if (result) results.push(result); }
+  }));
+  return results;
 }
 
-/** Never-tested candidates first, then the longest-untested. The manual run used to sort by name and stop at 250, so with
- *  800+ connected candidates the same alphabetical 250 were retested on every click and the rest were never covered. */
-export function staleFirst(a:{evidence:Record<string,unknown>;displayName:string},b:{evidence:Record<string,unknown>;displayName:string}){
-  const at=(row:{evidence:Record<string,unknown>})=>typeof row.evidence.testedAt==="string"?new Date(row.evidence.testedAt).getTime():0;
-  return at(a)-at(b)||a.displayName.localeCompare(b.displayName);
+/** Candidates that are due, chosen in SQL: testable (no blocker), at a provider that has not been switched off, and past their
+ *  next-check time. Ranked within each provider and then interleaved, so a provider with thousands of models cannot crowd every
+ *  other provider out of a run, and a 429 from one is felt by one. Never loads more than `limit` rows. */
+async function selectDue(db: ReturnType<typeof getDb>, limit: number): Promise<Candidate[]> {
+  const ids = await db.execute(sql`
+    select id from (
+      select c.id, c.next_check_at,
+        row_number() over (partition by c.provider_id order by coalesce(c.next_check_at, 'epoch'::timestamptz), c.id) as rn
+      from model_candidates c join providers p on p.id = c.provider_id and p.enabled
+      where c.check_blocker is null and (c.next_check_at is null or c.next_check_at <= now())
+    ) due order by rn, coalesce(next_check_at, 'epoch'::timestamptz), id limit ${limit}
+  `) as unknown as Array<{id: string}>;
+  return loadInOrder(db, ids.map(row => row.id));
 }
 
-/** Manual "test my connected models now": every credential-verified candidate gets a real request, ignoring both the
- *  recheck schedule and per-provider backoff, so the status bars always gain a fresh point on click. Concurrency-limited
- *  so a few hundred candidates don't open a few hundred sockets at once. */
-export async function verifyConnectedCandidates(limit=2000,concurrency=10){
-  const db=getDb();const rows=await getModelCandidates();
-  const connected=rows.filter(row=>row.credentialVerified&&Boolean(row.providerId));
-  const targets=(await skippedByProvider(db,connected)).sort(staleFirst).slice(0,limit);
-  const { autoAdd }=await getLiteLLMManagementSettings();
-  const results:VerificationRow[]=[];let cursor=0;
-  async function worker(){while(cursor<targets.length){const row=targets[cursor++];results.push(await checkCandidate(db,row,null,autoAdd));}}
-  await Promise.all(Array.from({length:Math.min(Math.max(concurrency,1),targets.length||1)},()=>worker()));
-  return {processed:results.length,targeted:targets.length,available:results.filter(r=>r.status==="available").length,rateLimited:results.filter(r=>r.status==="rate_limited").length,unavailable:results.filter(r=>r.status==="unavailable"||r.status==="auth_error").length};
+async function loadInOrder(db: ReturnType<typeof getDb>, ids: string[]): Promise<Candidate[]> {
+  if (!ids.length) return [];
+  const rows = await db.select().from(modelCandidates).where(inArray(modelCandidates.id, ids));
+  const byId = new Map(rows.map(row => [row.id, row]));
+  return ids.map(id => byId.get(id)).filter((row): row is Candidate => Boolean(row));
 }
+
+/** Tests candidates directly; a 429 backs off only that provider, never the whole batch. limit/concurrency default high
+ *  enough to cycle through the whole testable population within a reasonable number of cron firings. */
+export async function verifyDueCandidates(limit = 300, concurrency = 8) {
+  const db = getDb();
+  await reconcileCheckBlockers(db);
+  const [context, {autoAdd}, due] = await Promise.all([loadContext(db), getLiteLLMManagementSettings(), selectDue(db, limit)]);
+  const providerBackoff = new Map<string, string>();
+  const results = await runAll(due, concurrency, row => checkCandidate(db, row, context, providerBackoff, autoAdd));
+  return {processed: results.length, results, nextEligibleAt: results.find(item => item.status === "rate_limited")?.nextCheckAt ?? null};
+}
+
+/** Manual "test my models now": every testable candidate gets a real request, ignoring the recheck schedule and per-provider
+ *  backoff, longest-untested first. It used to stop at the first 250 alphabetically, so with 800+ connected candidates the
+ *  same 250 were retested on every click and the rest never were. */
+export async function verifyConnectedCandidates(limit = 5000, concurrency = 10) {
+  const db = getDb();
+  await reconcileCheckBlockers(db);
+  const ids = await db.execute(sql`
+    select c.id from model_candidates c join providers p on p.id = c.provider_id and p.enabled
+    where c.check_blocker is null order by c.last_checked_at asc nulls first, c.id limit ${limit}
+  `) as unknown as Array<{id: string}>;
+  const [context, {autoAdd}, targets] = await Promise.all([loadContext(db), getLiteLLMManagementSettings(), loadInOrder(db, ids.map(row => row.id))]);
+  const results = await runAll(targets, concurrency, row => checkCandidate(db, row, context, null, autoAdd));
+  const count = (status: string) => results.filter(item => item.status === status).length;
+  return {processed: results.length, targeted: targets.length, available: count("available"), rateLimited: count("rate_limited"), outOfCredits: count("out_of_credits"), unavailable: count("unavailable") + count("auth_error")};
+}
+

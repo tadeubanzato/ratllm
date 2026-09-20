@@ -2,33 +2,36 @@ import { describe, expect, it } from "vitest";
 import { candidateOnlyBlockReason } from "../src/server/discovery/promotion-gate";
 import { sourceRegistry } from "../src/server/discovery/registry";
 
-const communityId = sourceRegistry.find(source => source.candidateOnly)!.id;
-const officialId = sourceRegistry.find(source => !source.candidateOnly && source.tier === "A1")!.id;
+// The registry currently has no candidate-only source (every source is either an official catalog or a provider's own API),
+// so the rule is exercised with an explicit set instead of whatever the registry happens to contain today.
+const communityId = "community-list";
+const officialId = "official-catalog";
+const candidateOnly = new Set([communityId]);
+const reason = (candidate: Parameters<typeof candidateOnlyBlockReason>[0]) => candidateOnlyBlockReason(candidate, candidateOnly);
 
 describe("candidateOnlyBlockReason", () => {
   it("blocks a candidate reported only by a candidate-only source", () => {
-    expect(candidateOnlyBlockReason({ source: communityId, evidence: {} })).toMatch(/community/i);
+    expect(reason({ source: communityId, evidence: {} })).toMatch(/community/i);
   });
 
   it("does not block a candidate from an authoritative source", () => {
-    expect(candidateOnlyBlockReason({ source: officialId, evidence: {} })).toBeNull();
+    expect(reason({ source: officialId, evidence: {} })).toBeNull();
   });
 
-  it("stays blocked when the only corroboration is another candidate-only source", () => {
-    const other = sourceRegistry.filter(source => source.candidateOnly)[1].id;
-    expect(candidateOnlyBlockReason({ source: communityId, evidence: { corroboratingSources: [{ source: other }] } })).not.toBeNull();
+  it("still blocks when the only corroboration is another candidate-only source", () => {
+    expect(candidateOnlyBlockReason({ source: communityId, evidence: { corroboratingSources: [{ source: "another-list" }] } }, new Set([communityId, "another-list"]))).not.toBeNull();
   });
 
-  it("allows a candidate-only winner that an authoritative source also reported", () => {
-    expect(candidateOnlyBlockReason({ source: communityId, evidence: { corroboratingSources: [{ source: officialId }] } })).toBeNull();
+  it("unblocks a candidate an authoritative source also reported", () => {
+    expect(reason({ source: communityId, evidence: { corroboratingSources: [{ source: officialId }] } })).toBeNull();
   });
 
-  it("tolerates missing or malformed evidence", () => {
-    expect(candidateOnlyBlockReason({ source: communityId, evidence: null })).not.toBeNull();
-    expect(candidateOnlyBlockReason({ source: communityId, evidence: { corroboratingSources: "nope" } })).not.toBeNull();
+  it("treats missing or malformed evidence as uncorroborated", () => {
+    expect(reason({ source: communityId, evidence: null })).not.toBeNull();
+    expect(reason({ source: communityId, evidence: { corroboratingSources: "nope" } })).not.toBeNull();
   });
 
-  it("marks every candidate-only registry entry as blocked (registry and gate cannot drift)", () => {
+  it("defaults to the registry's own candidate-only sources, so none of them can slip through", () => {
     for (const source of sourceRegistry.filter(entry => entry.candidateOnly)) expect(candidateOnlyBlockReason({ source: source.id })).not.toBeNull();
   });
 });

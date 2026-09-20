@@ -17,7 +17,6 @@ const MAX_NAME_LENGTH = 80;
 /** A source's provider label made presentable and safe to store, or null when it is not a usable name. */
 export function cleanProviderName(raw: string | null | undefined): string | null {
   if (typeof raw !== "string") return null;
-  // eslint-disable-next-line no-control-regex
   const name = raw.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
   if (!name || name.length > MAX_NAME_LENGTH) return null;
   const slug = normalizeProviderName(name);
@@ -80,4 +79,10 @@ export function attributeOfferProvider(offer: { providerName: string; slugHint?:
   const byHost = providerSlugForBaseUrl(offer.openaiBaseUrl);
   const hosted = byHost ? catalogIdentity(byHost) : null;
   return hosted ?? byName;
+}
+
+/** The definition the verifier and promotion need for a stored provider row: the catalog's entry when there is one, otherwise a
+ *  bare manual definition built from the row itself (a DISCOVERED provider has no catalog entry, but is still a provider). */
+export function definitionForProvider(row: { slug: string; name: string }): ProviderDefinition {
+  return providerDefinitionBySlug(row.slug) ?? { slug: row.slug, name: row.name, adapterKey: "manual", adapterCapability: "MANUAL" };
 }

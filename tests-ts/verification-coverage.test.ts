@@ -4,7 +4,6 @@ vi.mock("server-only", () => ({}));
 vi.mock("@/server/db/client", () => ({ getDb: () => ({}) }));
 
 const { bareCandidateModelRef } = await import("../src/server/discovery/verify");
-const { staleFirst } = await import("../src/server/discovery/verify-due");
 const { resolveProvider } = await import("../src/server/providers/catalog");
 
 describe("bareCandidateModelRef", () => {
@@ -19,20 +18,6 @@ describe("bareCandidateModelRef", () => {
   it("still strips a genuine routing prefix for other providers", () => {
     expect(bareCandidateModelRef(input("Groq", "groq/llama-3.3-70b-versatile"))).toBe("llama-3.3-70b-versatile");
     expect(bareCandidateModelRef(input("Google AI Studio", "gemini/gemma-4-26b-a4b-it"))).toBe("gemma-4-26b-a4b-it");
-  });
-});
-
-describe("staleFirst — the order the manual verification run works through candidates", () => {
-  const c = (displayName: string, testedAt?: string) => ({ displayName, evidence: testedAt ? { testedAt } : {} });
-
-  it("puts never-tested candidates first, then the longest-untested, breaking ties by name", () => {
-    const ordered = [c("b", "2026-09-20T10:00:00Z"), c("z-never"), c("a", "2026-09-19T10:00:00Z"), c("a-never")].sort(staleFirst).map(r => r.displayName);
-    expect(ordered).toEqual(["a-never", "z-never", "a", "b"]);
-  });
-
-  it("does not depend on the alphabet, so a truncated run can no longer retest the same names forever", () => {
-    const rows = [c("Aardvark", "2026-09-20T17:00:00Z"), c("Zebra", "2026-09-01T00:00:00Z")];
-    expect(rows.sort(staleFirst)[0]!.displayName).toBe("Zebra");
   });
 });
 
@@ -67,5 +52,26 @@ describe("verifyCandidateDirectly — retry with the id as discovered", () => {
     const { result, sent } = await run(() => ok());
     expect(result.status).toBe("available");
     expect(sent).toEqual(["compound"]);
+  });
+});
+
+describe("classifyProviderFailure — what a provider's refusal means", () => {
+  it.each([
+    [402, "You need positive balance to do inference", "out_of_credits"],
+    [402, null, "out_of_credits"],
+    [429, "You exceeded your current quota, please check your plan and billing details", "out_of_credits"],
+    [429, "insufficient_quota", "out_of_credits"],
+    [403, "Insufficient Balance", "out_of_credits"],
+    [400, "This request requires more credits, or fewer max_tokens. You requested up to 128 tokens, but can only afford 5", "unavailable"],
+    [429, "Rate limit reached for requests", "rate_limited"],
+    [429, null, "rate_limited"],
+    [401, "Invalid API key", "auth_error"],
+    [403, "Forbidden", "auth_error"],
+    [404, "The model `x` does not exist", "unavailable"],
+    [410, null, "unavailable"],
+    [500, "internal error", "unavailable"],
+  ] as const)("HTTP %s %j -> %s", async (status, message, expected) => {
+    const { classifyProviderFailure } = await import("../src/server/discovery/verify");
+    expect(classifyProviderFailure(status, message)).toBe(expected);
   });
 });

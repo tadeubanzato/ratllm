@@ -167,7 +167,6 @@ export async function persistProviderOffers(db:ReturnType<typeof getDb>,offers:P
  *  its rows shows up as DEGRADED rather than looking healthy with a smaller number. */
 function isUsableItem(item:DiscoveredCandidate){
   const ref=typeof item.modelRef==="string"?item.modelRef.trim():"";
-  // eslint-disable-next-line no-control-regex
   return ref.length>0&&ref.length<=300&&!/[\u0000-\u001f\u007f]/.test(ref);
 }
 
