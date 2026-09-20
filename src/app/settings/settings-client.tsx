@@ -45,7 +45,7 @@ type Source = {id: string; name: string; type: string; providerId: string | null
 const tierRank: Record<string, number> = {A1: 0, A2: 1, B: 2, C: 3};
 const tierTone: Record<string, string> = {A1: "good", A2: "info", B: "warn", C: "neutral"};
 
-const builtinSourceDescriptions: Record<string, string> = Object.fromEntries(sourceRegistry.map(source => [source.id, source.description]));
+const builtinSourceDescriptions: Record<string, string | undefined> = Object.fromEntries(sourceRegistry.map(source => [source.id, source.description]));
 const candidateOnlyByAdapterReference: Record<string, boolean> = Object.fromEntries(sourceRegistry.map(source => [source.id, Boolean(source.candidateOnly)]));
 type Lane = {slug: string; minimumHealthy: number};
 

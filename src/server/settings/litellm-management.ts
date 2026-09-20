@@ -5,7 +5,7 @@ import { systemSettings } from "@/server/db/schema";
 
 export interface LiteLLMManagementSettings { autoAdd: boolean; autoRemove: boolean }
 const KEY = "litellm.management";
-const DEFAULTS: LiteLLMManagementSettings = { autoAdd: false, autoRemove: false };
+const DEFAULTS: LiteLLMManagementSettings = { autoAdd: true, autoRemove: true };
 
 export async function getLiteLLMManagementSettings(): Promise<LiteLLMManagementSettings> {
   const [row] = await getDb().select().from(systemSettings).where(eq(systemSettings.key, KEY));

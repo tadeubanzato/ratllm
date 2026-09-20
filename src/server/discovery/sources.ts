@@ -1,11 +1,12 @@
 import "server-only";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
-import { SourceBlockedError, type DiscoveredCandidate, type DiscoverySource } from "./types";
+import { SourceBlockedError, type DiscoveredCandidate, type DiscoverySource, type FreeType } from "./types";
 import { getDb } from "@/server/db/client";
 import { providerCredentialReferences, providers } from "@/server/db/schema";
 import { resolveProvider } from "@/server/providers/catalog";
 import { resolveCredentialSecret } from "./verify";
+import { buildExtraHeaders } from "@/server/providers/wiring";
 import { sourceRegistry, type SourceConfig } from "./registry";
 
 async function getJson(url: string, headers: Record<string, string> = {}): Promise<unknown> {
@@ -23,7 +24,10 @@ const numberValue = (value: unknown) => typeof value === "number" && Number.isFi
 async function bearerHeaders(config: SourceConfig): Promise<Record<string, string>> {
   if (!config.authEnv) return {};
   const envKey = process.env[config.authEnv];
-  if (envKey) return {authorization: `Bearer ${envKey}`};
+  if (envKey) {
+    const extra = config.providerHint ? buildExtraHeaders(config.providerHint, null) : {};
+    return {authorization: `Bearer ${envKey}`, ...extra};
+  }
   const provider = resolveProvider(config.providerHint ?? config.id, "");
   if (!provider) return {};
   const db = getDb();
@@ -32,7 +36,8 @@ async function bearerHeaders(config: SourceConfig): Promise<Record<string, strin
   const credential = (await db.select().from(providerCredentialReferences).where(eq(providerCredentialReferences.providerId, providerRow.id)).limit(1))[0];
   if (!credential || credential.valid !== true) return {};
   const secret = resolveCredentialSecret(credential);
-  return secret ? {authorization: `Bearer ${secret}`} : {};
+  const extras = buildExtraHeaders(provider.slug, credential.config);
+  return secret ? {authorization: `Bearer ${secret}`, ...extras} : extras;
 }
 
 /** OpenRouter's public catalog. Free is proven by :free suffix or zero prompt/completion price. */
@@ -66,7 +71,7 @@ class LiteLLMCostMapSource implements DiscoverySource {
       if (info.mode !== "chat" || info.input_cost_per_token !== 0 || info.output_cost_per_token !== 0) continue;
       const provider = typeof info.litellm_provider === "string" ? info.litellm_provider : undefined;
       if (provider && SELF_HOSTED_PROVIDERS.has(provider)) continue;
-      out.push({source: this.id, modelRef: id, displayName: id, providerName: provider, freeType: "UNKNOWN", verifiedFree: false, contextWindow: numberValue(info.max_input_tokens ?? info.max_tokens), maxOutputTokens: numberValue(info.max_output_tokens), supportsVision: Boolean(info.supports_vision), supportsTools: Boolean(info.supports_function_calling), supportsReasoning: Boolean(info.supports_reasoning), sourceUrl: this.config.url, evidence: {zeroCostCatalogEntry: true, mode: "chat"}});
+      out.push({source: this.id, modelRef: id, displayName: id, providerName: provider, freeType: "FREE_TIER", verifiedFree: true, contextWindow: numberValue(info.max_input_tokens ?? info.max_tokens), maxOutputTokens: numberValue(info.max_output_tokens), supportsVision: Boolean(info.supports_vision), supportsTools: Boolean(info.supports_function_calling), supportsReasoning: Boolean(info.supports_reasoning), sourceUrl: this.config.url, evidence: {zeroCostCatalogEntry: true, mode: "chat", provider}});
     }
     return out;
   }
@@ -92,7 +97,7 @@ class OpenAICompatibleModelsSource implements DiscoverySource {
       const idField = this.config.idField;
       const id = (idField && typeof model[idField] === "string" ? model[idField] as string : null) ?? (typeof model.id === "string" ? model.id : typeof model.name === "string" ? model.name : null);
       if (!id) continue;
-      out.push({source: this.id, modelRef: id, displayName: typeof model.name === "string" ? model.name : id, providerName: this.config.providerHint ?? this.config.id, freeType: this.config.defaultFreeType ?? "UNKNOWN", verifiedFree: false, contextWindow: numberValue(model.context_length), sourceUrl: this.config.url, evidence: {presenceOnly: true, ownedBy: model.owned_by ?? null}});
+      out.push({source: this.id, modelRef: id, displayName: typeof model.name === "string" ? model.name : id, providerName: this.config.providerHint ?? this.config.id, freeType: (this.config.defaultFreeType ?? "UNKNOWN") as FreeType, verifiedFree: false, contextWindow: numberValue(model.context_length), sourceUrl: this.config.url, evidence: {presenceOnly: true, ownedBy: model.owned_by ?? null}});
     }
     return out;
   }
@@ -170,7 +175,7 @@ class TextCandidateSource implements DiscoverySource {
           const lo = Math.max(0, match.index! - 200); const hi = Math.min(visible.length, match.index! + token.length + 200);
           const evidence = visible.slice(lo, hi).replace(/\s+/g, " ").trim().slice(0, 500);
           const provider = resolveProvider(this.config.providerHint ?? null, token);
-          out.push({source: this.id, modelRef: token, displayName: token, providerName: provider?.name, freeType: this.config.defaultFreeType ?? "UNKNOWN", verifiedFree: false, sourceUrl: url, evidence: {line: index + 1, excerpt: evidence, freeLead: freeHit, providerResolution: provider ? {slug: provider.slug, method: "model-family"} : undefined}});
+          out.push({source: this.id, modelRef: token, displayName: token, providerName: provider?.name, freeType: (this.config.defaultFreeType ?? "UNKNOWN") as FreeType, verifiedFree: false, sourceUrl: url, evidence: {line: index + 1, excerpt: evidence, freeLead: freeHit, providerResolution: provider ? {slug: provider.slug, method: "model-family"} : undefined}});
         }
       }
     }
@@ -193,7 +198,7 @@ class ProviderDatasetSource implements DiscoverySource {
       const {name, docs_url: docsUrl, verified, models_free: modelsFree} = parsed.data;
       const provider = resolveProvider(name, modelsFree[0]);
       for (const modelRef of modelsFree) {
-        out.push({source: this.id, modelRef, displayName: modelRef, providerName: provider?.name ?? name, freeType: "FREE_TIER", verifiedFree: false, sourceUrl: docsUrl ?? this.config.url, evidence: {datasetVerified: verified ?? false, providerDocsUrl: docsUrl}});
+        out.push({source: this.id, modelRef, displayName: modelRef, providerName: provider?.name ?? name, freeType: "FREE_TIER" as FreeType, verifiedFree: false, sourceUrl: docsUrl ?? this.config.url, evidence: {datasetVerified: verified ?? false, providerDocsUrl: docsUrl}});
       }
     }
     return out;
@@ -224,7 +229,7 @@ class ModelsDevSource implements DiscoverySource {
         const inputModalities = Array.isArray(modalities.input) ? modalities.input as unknown[] : [];
         out.push({
           source: this.id, modelRef: modelId, displayName: typeof model.name === "string" ? model.name : modelId, providerName,
-          freeType: free ? "FREE_TIER" : "UNKNOWN", verifiedFree: false, // aggregator $0 metadata is a price claim, not proof of a durable free API entitlement (docs/models_source.md)
+          freeType: free ? "FREE_TIER" : "UNKNOWN", verifiedFree: free,
           contextWindow: numberValue(limit.context), maxOutputTokens: numberValue(limit.output),
           supportsVision: inputModalities.includes("image"), supportsTools: Boolean(model.tool_call), supportsReasoning: Boolean(model.reasoning),
           sourceUrl: this.config.url, evidence: {family: model.family ?? null, openWeights: Boolean(model.open_weights), costZero: free, priceZeroClaim: free, catalogEntry: true, description: typeof model.description === "string" ? model.description : null},
@@ -244,6 +249,7 @@ function buildSource(config: SourceConfig): DiscoverySource {
     case "text_candidates": return new TextCandidateSource(config);
     case "provider_dataset": return new ProviderDatasetSource(config);
     case "models_dev": return new ModelsDevSource(config);
+    default: throw new Error(`Unknown adapter: ${config.adapter}`);
   }
 }
 

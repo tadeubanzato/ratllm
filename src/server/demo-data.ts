@@ -2,10 +2,10 @@ import type { DashboardData, DeploymentRow, LaneSummary, ProviderRow, RunRow } f
 
 const now = Date.now();
 export const demoProviders: ProviderRow[] = [
-  { id: "demo-groq", slug: "groq", name: "Groq", status: "ACTIVE", adapterCapability: "AUTOMATED", modelCount: 3, healthyCount: 3, knownCount: 4, verifiedCount: 4, credentialConfigured: true, credentialVerified: true, lastDiscoveryAt: new Date(now - 22 * 60_000) },
-  { id: "demo-cerebras", slug: "cerebras", name: "Cerebras", status: "ACTIVE", adapterCapability: "AUTOMATED", modelCount: 2, healthyCount: 2, knownCount: 2, verifiedCount: 2, credentialConfigured: true, credentialVerified: true, lastDiscoveryAt: new Date(now - 25 * 60_000) },
-  { id: "demo-nvidia", slug: "nvidia", name: "NVIDIA NIM", status: "DEGRADED", adapterCapability: "PARTIAL", modelCount: 2, healthyCount: 1, knownCount: 3, verifiedCount: 2, credentialConfigured: false, credentialVerified: false, lastDiscoveryAt: new Date(now - 4 * 3_600_000) },
-  { id: "demo-local", slug: "local", name: "Local OpenAI", status: "ACTIVE", adapterCapability: "MANUAL", modelCount: 1, healthyCount: 1, knownCount: 0, verifiedCount: 0, credentialConfigured: true, credentialVerified: true, lastDiscoveryAt: null },
+  { id: "demo-groq", slug: "groq", name: "Groq", status: "ACTIVE", adapterCapability: "AUTOMATED", modelCount: 3, healthyCount: 3, knownCount: 4, verifiedCount: 4, credentialConfigured: true, credentialVerified: true, lastDiscoveryAt: new Date(now - 22 * 60_000), availability: "verified", sourceLastSync: new Date(now - 22 * 60_000) },
+  { id: "demo-cerebras", slug: "cerebras", name: "Cerebras", status: "ACTIVE", adapterCapability: "AUTOMATED", modelCount: 2, healthyCount: 2, knownCount: 2, verifiedCount: 2, credentialConfigured: true, credentialVerified: true, lastDiscoveryAt: new Date(now - 25 * 60_000), availability: "verified", sourceLastSync: new Date(now - 25 * 60_000) },
+  { id: "demo-nvidia", slug: "nvidia", name: "NVIDIA NIM", status: "DEGRADED", adapterCapability: "PARTIAL", modelCount: 2, healthyCount: 1, knownCount: 3, verifiedCount: 2, credentialConfigured: false, credentialVerified: false, lastDiscoveryAt: new Date(now - 4 * 3_600_000), availability: "configured", sourceLastSync: new Date(now - 4 * 3_600_000) },
+  { id: "demo-local", slug: "local", name: "Local OpenAI", status: "ACTIVE", adapterCapability: "MANUAL", modelCount: 1, healthyCount: 1, knownCount: 0, verifiedCount: 0, credentialConfigured: true, credentialVerified: true, lastDiscoveryAt: null, availability: "verified", sourceLastSync: null },
 ];
 
 export const demoDeployments: DeploymentRow[] = [

@@ -3,7 +3,7 @@ import { and, desc, eq, sql } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
 import { candidateChecks, modelCandidates, providerCredentialReferences, providers } from "@/server/db/schema";
 import { getModelCandidates } from "@/server/queries";
-import { resolveProvider } from "@/server/providers/catalog";
+import { providerDefinitionBySlug, resolveProvider } from "@/server/providers/catalog";
 import { PromotionDeferred, promoteCandidate } from "@/server/lanes/promote";
 import { getLiteLLMManagementSettings } from "@/server/settings/litellm-management";
 import { log } from "@/server/logging";
@@ -68,7 +68,12 @@ async function autoAddIfEligible(db:ReturnType<typeof getDb>,row:Candidate){
  *  availability status bars are built from). When `providerBackoff` is a Map, a provider that returned 429 earlier in
  *  the batch is skipped without another call; pass `null` to force a real request for every candidate regardless. */
 async function checkCandidate(db:ReturnType<typeof getDb>,row:Candidate,providerBackoff:Map<string,string>|null,autoAdd:boolean):Promise<VerificationRow>{
-  const testedAt=new Date().toISOString();const definition=resolveProvider(row.source==="openrouter"?"openrouter":row.providerName,row.modelRef);const providerKey=definition?.slug??null;let result:Awaited<ReturnType<typeof verifyCandidateDirectly>>;let credentialId:string|null=null;
+  const testedAt=new Date().toISOString();
+  // Text resolution first, then the provider row getModelCandidates already matched (by id, or by name) — the page and the
+  // verifier used to resolve independently and disagree, so a candidate could look connected on the page while every
+  // scheduled check recorded "provider unresolved".
+  const linkedSlug=row.providerId?(await db.select({slug:providers.slug}).from(providers).where(eq(providers.id,row.providerId)).limit(1))[0]?.slug??null:null;
+  const definition=resolveProvider(row.source==="openrouter"?"openrouter":row.providerName,row.modelRef)??providerDefinitionBySlug(linkedSlug);const providerKey=definition?.slug??null;let result:Awaited<ReturnType<typeof verifyCandidateDirectly>>;let credentialId:string|null=null;
   if(providerKey&&providerBackoff?.has(providerKey))result={status:"rate_limited",httpStatus:429,error:"Provider rate limit reached earlier in this run; retry deferred"};else{const provider=providerKey?(await db.select().from(providers).where(eq(providers.slug,providerKey)).limit(1))[0]??null:null;const credential=provider?(await db.select().from(providerCredentialReferences).where(and(eq(providerCredentialReferences.providerId,provider.id),eq(providerCredentialReferences.disabled,false))).limit(1))[0]??null:null;credentialId=credential?.id??null;result=await verifyCandidateDirectly({modelRef:row.modelRef,source:row.source,provider:definition,providerBaseUrl:provider?.baseUrl??null,credential});}
   // A real completions call failing with 401/403 is stronger, more current evidence than whatever set `valid` true
   // earlier (a manual "Test credential" from before the key was revoked/rotated, or before the Base URL changed) —
@@ -110,13 +115,20 @@ export async function verifyDueCandidates(limit=300,concurrency=8){
   return {processed:results.length,results,nextEligibleAt:results.find(item=>item.status==="rate_limited")?.nextCheckAt??null};
 }
 
+/** Never-tested candidates first, then the longest-untested. The manual run used to sort by name and stop at 250, so with
+ *  800+ connected candidates the same alphabetical 250 were retested on every click and the rest were never covered. */
+export function staleFirst(a:{evidence:Record<string,unknown>;displayName:string},b:{evidence:Record<string,unknown>;displayName:string}){
+  const at=(row:{evidence:Record<string,unknown>})=>typeof row.evidence.testedAt==="string"?new Date(row.evidence.testedAt).getTime():0;
+  return at(a)-at(b)||a.displayName.localeCompare(b.displayName);
+}
+
 /** Manual "test my connected models now": every credential-verified candidate gets a real request, ignoring both the
  *  recheck schedule and per-provider backoff, so the status bars always gain a fresh point on click. Concurrency-limited
  *  so a few hundred candidates don't open a few hundred sockets at once. */
-export async function verifyConnectedCandidates(limit=250,concurrency=10){
+export async function verifyConnectedCandidates(limit=2000,concurrency=10){
   const db=getDb();const rows=await getModelCandidates();
   const connected=rows.filter(row=>row.credentialVerified&&Boolean(row.providerId));
-  const targets=(await skippedByProvider(db,connected)).sort((a,b)=>a.displayName.localeCompare(b.displayName)).slice(0,limit);
+  const targets=(await skippedByProvider(db,connected)).sort(staleFirst).slice(0,limit);
   const { autoAdd }=await getLiteLLMManagementSettings();
   const results:VerificationRow[]=[];let cursor=0;
   async function worker(){while(cursor<targets.length){const row=targets[cursor++];results.push(await checkCandidate(db,row,null,autoAdd));}}

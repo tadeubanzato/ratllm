@@ -11,7 +11,10 @@ export interface CandidateVerificationInput { modelRef: string; source: string; 
 /** The chat-completions URL a candidate's provider is actually reachable at — the same URL LiteLLM would need to call it. */
 export function resolveVerificationEndpoint(provider: ProviderDefinition, baseUrl: string | null) { return resolveCompletionsEndpoint(provider.slug, baseUrl); }
 /** Strips a leading provider-prefix segment community sources sometimes bake into the model id, leaving the bare id the provider's own API expects. */
-export function bareCandidateModelRef(input: CandidateVerificationInput) { if (input.source === "openrouter") return input.modelRef; const segment=input.modelRef.split("/",1)[0]?.toLowerCase(); const prefixes=new Set([input.provider?.slug,"mistral","groq","cerebras","sambanova","together_ai","together-ai","zai","zhipuai","gemini"]); return segment&&prefixes.has(segment)?input.modelRef.slice(segment.length+1):input.modelRef; }
+export function bareCandidateModelRef(input: CandidateVerificationInput) { if (input.source === "openrouter") return input.modelRef; const segment=input.modelRef.split("/",1)[0]?.toLowerCase();
+  // NVIDIA NIM ids are "<org>/<model>" and the org is part of the id ("nvidia/llama-3.1-nemotron-70b-instruct"), so its own
+  // slug must not be treated as a routing prefix the way "groq/…" or "cerebras/…" is — stripping it 404s every nvidia-org model.
+  const prefixes=new Set([input.provider?.slug==="nvidia"?undefined:input.provider?.slug,"mistral","groq","cerebras","sambanova","together_ai","together-ai","zai","zhipuai","gemini"]); return segment&&prefixes.has(segment)?input.modelRef.slice(segment.length+1):input.modelRef; }
 /** Resolves a stored credential to its plaintext secret the same way the verifier does — env var takes precedence over the encrypted DB copy. */
 export function resolveCredentialWithSource(credential: {environmentVariable: string; encryptedValue: string | null}): {secret: string; source: "environment" | "database"} | null {
   const fromEnv = process.env[credential.environmentVariable];
@@ -41,7 +44,13 @@ export async function verifyCandidateDirectly(input: CandidateVerificationInput)
   if(isGigaChat){const tokenResult=await getGigaChatAccessToken(secret);if("error" in tokenResult)return{status:tokenResult.httpStatus===401||tokenResult.httpStatus===403?"auth_error":"unavailable",httpStatus:tokenResult.httpStatus,error:tokenResult.error};apiKey=tokenResult.token;}
   const doFetch=isGigaChat?gigachatFetch:fetch;
   try {
-    const response=await doFetch(url,{method:"POST",headers:{authorization:`Bearer ${apiKey}`,"content-type":"application/json",...buildExtraHeaders(input.provider.slug,input.credential.config)},body:JSON.stringify({model:bareCandidateModelRef(input),messages:[{role:"user",content:"Reply with exactly: OK"}],max_tokens:128,temperature:0}),signal:AbortSignal.timeout(30_000),cache:"no-store"});
+    const send=(model:string)=>doFetch(url,{method:"POST",headers:{authorization:`Bearer ${apiKey}`,"content-type":"application/json",...buildExtraHeaders(input.provider!.slug,input.credential!.config)},body:JSON.stringify({model,messages:[{role:"user",content:"Reply with exactly: OK"}],max_tokens:128,temperature:0}),signal:AbortSignal.timeout(30_000),cache:"no-store"});
+    // Stripping a leading provider prefix is a heuristic ("groq/llama-3" -> "llama-3"), and it is wrong for ids where the
+    // prefix is part of the real name (Groq's own "groq/compound"). A model that answers "unknown" only under the stripped id
+    // is not proof it is unavailable, so retry once with the id exactly as discovered before recording a failure.
+    const stripped=bareCandidateModelRef(input);
+    let response=await send(stripped);
+    if((response.status===400||response.status===404)&&stripped!==input.modelRef){const retry=await send(input.modelRef);if(retry.ok)response=retry;}
     const body=await response.json().catch(()=>({})) as {error?:{message?:string}|string;message?:string;choices?:Array<{message?:{content?:string}}>};
     const error=typeof body.error==="string"?body.error:body.error?.message??body.message??null;
     if(response.status===429)return{status:"rate_limited",httpStatus:response.status,error};

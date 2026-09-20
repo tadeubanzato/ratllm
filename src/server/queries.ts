@@ -3,8 +3,8 @@ import { candidateOnlyBlockReason } from "@/server/discovery/promotion-gate";
 import { liveLaneMember } from "@/server/lanes/membership";
 import { desc, eq, isNotNull, sql } from "drizzle-orm";
 import { getDb } from "./db/client";
-import { candidateChecks, canonicalModels, laneAssignments, lanes, modelCandidates, modelDeployments, providers, providerCredentialReferences, rateLimitProfiles, smokeTests, syncRuns } from "./db/schema";
-import { providerSlug, resolveProvider } from "./providers/catalog";
+import { canonicalModels, laneAssignments, lanes, modelCandidates, modelDeployments, providers, providerCredentialReferences, rateLimitProfiles, smokeTests, syncRuns } from "./db/schema";
+import { providerDefinitionBySlug, providerSlug, resolveProvider } from "./providers/catalog";
 import { matchDeployment, matchDeployments } from "./discovery/model-key";
 import { resolveVerificationEndpoint } from "./discovery/verify";
 import { isFlapLimited, removalHistoryOf, unprovenCheckReason } from "./discovery/auto-add-policy";
@@ -12,8 +12,9 @@ import { nonChatModelReason } from "./discovery/model-type";
 import { providerWiring, CUSTOM_ADAPTER_PROVIDERS } from "./providers/wiring";
 import { sourceRegistry } from "./discovery/registry";
 import { laneStatus, type LaneStatus } from "./status";
+import { historyTimestamp } from "@/lib/utils";
 
-export interface ProviderRow { id: string; slug: string; name: string; status: string; adapterCapability: string; modelCount: number; healthyCount: number; knownCount: number; verifiedCount: number; credentialConfigured: boolean; credentialVerified?: boolean; enabled?: boolean; credentialState?: string; lastDiscoveryAt: Date | null }
+export interface ProviderRow { id: string; slug: string; name: string; status: string; adapterCapability: string; modelCount: number; healthyCount: number; knownCount: number; verifiedCount: number; credentialConfigured: boolean; credentialVerified?: boolean; enabled?: boolean; credentialState?: string; lastDiscoveryAt: Date | null; availability: string; sourceLastSync: Date | null }
 export interface ProviderSourceBreakdown { source: string; tier: string; count: number }
 export interface DeploymentRow { id: string; slug: string; modelName: string; providerModelId: string; litellmModelName: string; litellmDeploymentId: string | null; providerName: string; managed: boolean; health: string; lifecycle?: string; owner?: string | null; credentialFingerprint?: string | null; managedBy?: string | null; curatorVersion?: string | null; firstSeenAt?: Date; lastSeenAt?: Date; score: number | null; freeType: string; contextWindow: number | null; rpmLimit: number | null; tpmLimit: number | null; safeRpm: number | null; safeTpm: number | null; confidence: string; lastTestedAt: Date | null; benchmarkRunCount: number; lastBenchmarkStatus: string | null; apiBase?: string | null; backend?: string | null; host?: string | null; rateLimitProfileId: string | null; observedRpm: number | null; observedTpm: number | null; manualRpm: number | null; manualTpm: number | null; lastProbeAt: Date | null; avgLatencyMs: number | null; avgFirstTokenMs: number | null; latencySampleCount: number }
 export interface LaneSummary { id: string; slug: string; name: string; enabled: boolean; healthy: number; total: number; minimumHealthy: number; status: LaneStatus; confidence: string }
@@ -38,11 +39,33 @@ export async function getProviders(): Promise<ProviderRow[]> {
     knownCount: sql<number>`count(distinct ${modelCandidates.id})::int`,
     verifiedCount: sql<number>`count(distinct ${modelCandidates.id}) filter (where ${modelCandidates.verifiedFree} = true)::int`,
     credentialConfigured: sql<boolean>`count(${providerCredentialReferences.id}) filter (where ${providerCredentialReferences.disabled} = false) > 0`,credentialVerified:sql<boolean>`coalesce(bool_or(${providerCredentialReferences.valid}) filter (where ${providerCredentialReferences.disabled} = false),false)`, lastDiscoveryAt: providers.lastDiscoveryAt,
+    // Availability: derived from credential verification + linked discovery source health.
+    sourceHealth: sql<string | null>`(select ms.status::text from model_sources ms where ms.provider_id = ${providers.id} order by ms.last_sync_at desc limit 1)`,
+    sourceLastSync: sql<Date | null>`(select ms.last_sync_at from model_sources ms where ms.provider_id = ${providers.id} order by ms.last_sync_at desc limit 1)`,
   }).from(providers).leftJoin(modelDeployments, eq(providers.id, modelDeployments.providerId)).leftJoin(providerCredentialReferences, eq(providers.id, providerCredentialReferences.providerId)).leftJoin(modelCandidates, eq(providers.id, modelCandidates.providerId)).groupBy(providers.id).orderBy(providers.name);
   const refs = await db.select().from(providerCredentialReferences);
   return rows.map(row => {
     const available = refs.filter(ref => ref.providerId === row.id && !ref.disabled && (ref.encryptedValue || process.env[ref.environmentVariable]));
-    return {...row, healthyCount: Number(row.healthyCount), credentialConfigured: available.length > 0, credentialVerified: available.some(ref => ref.valid === true), credentialState: !available.length ? "MISSING" : available.some(ref => ref.valid === true) ? "CONFIGURED" : available.some(ref => ref.valid === false) ? "INVALID" : "UNKNOWN"};
+    const credentialState = !available.length ? "MISSING" : available.some(ref => ref.valid === true) ? "CONFIGURED" : available.some(ref => ref.valid === false) ? "INVALID" : "UNKNOWN";
+    let availability: "verified" | "configured" | "discovering" | "no_credential" | "failed" | "blocked" | "unknown";
+    if (available.some(ref => ref.valid === true)) {
+      availability = "verified";
+    } else if (row.sourceHealth === "HEALTHY") {
+      availability = "discovering";
+    } else if (row.sourceHealth === "DEGRADED") {
+      availability = "discovering";
+    } else if (row.sourceHealth === "FAILED") {
+      availability = "failed";
+    } else if (row.sourceHealth === "BLOCKED") {
+      availability = "blocked";
+    } else if (credentialState === "CONFIGURED") {
+      availability = "configured";
+    } else if (credentialState === "MISSING") {
+      availability = "no_credential";
+    } else {
+      availability = "unknown";
+    }
+    return {...row, healthyCount: Number(row.healthyCount), credentialConfigured: available.length > 0, credentialVerified: available.some(ref => ref.valid === true), credentialState, availability, sourceLastSync: row.sourceLastSync};
   });
 }
 
@@ -183,7 +206,7 @@ export async function getModelCandidates(){
     const deployment=provider?matchDeployment(deploymentRows,provider.id,row.modelRef):null;
     const deploymentIds=new Set(deployments.map(item=>item.id));
     const laneMemberships=laneRows.filter(lane=>!lane.excluded&&deploymentIds.has(lane.deploymentId)).map(lane=>({slug:lane.slug,health:deployments.find(item=>item.id===lane.deploymentId)?.health??"UNKNOWN"}));
-    const definition=resolveProvider(row.source==="openrouter"?"openrouter":row.providerName,row.modelRef);
+    const definition=resolveProvider(row.source==="openrouter"?"openrouter":row.providerName,row.modelRef)??providerDefinitionBySlug(provider?.slug);
     const endpoint=definition?resolveVerificationEndpoint(definition,provider?.baseUrl??null):null;
     const promotableReason=candidateOnlyBlockReason(row)??(!provider?"Provider not resolved"
       :CUSTOM_ADAPTER_PROVIDERS[provider.slug]??(nonChatModelReason({modelRef:row.modelRef,displayName:row.displayName,description:typeof row.evidence?.description==="string"?row.evidence.description:null})??(credentialRequired&&!credentialVerified?"Credential not verified":!endpoint?"No known endpoint for this provider":unprovenCheckReason(row.evidence))));
@@ -204,19 +227,43 @@ export async function getModelCandidates(){
 
 export interface CandidateCheckPoint { at: Date; status: string; httpStatus: number | null; error: string | null }
 
-/** Recent per-candidate availability-check history for uptime strips. One query, grouped in memory to avoid N+1 per row. */
-export async function getCandidateCheckHistory(perCandidate = 30, rawLimit = 4000): Promise<Map<string, CandidateCheckPoint[]>> {
-  const rows = await getDb().select({
-    candidateId: candidateChecks.candidateId, at: candidateChecks.createdAt, status: candidateChecks.status,
-    httpStatus: candidateChecks.httpStatus, error: candidateChecks.error,
-  }).from(candidateChecks).orderBy(desc(candidateChecks.createdAt)).limit(rawLimit);
+/** Recent per-candidate availability-check history for uptime strips.
+ *
+ *  Ranked per candidate in SQL (the same row_number() shape getBenchmarkStats uses) rather than by taking the newest
+ *  N rows table-wide and bucketing them in memory. That older approach silently starved every row once the table
+ *  outgrew its global cap: candidate verification writes ~5.4k checks/day across ~2.3k candidates, so a 4,000-row
+ *  window held barely a day and a half of history no matter how much was actually stored — every uptime strip on
+ *  the Discovered Models page collapsed to one or two bars while 15+ days of checks sat unread in the table.
+ *  A per-candidate window can't degrade that way: each candidate gets its own newest `perCandidate` rows, so what
+ *  the strip shows depends only on what was recorded for that candidate, never on how many other candidates exist. */
+export async function getCandidateCheckHistory(perCandidate = 30): Promise<Map<string, CandidateCheckPoint[]>> {
+  const rows = await getDb().execute(sql`
+    with ranked as (
+      select candidate_id, created_at, status, http_status, error,
+        row_number() over (partition by candidate_id order by created_at desc) as rn
+      from candidate_checks
+    )
+    select candidate_id as "candidateId", created_at as "at", status, http_status as "httpStatus", error
+    from ranked where rn <= ${perCandidate} order by candidate_id, created_at desc
+  `) as unknown as Array<Omit<CandidateCheckPoint,"at"> & { at: Date | string; candidateId: string }>;
   const byCandidate = new Map<string, CandidateCheckPoint[]>();
-  for (const row of rows) {
-    const list = byCandidate.get(row.candidateId) ?? [];
-    if (list.length < perCandidate) list.push({at: row.at, status: row.status, httpStatus: row.httpStatus, error: row.error});
-    byCandidate.set(row.candidateId, list);
+  for (const { candidateId, ...point } of rows) {
+    const list = byCandidate.get(candidateId) ?? [];
+    list.push({...point, at: historyTimestamp(point.at)});
+    byCandidate.set(candidateId, list);
   }
   return byCandidate;
+}
+
+/** When each candidate's direct availability check last actually passed. Separate from getCandidateCheckHistory on
+ *  purpose: that one is a bounded window for drawing bars, so a candidate that passed 3 weeks ago and has failed every
+ *  check since would have no pass in its window at all. One grouped scan over candidate_checks (~40k rows). */
+export async function getCandidateLastPassed(): Promise<Map<string, Date>> {
+  const rows = await getDb().execute(sql`
+    select candidate_id as "candidateId", max(created_at) as "at"
+    from candidate_checks where status = 'available' group by candidate_id
+  `) as unknown as Array<{ candidateId: string; at: Date | string }>;
+  return new Map(rows.map(row => [row.candidateId, historyTimestamp(row.at)]));
 }
 
 export async function getLanes(): Promise<LaneSummary[]> {
@@ -266,6 +313,33 @@ export async function getRunHistoryByType(types: readonly string[], perType = 20
   }))]));
 }
 
+export interface SourceCheckPoint { at: Date; status: string; httpStatus: number | null; error: string | null; discoveredCount: number | null }
+
+/**
+ * Recent per-provider discovery source check history for trend indicators.
+ * One query, grouped in memory. Falls back to deployment smoke history when a
+ * provider has no discovery source yet.
+ */
+export async function getProviderSourceCheckHistory(perProvider = 30): Promise<Map<string, SourceCheckPoint[]>> {
+  const rows = await getDb().execute(sql`
+    with ranked as (
+      select provider_id, created_at, status, http_status, error, discovered_count,
+        row_number() over (partition by provider_id order by created_at desc) as rn
+      from source_checks where provider_id is not null
+    )
+    select provider_id as "providerId", created_at as "at", status, http_status as "httpStatus",
+      error, discovered_count as "discoveredCount"
+    from ranked where rn <= ${perProvider} order by provider_id, created_at desc
+  `) as unknown as Array<Omit<SourceCheckPoint,"at"> & { at: Date | string; providerId: string }>;
+  const byProvider = new Map<string, SourceCheckPoint[]>();
+  for (const { providerId, ...point } of rows) {
+    const list = byProvider.get(providerId) ?? [];
+    list.push({...point, at: historyTimestamp(point.at)});
+    byProvider.set(providerId, list);
+  }
+  return byProvider;
+}
+
 export async function getSmokeTests(limit = 20) {
   return getDb().select().from(smokeTests).orderBy(desc(smokeTests.createdAt)).limit(limit);
 }
@@ -296,34 +370,43 @@ export async function getBenchmarkStats(window = 20): Promise<Map<string, Benchm
 export interface SmokeHistoryPoint { at: Date; status: string; httpStatus: number | null; latencyMs: number | null; error: string | null }
 
 /** Recent per-deployment smoke-test history for uptime strips. One query, grouped in memory to avoid N+1 per row. */
-export async function getDeploymentSmokeHistory(perDeployment = 30, rawLimit = 4000): Promise<Map<string, SmokeHistoryPoint[]>> {
-  const rows = await getDb().select({
-    deploymentId: smokeTests.deploymentId, at: smokeTests.createdAt, status: smokeTests.status,
-    httpStatus: smokeTests.httpStatus, latencyMs: smokeTests.latencyMs, error: smokeTests.error,
-  }).from(smokeTests).where(isNotNull(smokeTests.deploymentId)).orderBy(desc(smokeTests.createdAt)).limit(rawLimit);
+export async function getDeploymentSmokeHistory(perDeployment = 30): Promise<Map<string, SmokeHistoryPoint[]>> {
+  const rows = await getDb().execute(sql`
+    with ranked as (
+      select deployment_id, created_at, status, http_status, latency_ms, error,
+        row_number() over (partition by deployment_id order by created_at desc) as rn
+      from smoke_tests where deployment_id is not null
+    )
+    select deployment_id as "deploymentId", created_at as "at", status, http_status as "httpStatus",
+      latency_ms as "latencyMs", error
+    from ranked where rn <= ${perDeployment} order by deployment_id, created_at desc
+  `) as unknown as Array<Omit<SmokeHistoryPoint,"at"> & { at: Date | string; deploymentId: string }>;
   const byDeployment = new Map<string, SmokeHistoryPoint[]>();
-  for (const row of rows) {
-    if (!row.deploymentId) continue;
-    const list = byDeployment.get(row.deploymentId) ?? [];
-    if (list.length < perDeployment) list.push({at: row.at, status: row.status, httpStatus: row.httpStatus, latencyMs: row.latencyMs, error: row.error});
-    byDeployment.set(row.deploymentId, list);
+  for (const { deploymentId, ...point } of rows) {
+    const list = byDeployment.get(deploymentId) ?? [];
+    list.push({...point, at: historyTimestamp(point.at)});
+    byDeployment.set(deploymentId, list);
   }
   return byDeployment;
 }
 
 /** Recent per-provider smoke-test history (across all of a provider's deployments) for uptime strips. */
-export async function getProviderSmokeHistory(perProvider = 20, rawLimit = 6000): Promise<Map<string, SmokeHistoryPoint[]>> {
-  const rows = await getDb().select({
-    providerId: modelDeployments.providerId, at: smokeTests.createdAt, status: smokeTests.status,
-    httpStatus: smokeTests.httpStatus, latencyMs: smokeTests.latencyMs, error: smokeTests.error,
-  }).from(smokeTests)
-    .innerJoin(modelDeployments, eq(smokeTests.deploymentId, modelDeployments.id))
-    .orderBy(desc(smokeTests.createdAt)).limit(rawLimit);
+export async function getProviderSmokeHistory(perProvider = 20): Promise<Map<string, SmokeHistoryPoint[]>> {
+  const rows = await getDb().execute(sql`
+    with ranked as (
+      select d.provider_id, s.created_at, s.status, s.http_status, s.latency_ms, s.error,
+        row_number() over (partition by d.provider_id order by s.created_at desc) as rn
+      from smoke_tests s join model_deployments d on d.id = s.deployment_id
+    )
+    select provider_id as "providerId", created_at as "at", status, http_status as "httpStatus",
+      latency_ms as "latencyMs", error
+    from ranked where rn <= ${perProvider} order by provider_id, created_at desc
+  `) as unknown as Array<Omit<SmokeHistoryPoint,"at"> & { at: Date | string; providerId: string }>;
   const byProvider = new Map<string, SmokeHistoryPoint[]>();
-  for (const row of rows) {
-    const list = byProvider.get(row.providerId) ?? [];
-    if (list.length < perProvider) list.push({at: row.at, status: row.status, httpStatus: row.httpStatus, latencyMs: row.latencyMs, error: row.error});
-    byProvider.set(row.providerId, list);
+  for (const { providerId, ...point } of rows) {
+    const list = byProvider.get(providerId) ?? [];
+    list.push({...point, at: historyTimestamp(point.at)});
+    byProvider.set(providerId, list);
   }
   return byProvider;
 }

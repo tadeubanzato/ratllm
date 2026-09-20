@@ -1,9 +1,11 @@
+export type FreeType = "FREE_TIER" | "UNKNOWN" | "RECURRING_CREDIT" | "TRIAL_QUOTA" | "PROVIDER_SPECIFIC_FREE";
+
 export interface DiscoveredCandidate {
   source: string;
   modelRef: string;
   displayName: string;
   providerName?: string;
-  freeType: "FREE_TIER" | "UNKNOWN" | "RECURRING_CREDIT" | "TRIAL_QUOTA" | "PROVIDER_SPECIFIC_FREE";
+  freeType: FreeType;
   verifiedFree: boolean;
   contextWindow?: number;
   maxOutputTokens?: number;

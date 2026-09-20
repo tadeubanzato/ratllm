@@ -81,6 +81,7 @@ export const providerWiring: Readonly<Record<string, ProviderWiring>> = {
   // available. Its free lane (kilo-auto/free and named free models) also genuinely needs no credential at all.
   kilo: { completions: "https://api.kilo.ai/api/gateway/chat/completions", credentialOptional: true },
 
+  "chutes": { check: { url: "https://api.chutes.ai/v1/models", auth: "bearer" }, completions: "https://api.chutes.ai/v1/chat/completions", credentialOptional: true },
   "cloudflare-workers-ai": { check: { url: "https://api.cloudflare.com/client/v4/user/tokens/verify", auth: "bearer" } }, // completions needs the account-scoped Base URL set on the provider page
 
   // Added 2026-09-11: had zero wiring (portal link only). Sarvam's own docs confirm both its native
@@ -120,6 +121,13 @@ export const providerWiring: Readonly<Record<string, ProviderWiring>> = {
   // Russian government CA chain Node doesn't trust by default — both handled in providers/gigachat.ts, which
   // discovery/verify.ts and providers/verify.ts swap in ahead of the generic bearer-token path below.
   gigachat: { check: { url: "https://gigachat.devices.sberbank.ru/api/v1/models", auth: "bearer" }, completions: "https://gigachat.devices.sberbank.ru/api/v1/chat/completions" },
+  // Added 2026-09-19: additional providers with free tiers per freellm.net + community audits.
+  // GitHub Models: requires X-GitHub-Api-Version: 2025-01-01 header; free tier 10 RPM/50 RPD for personal accounts.
+  "github-models": { check: { url: "https://api.github.com/models", auth: "bearer" }, completions: "https://api.github.com/chat/completions" },
+  // OVHcloud: European provider, 2 RPM anonymous/free tier, no credit card required.
+  "ovhcloud": { check: { url: "https://api.ovhcloud.ai/v1/models", auth: "bearer" }, completions: "https://api.ovhcloud.ai/v1/chat/completions" },
+  // Aion Labs: Israeli provider, 15 RPM / 20K TPD free tier.
+  "aion-labs": { check: { url: "https://api.aionlabs.ai/v1/models", auth: "bearer" }, completions: "https://api.aionlabs.ai/v1/chat/completions" },
 };
 
 /** Providers this app expects to be automatable (catalog adapterCapability AUTOMATED/PARTIAL) that are
@@ -193,9 +201,10 @@ export const integrationStatusTone: Readonly<Record<IntegrationStatus, "good" | 
  * Workspace ID is the first case: DashScope's newer workspace-scoped endpoints require it in the hostname, and
  * some workspace-scoped API keys are rejected on the shared compatible-mode host without it declared explicitly.
  */
-export interface ExtraCredentialField { key: string; label: string; placeholder?: string; header: string }
+export interface ExtraCredentialField { key: string; label: string; placeholder?: string; header: string; defaultValue?: string }
 export const EXTRA_CREDENTIAL_FIELDS: Readonly<Record<string, readonly ExtraCredentialField[]>> = {
   "alibaba-model-studio": [{key: "workspaceId", label: "Workspace ID (optional)", placeholder: "llm-xxxxxxxxxxxxxxxx", header: "X-DashScope-WorkSpace"}],
+  "github-models": [{key: "apiVersion", label: "API Version", header: "X-GitHub-Api-Version", defaultValue: "2025-01-01"}],
 };
 
 /** Turns a credential's stored config values into the extra HTTP headers this provider's requests need — applied
@@ -204,7 +213,10 @@ export function buildExtraHeaders(slug: string, config: Record<string, string> |
   const fields = EXTRA_CREDENTIAL_FIELDS[slug];
   if (!fields || !config) return {};
   const headers: Record<string, string> = {};
-  for (const field of fields) { const value = config[field.key]; if (value) headers[field.header] = value; }
+  for (const field of fields) {
+    const value = config[field.key] ?? field.defaultValue;
+    if (value) headers[field.header] = value;
+  }
   return headers;
 }
 
