@@ -29,6 +29,8 @@ export const providers = pgTable("providers", {
   baseUrl: text("base_url"),
   enabled: boolean("enabled").notNull().default(true),
   lastDiscoveryAt: timestamp("last_discovery_at", { withTimezone: true }),
+  /** CATALOG: defined in providers/catalog.ts. DISCOVERED: created because a source named it (docs/DISCOVERY-PIPELINE.md I3). */
+  origin: text("origin").notNull().default("CATALOG"),
   ...timestamps,
 }, (table) => [index("providers_status_idx").on(table.status)]);
 
@@ -76,8 +78,29 @@ export const modelCandidates = pgTable("model_candidates", {
   evidence: jsonb("evidence").$type<Record<string, unknown>>().notNull().default({}),
   firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
   lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  /** bareModelKey(modelRef), stored so "same model at this provider" is an indexed lookup rather than a scan (I10, I12). */
+  modelKey: text("model_key").notNull().default(""),
+  // Direct-check state (I6, I7). Real provider calls only; see docs/DISCOVERY-PIPELINE.md §6.
+  lastCheckStatus: text("last_check_status"),
+  lastCheckedAt: timestamp("last_checked_at", { withTimezone: true }),
+  lastPassedAt: timestamp("last_passed_at", { withTimezone: true }),
+  consecutivePasses: integer("consecutive_passes").notNull().default(0),
+  everFailed: boolean("ever_failed").notNull().default(false),
+  nextCheckAt: timestamp("next_check_at", { withTimezone: true }),
+  /** Why no call can be made right now (null = testable). Not history: it never breaks or extends a streak (I6). */
+  checkBlocker: text("check_blocker"),
+  /** Stamped by a successful promotion (I11). */
+  addedToLitellmAt: timestamp("added_to_litellm_at", { withTimezone: true }),
+  addedBy: text("added_by"),
   ...timestamps,
-}, (table) => [uniqueIndex("candidate_source_model_uidx").on(table.source, table.modelRef), index("candidate_lifecycle_idx").on(table.lifecycle), index("candidate_free_idx").on(table.freeType, table.verifiedFree), index("candidate_provider_idx").on(table.providerId)]);
+}, (table) => [
+  uniqueIndex("candidate_source_model_uidx").on(table.source, table.modelRef), index("candidate_lifecycle_idx").on(table.lifecycle),
+  index("candidate_free_idx").on(table.freeType, table.verifiedFree), index("candidate_provider_idx").on(table.providerId),
+  index("candidate_provider_key_idx").on(table.providerId, table.modelKey),
+  index("candidate_next_check_idx").on(table.nextCheckAt),
+  index("candidate_rank_idx").on(table.consecutivePasses, table.lastPassedAt),
+  index("candidate_first_seen_idx").on(table.firstSeenAt),
+]);
 
 export const candidateChecks = pgTable("candidate_checks", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -195,7 +218,8 @@ export const automationJobs = pgTable("automation_jobs", {
 }, (table) => [index("automation_jobs_due_idx").on(table.enabled, table.nextRunAt)]);
 
 export const modelSources = pgTable("model_sources", {
-  id: uuid("id").primaryKey().defaultRandom(), name: text("name").notNull(), type: sourceType("type").notNull(), providerId: uuid("provider_id").references(() => providers.id, { onDelete: "set null" }), url: text("url"), enabled: boolean("enabled").notNull().default(true), priority: integer("priority").notNull().default(100), credentialReference: text("credential_reference"), adapterReference: text("adapter_reference"), lastSyncAt: timestamp("last_sync_at", { withTimezone: true }), status: text("status").notNull().default("UNKNOWN"), discoveredModelCount: integer("discovered_model_count").notNull().default(0), ...timestamps,
+  id: uuid("id").primaryKey().defaultRandom(), name: text("name").notNull(), type: sourceType("type").notNull(), providerId: uuid("provider_id").references(() => providers.id, { onDelete: "set null" }), url: text("url"), enabled: boolean("enabled").notNull().default(true), priority: integer("priority").notNull().default(100), credentialReference: text("credential_reference"), adapterReference: text("adapter_reference"), lastSyncAt: timestamp("last_sync_at", { withTimezone: true }), status: text("status").notNull().default("UNKNOWN"), discoveredModelCount: integer("discovered_model_count").notNull().default(0),
+  lastError: text("last_error"), lastSuccessAt: timestamp("last_success_at", { withTimezone: true }), ...timestamps,
 });
 
 export const sourceChecks = pgTable("source_checks", {
@@ -208,6 +232,27 @@ export const sourceChecks = pgTable("source_checks", {
   discoveredCount: integer("discovered_count"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [index("source_checks_source_created_idx").on(table.sourceId, table.createdAt)]);
+
+/** What a source says about a provider's free offer (docs/DISCOVERY-PIPELINE.md §5). Text fields are the source's own
+ *  wording, kept verbatim: a quoted limit cannot be wrong, a parsed one can. One row per (provider, source). */
+export const providerOffers = pgTable("provider_offers", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  providerId: uuid("provider_id").notNull().references(() => providers.id, { onDelete: "cascade" }),
+  source: text("source").notNull(),
+  freeType: freeType("free_type").notNull().default("UNKNOWN"),
+  freeTierText: text("free_tier_text"),
+  rateLimitsText: text("rate_limits_text"),
+  notes: text("notes"),
+  expiresAt: text("expires_at"),
+  cardRequired: boolean("card_required"),
+  phoneRequired: boolean("phone_required"),
+  commercialOk: boolean("commercial_ok"),
+  openaiBaseUrl: text("openai_base_url"),
+  docsUrl: text("docs_url"),
+  sourceVerified: boolean("source_verified"),
+  sourceLastVerified: text("source_last_verified"),
+  observedAt: timestamp("observed_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [uniqueIndex("provider_offer_uidx").on(table.providerId, table.source)]);
 
 export const providersRelations = relations(providers, ({ many }) => ({ deployments: many(modelDeployments), credentials: many(providerCredentialReferences) }));
 export const modelsRelations = relations(canonicalModels, ({ many }) => ({ deployments: many(modelDeployments), capabilities: many(modelCapabilities) }));

@@ -25,12 +25,28 @@ describe("persistDiscoveredItems (behavior contract)", () => {
     expect(state.providerIdBySlug.get("groq")).toBe(provider.id);
   });
 
-  it("stores an unresolved provider as null without inventing one", async () => {
+  it("derives a provider a source names but the catalog does not know (I3)", async () => {
     await persist([item({ modelRef: "zzz-1", providerName: "Nonexistent Corp" })]);
     const [row] = await rows();
-    expect(row.providerId).toBeNull();
+    const [provider] = await getDb().select().from(providers).where(eq(providers.slug, "nonexistent-corp"));
+    expect(provider).toMatchObject({ name: "Nonexistent Corp", origin: "DISCOVERED", adapterCapability: "MANUAL" });
+    expect(row.providerId).toBe(provider.id);
     expect(row.providerName).toBe("Nonexistent Corp");
+  });
+
+  it("leaves an item with no provider name and no catalog hint unattributed, without inventing a provider", async () => {
+    await persist([item({ modelRef: "zzz-1-7b", providerName: undefined })]);
+    const [row] = await rows();
+    expect(row.providerId).toBeNull();
     expect(await getDb().select().from(providers)).toHaveLength(0);
+  });
+
+  it("stores the model key, and marks a non-chat model in its evidence so it is never sent a chat call", async () => {
+    await persist([item({ modelRef: "openai/whisper-large-v3", displayName: "Whisper" }), item({ modelRef: "llama-3.3-70b-versatile" })]);
+    const byRef = new Map((await rows()).map(row => [row.modelRef, row]));
+    expect(byRef.get("llama-3.3-70b-versatile")?.modelKey).toBe("llama3370bversatile");
+    expect(byRef.get("openai/whisper-large-v3")?.evidence.nonChatReason).toMatch(/Speech-to-text/);
+    expect(byRef.get("llama-3.3-70b-versatile")?.evidence.nonChatReason).toBeNull();
   });
 
   it("normalizes providerName to the catalog's name", async () => {
@@ -97,8 +113,15 @@ describe("persistDiscoveredItems (behavior contract)", () => {
     expect(await rows()).toHaveLength(2);
   });
 
-  it("does not merge unresolved-provider items with each other by name", async () => {
+  it("merges the same model from two sources at a derived provider, like any other provider (I10)", async () => {
     await persist([item({ modelRef: "zzz-1", providerName: "Nonexistent Corp" }), item({ source: "src-b", modelRef: "zzz-1", providerName: "Nonexistent Corp" })]);
+    const found = await rows();
+    expect(found).toHaveLength(1);
+    expect(found[0].evidence.corroboratingSources).toEqual([{ source: "src-b", sourceUrl: "https://a.example/models" }]);
+  });
+
+  it("does not merge unattributed items with each other: with no provider there is nothing to say they are the same model", async () => {
+    await persist([item({ modelRef: "zzz-1-7b", providerName: undefined }), item({ source: "src-b", modelRef: "zzz-1-7b", providerName: undefined })]);
     expect(await rows()).toHaveLength(2);
   });
 

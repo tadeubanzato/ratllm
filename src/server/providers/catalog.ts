@@ -48,6 +48,9 @@ const aliases:Readonly<Record<string,string>>={gemini:"google-ai-studio",google:
   // got misfiled onto the real DeepInfra provider despite never having come from DeepInfra's own catalog.
   deep_infra:"deepinfra","stepfun_china":"stepfun","minimax_minimax_io":"minimax",coreweave:"wandb",kilo_gateway:"kilo",sarvam_ai:"sarvam",ai21_labs:"ai21","github_models":"github-models","ovhcloud":"ovhcloud","aion_labs":"aion-labs","sambanova_cloud":"sambanova","llm7":"llm7","opencode_zen":"opencode-zen"};
 const normalized=(value:string)=>value.trim().toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"");
+/** The one rule that turns a provider's name into its slug. Shared with attribution.ts so a provider a source names and a
+ *  provider the catalog knows can never disagree about what "the same name" means. */
+export const normalizeProviderName=normalized;
 // A provider's own display name ("W&B Inference", "Chutes AI", "Novita AI") is what discovery sources store as
 // providerName once a record has been matched to it, and it never appears in `aliases` — so without this a
 // perfectly catalogued provider fell through to "unresolved" purely because its name isn't spelled like its slug.
