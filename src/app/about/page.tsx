@@ -39,14 +39,14 @@ export default function AboutPage() {
             <dd>Every provider you have configured, its credential and operational status, and a per-provider Availability history — each provider shows its own uptime, not one number shared across the page.</dd>
             <dt>Discovered Models</dt>
             <dd>Models found on a provider&apos;s catalog before they are added to LiteLLM. Add one into a lane once you are ready to route traffic to it and test it.</dd>
-            <dt>Lanes</dt>
-            <dd>The <code>smart-*</code> LiteLLM model groups (general, coding, agent, deep reasoning, long-context, vision, summary, speech) and which deployments currently back each one, with cross-lane fallback chains kept in sync automatically.</dd>
-            <dt>Benchmarks</dt>
-            <dd>Operational results from the automatic health probe for every deployment: pass/fail, latency, success rate over recent runs, latency percentiles, and time-to-first-token.</dd>
-            <dt>Runs</dt>
+            <dt>Automation Runs</dt>
             <dd>The execution log for every scheduled and manually triggered job — discovery, credential verification, health checks, rate-limit learning, lane reconciliation, and maintenance.</dd>
             <dt>LiteLLM</dt>
             <dd>The connection to your LiteLLM proxy. Sync inventory, run a smoke test against any deployment, and see which deployments RatLLM manages versus which it leaves alone.</dd>
+            <dt>Lanes</dt>
+            <dd>The <code>smart-*</code> LiteLLM model groups (general, coding, agent, deep reasoning, long-context, vision, summary, speech) and which deployments currently back each one, with cross-lane fallback chains kept in sync automatically.</dd>
+            <dt>Performance</dt>
+            <dd>How every deployment in LiteLLM is doing, from the automatic health probe: pass/fail, latency, success rate over recent probes, latency percentiles, and time-to-first-token. It measures availability and speed, not answer quality.</dd>
             <dt>Settings</dt>
             <dd>Environment information, provider credentials, the LiteLLM connection, automation schedules, model sources, and API access.</dd>
           </dl>
