@@ -7,7 +7,9 @@ type Match = { slug: string; score: number; recommended: boolean; reason: string
 type LaneInfo = { blocked: string | null; directAliasName: string | null; members: string[]; matches: Match[]; displayName: string };
 type TargetResult = { target: string; lane: string | null; status: string; error?: string };
 
-export function AddToLiteLLMButton({ candidateId }: { candidateId: string }) {
+/** `nonChat`: the model is classified as not a chat model (a safety classifier, say) but answers chat requests. It can be added by hand as a
+ *  direct alias only — never into a lane, where it would answer real traffic with scores. */
+export function AddToLiteLLMButton({ candidateId, nonChat = false }: { candidateId: string; nonChat?: boolean }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [info, setInfo] = useState<LaneInfo | null>(null);
@@ -19,13 +21,13 @@ export function AddToLiteLLMButton({ candidateId }: { candidateId: string }) {
   const [error, setError] = useState("");
 
   async function openModal() {
-    setOpen(true); setResult(null); setError(""); setInfo(null); setDirectAlias(false); setLoading(true);
+    setOpen(true); setResult(null); setError(""); setInfo(null); setDirectAlias(nonChat); setLoading(true);
     try {
-      const response = await fetch(`/api/candidates/${candidateId}/lanes`);
+      const response = await fetch(`/api/candidates/${candidateId}/lanes${nonChat ? "?allowNonChat=1" : ""}`);
       const body = await response.json();
       if (!response.ok) throw new Error(body.error?.message ?? "Could not load lane suggestions");
       setInfo(body as LaneInfo);
-      setSelected(new Set((body.matches as Match[]).filter(match => match.recommended && !match.alreadyIn && !match.full).map(match => match.slug)));
+      setSelected(nonChat ? new Set() : new Set((body.matches as Match[]).filter(match => match.recommended && !match.alreadyIn && !match.full).map(match => match.slug)));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Failed to load");
     } finally {
@@ -46,7 +48,7 @@ export function AddToLiteLLMButton({ candidateId }: { candidateId: string }) {
     try {
       const response = await fetch(`/api/candidates/${candidateId}/promote`, {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ lanes: [...selected], directAlias }),
+        body: JSON.stringify(nonChat ? { lanes: [], directAlias: true, allowNonChat: true } : { lanes: [...selected], directAlias }),
       });
       const body = await response.json();
       if (!response.ok && response.status !== 207) throw new Error(body.error?.message ?? "Adding to LiteLLM failed");
@@ -60,11 +62,21 @@ export function AddToLiteLLMButton({ candidateId }: { candidateId: string }) {
   }
 
   return <>
-    <button className="button small" type="button" onClick={openModal}>Add to LiteLLM</button>
-    <Modal open={open} title="Add to LiteLLM routing" onClose={() => setOpen(false)}>
+    <button className="button small" type="button" onClick={openModal}>{nonChat ? "Add as direct alias" : "Add to LiteLLM"}</button>
+    <Modal open={open} title={nonChat ? "Add as a direct alias" : "Add to LiteLLM routing"} onClose={() => setOpen(false)}>
       {loading ? <p className="settings-help">Analysing capabilities…</p>
         : error && !info ? <p className="settings-feedback is-error">{error}</p>
           : info?.blocked ? <p className="settings-feedback is-error">{info.blocked}</p>
+            : info && nonChat ? <div style={{ display: "grid", gap: 12 }}>
+              <p className="settings-help">RatLLM classifies this as a safety or classifier model, not a chat model. It still answers requests, so it can be added as its own alias for screening prompts. It is <strong>never put in a lane</strong>, so ordinary traffic will not reach it.</p>
+              <p className="settings-help mono">{info.directAliasName}</p>
+              {result?.map((item, index) => <span key={index} className="settings-help" style={{ color: item.status === "failed" ? "var(--red)" : "var(--green)" }}>{item.status === "failed" ? `Failed: ${item.error}` : item.status === "exists" ? "Already present" : "Added ✓"}</span>)}
+              {error && <p className="settings-feedback is-error">{error}</p>}
+              <div className="modal-actions">
+                <button className="button" type="button" onClick={() => setOpen(false)} disabled={busy}>Cancel</button>
+                <button className="button primary" type="button" onClick={submit} disabled={busy || !info.directAliasName}>{busy ? "Adding…" : "Add alias"}</button>
+              </div>
+            </div>
             : info ? <div style={{ display: "grid", gap: 12 }}>
               <p className="settings-help">Pre-checked lanes are auto-selected from the model’s capabilities. Adding it to a lane puts it in that group’s routing pool and its fallback chain.</p>
               <div style={{ display: "grid", gap: 10 }}>

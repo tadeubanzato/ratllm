@@ -21,8 +21,8 @@ export function remainingCalls(slug: string, used: number): number {
   return Math.max(0, dailyCallBudget(slug) - Math.max(0, used));
 }
 
-/** Share of the day discovery's candidate checks may use. The rest is kept for health probes, which are what keep the models
- *  already in LiteLLM honest, so a long tail of untested candidates can never starve them. */
+/** Share of a provider's daily budget that discovery's candidate checks may use. The rest is headroom so that discovery and health
+ *  probing together stay well inside a small free tier (OpenRouter: 14 + 24 = 38 of its 50 a day). */
 export const CANDIDATE_CHECK_SHARE = 0.6;
 
 export function remainingCandidateChecks(slug: string, used: number): number {
@@ -34,10 +34,7 @@ export function remainingCandidateChecks(slug: string, used: number): number {
  *  its live deployments unmonitored. Discovery is the one that yields (it stops at CANDIDATE_CHECK_SHARE of the total). */
 export const HEALTH_PROBES_LAST_24H_SQL = `select d.provider_id, count(*)::int as n from smoke_tests s join model_deployments d on d.id = s.deployment_id where s.created_at > now() - interval '24 hours' group by d.provider_id`;
 
-/** Real calls a provider has already received in the last 24 hours, from both candidate checks and health probes. Shared so the
- *  two never spend the same allowance twice: drizzle-free SQL text, used as a CTE. */
-export const CALLS_LAST_24H_SQL = `select provider_id, count(*)::int as n from (
-  select m.provider_id from candidate_checks ch join model_candidates m on m.id = ch.candidate_id where ch.created_at > now() - interval '24 hours'
-  union all
-  select d.provider_id from smoke_tests s join model_deployments d on d.id = s.deployment_id where s.created_at > now() - interval '24 hours'
-) calls group by provider_id`;
+/** Discovery's candidate checks only. Each kind of call is limited by its own usage, so neither can starve the other: a provider with
+ *  many live deployments spends a large share of its day on health probes, and if those counted against discovery it could never prove
+ *  a new model (Alibaba, with 19 deployments, was stuck at 495 calls against a 120-call allowance). */
+export const CANDIDATE_CHECKS_LAST_24H_SQL = `select m.provider_id, count(*)::int as n from candidate_checks ch join model_candidates m on m.id = ch.candidate_id where ch.created_at > now() - interval '24 hours' group by m.provider_id`;

@@ -5,7 +5,7 @@ import { auditEvents, candidateChecks, laneAssignments, lanes, modelCandidates, 
 import { keyFingerprint } from "@/server/credentials/fingerprint";
 import { resolveCredentialWithSource } from "@/server/discovery/verify";
 import { removalHistoryOf } from "@/server/discovery/auto-add-policy";
-import { bareModelKey } from "@/server/discovery/model-key";
+import { bareModelKey, deploymentModelKey } from "@/server/discovery/model-key";
 import { sourceRegistry } from "@/server/discovery/registry";
 import { computeFailureStreak } from "@/server/health/failure-streak";
 import { connectionSummary } from "@/server/settings/connections";
@@ -53,7 +53,7 @@ export async function getDeploymentDetail(id: string) {
   let candidate = linkedId ? (await db.select().from(modelCandidates).where(eq(modelCandidates.id, linkedId)).limit(1))[0] : undefined;
   let candidateLink: "recorded" | "matched" | null = candidate ? "recorded" : null;
   if (!candidate) {
-    const key = bareModelKey(self.providerModelId);
+    const key = deploymentModelKey(self.providerModelId);
     candidate = (await db.select().from(modelCandidates).where(eq(modelCandidates.providerId, self.providerId))).find(row => bareModelKey(row.modelRef) === key);
     if (candidate) candidateLink = "matched";
   }

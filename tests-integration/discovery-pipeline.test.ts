@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
-import { candidateChecks, canonicalModels, modelCandidates, modelDeployments, modelSources, providerCredentialReferences, providerOffers, providers, sourceChecks, syncRuns, systemSettings } from "@/server/db/schema";
+import { candidateChecks, canonicalModels, modelCandidates, modelDeployments, modelSources, providerCredentialReferences, providerOffers, providers, smokeTests, sourceChecks, syncRuns, systemSettings } from "@/server/db/schema";
 import { runDiscovery, persistProviderOffers, persistDiscoveredItems } from "@/server/discovery/run";
 import { consolidateModelCandidates, RETIRE_AFTER_MS } from "@/server/discovery/consolidate";
 import { reconcileCheckBlockers } from "@/server/discovery/blockers";
@@ -453,6 +453,17 @@ describe("I7 — the streak counts consecutive real passes", () => {
     await db().update(candidateChecks).set({ createdAt: new Date(Date.now() - 25 * HOUR) }).where(eq(candidateChecks.candidateId, cands[19].id));
     await verifyDueCandidates();
     expect(calls).toHaveLength(14);
+  });
+
+  it("does not let a provider's health probes use up discovery's allowance: a provider with many live deployments can still prove new models", async () => {
+    const orp = await provider("openrouter", "OpenRouter"); await credential(orp.id, true, "K1");
+    for (let i = 0; i < 5; i++) await candidate({ modelRef: `new-${i}-7b`, providerId: orp.id });
+    const live = await deployment(orp.id, "openai/live-model");
+    // 500 health probes today: far more than the provider's whole daily budget, but none of them is a candidate check
+    await db().insert(smokeTests).values(Array.from({ length: 500 }, () => ({ deploymentId: live.id, correlationId: "probe", status: "PASSED" as const, latencyMs: 100, httpStatus: 200 })));
+    const calls = stubProvider(ok);
+    await verifyDueCandidates();
+    expect(calls).toHaveLength(5);
   });
 
   it("within the allowance, candidates already on a pass streak are checked before untested ones", async () => {

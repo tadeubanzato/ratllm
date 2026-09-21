@@ -7,10 +7,10 @@ import { endpointBaseHint } from "@/server/providers/wiring";
 import { PromotionDeferred, promoteCandidate } from "@/server/lanes/promote";
 import { getLiteLLMManagementSettings } from "@/server/settings/litellm-management";
 import { log } from "@/server/logging";
-import { CALLS_LAST_24H_SQL, CANDIDATE_CHECK_SHARE, DEFAULT_DAILY_CALL_BUDGET, PROVIDER_DAILY_CALL_BUDGET } from "@/server/providers/call-budget-policy";
+import { CANDIDATE_CHECKS_LAST_24H_SQL, CANDIDATE_CHECK_SHARE, DEFAULT_DAILY_CALL_BUDGET, PROVIDER_DAILY_CALL_BUDGET } from "@/server/providers/call-budget-policy";
 import { autoAddDeferredUntil, isAutoAddDeferred, isAutoReAddBlocked } from "./auto-add-policy";
 import { candidateOnlyBlockReason } from "./promotion-gate";
-import { bareModelKey } from "./model-key";
+import { deploymentModelKey } from "./model-key";
 import { reconcileCheckBlockers, type CheckBlocker } from "./blockers";
 import { verifyCandidateDirectly, type CandidateVerificationStatus } from "./verify";
 import { supportsCredentialTest, verifyProvider } from "@/server/providers/verify";
@@ -52,7 +52,7 @@ async function loadContext(db: ReturnType<typeof getDb>): Promise<Context> {
   }
   return {
     providers: new Map(providerRows.map(row => [row.id, row])), credentials, offerBaseUrls, offerFreeTypes, credentialRechecked: new Set(),
-    live: new Set(deploymentRows.map(row => liveKey(row.providerId, bareModelKey(row.providerModelId)))),
+    live: new Set(deploymentRows.map(row => liveKey(row.providerId, deploymentModelKey(row.providerModelId)))),
   };
 }
 
@@ -164,13 +164,13 @@ const providerBudgetSql = () => sql`case p.slug ${sql.join(Object.entries(PROVID
  *  next-check time. Ranked within each provider and then interleaved, so a provider with thousands of models cannot crowd every
  *  other provider out of a run, and a 429 from one is felt by one. Never loads more than `limit` rows.
  *
- *  Each provider also has a daily call budget (providers/call-budget-policy.ts) shared with health probes: once a provider has
- *  spent its candidate-check share of the last 24 hours it gets no more checks until calls age out of the window. Within that
+ *  Each provider also has a daily call budget (providers/call-budget-policy.ts): once its candidate checks have used their share of the
+ *  last 24 hours it gets no more until they age out of the window. Health probes are counted separately and never reduce this. Within that
  *  allowance, candidates already on a pass streak go first, since they are the ones closest to being added. */
 async function selectDue(db: ReturnType<typeof getDb>, limit: number): Promise<Candidate[]> {
   const budget = providerBudgetSql();
   const ids = await db.execute(sql`
-    with used as (${sql.raw(CALLS_LAST_24H_SQL)})
+    with used as (${sql.raw(CANDIDATE_CHECKS_LAST_24H_SQL)})
     select id from (
       select c.id, c.next_check_at,
         row_number() over (partition by c.provider_id order by (c.consecutive_passes > 0) desc, coalesce(c.next_check_at, 'epoch'::timestamptz), c.id) as rn,
