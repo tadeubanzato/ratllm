@@ -78,3 +78,18 @@ describe("evaluateStatus", () => {
     expect(evaluateStatus({ ...healthy(), deployment: { problems: [{ severity: "info" as const, message: "note" }] } }).status).toBe("healthy");
   });
 });
+
+describe("credential messages name the providers", () => {
+  it("say which providers are invalid, so the notice can be acted on", () => {
+    const result = evaluateStatus({ ...healthy(), credentials: { invalid: 2, unverified: 0, invalidProviders: ["Hyperbolic", "Volcengine Ark"] } });
+    expect(result.reasons.find(reason => reason.area === "credentials")?.message).toBe("2 provider credentials are invalid: Hyperbolic, Volcengine Ark.");
+  });
+  it("still read correctly with only counts", () => {
+    expect(evaluateStatus({ ...healthy(), credentials: { invalid: 1, unverified: 0 } }).reasons.find(reason => reason.area === "credentials")?.message).toBe("1 provider credential is invalid.");
+  });
+  it("name the unverified ones too", () => {
+    const result = evaluateStatus({ ...healthy(), credentials: { invalid: 0, unverified: 1, unverifiedProviders: ["Groq"] } });
+    expect(result.reasons.find(reason => reason.area === "credentials")).toMatchObject({ severity: "info", message: "1 provider credential has not been verified yet: Groq." });
+  });
+});
+

@@ -2,7 +2,9 @@ import "server-only";
 import { providerSlug } from "./catalog";
 export interface ProviderPortal {
   url: string;
-  label: "Generate API key" | "Open provider console";
+  /** "Generate API key": a page that creates a key. "Open provider console": the provider's dashboard, where keys are made. "Open provider docs":
+   *  only the provider's own documentation (from a discovery source), for providers no one has curated a key page for. */
+  label: "Generate API key" | "Open provider console" | "Open provider docs";
 }
 
 const providerPortals: Readonly<Record<string, ProviderPortal>> = {
@@ -17,7 +19,7 @@ const providerPortals: Readonly<Record<string, ProviderPortal>> = {
   kilo: { url: "https://app.kilo.ai/", label: "Open provider console" },
   "vercel-ai-gateway": { url: "https://vercel.com/ai-gateway", label: "Open provider console" },
   "opencode-zen": { url: "https://opencode.ai/auth", label: "Open provider console" },
-  llm7: { url: "https://token.llm7.io/", label: "Generate API key" },
+  llm7: { url: "https://llm7.io/", label: "Open provider console" },
   "hugging-face": { url: "https://huggingface.co/settings/tokens", label: "Generate API key" },
   "cloudflare-workers-ai": { url: "https://dash.cloudflare.com/profile/api-tokens", label: "Generate API key" },
   "alibaba-model-studio": { url: "https://modelstudio.console.alibabacloud.com/", label: "Open provider console" },
@@ -39,23 +41,75 @@ const providerPortals: Readonly<Record<string, ProviderPortal>> = {
   typhoon: { url: "https://playground.opentyphoon.ai/api-key", label: "Generate API key" },
   siliconflow: { url: "https://cloud.siliconflow.cn/account/ak", label: "Generate API key" },
   novita: { url: "https://novita.ai/settings/key-management", label: "Generate API key" },
-  fireworks: { url: "https://fireworks.ai/account/api-keys", label: "Generate API key" },
+  fireworks: { url: "https://app.fireworks.ai/settings/users/api-keys", label: "Generate API key" },
   featherless: { url: "https://featherless.ai/account/api-keys", label: "Generate API key" },
-  hyperbolic: { url: "https://app.hyperbolic.xyz/settings", label: "Generate API key" },
+  hyperbolic: { url: "https://app.hyperbolic.ai/settings", label: "Generate API key" },
   nscale: { url: "https://console.nscale.com/", label: "Open provider console" },
   "byteplus-modelark": { url: "https://console.byteplus.com/ark", label: "Open provider console" },
   deepinfra: { url: "https://deepinfra.com/dash/api_keys", label: "Generate API key" },
   upstage: { url: "https://console.upstage.ai/api-keys", label: "Generate API key" },
   stepfun: { url: "https://platform.stepfun.com/", label: "Open provider console" },
-  moonshot: { url: "https://platform.moonshot.ai/console/api-keys", label: "Generate API key" },
-  ai21: { url: "https://studio.ai21.com/account/api-key", label: "Generate API key" },
+  moonshot: { url: "https://platform.kimi.ai/console/api-keys", label: "Generate API key" },
+  ai21: { url: "https://www.ai21.com/", label: "Open provider console" },
   baseten: { url: "https://app.baseten.co/settings/api_keys", label: "Generate API key" },
   yi: { url: "https://platform.01.ai/apikeys", label: "Generate API key" },
+  // Added 2026-09-21 (each verified to load): well-known providers that discovery names but the original list never covered.
+  openai: { url: "https://platform.openai.com/api-keys", label: "Generate API key" },
+  anthropic: { url: "https://platform.claude.com/settings/keys", label: "Generate API key" },
+  xai: { url: "https://console.x.ai/", label: "Open provider console" },
+  perplexity: { url: "https://www.perplexity.ai/settings/api", label: "Generate API key" },
+  poe: { url: "https://poe.com/api_key", label: "Generate API key" },
+  "venice-ai": { url: "https://venice.ai/settings/api", label: "Generate API key" },
+  nanogpt: { url: "https://nano-gpt.com/api", label: "Generate API key" },
+  azure: { url: "https://portal.azure.com/", label: "Open provider console" },
+  "amazon-bedrock": { url: "https://console.aws.amazon.com/bedrock/home#/api-keys", label: "Open provider console" },
+  "alibaba-china": { url: "https://bailian.console.aliyun.com/", label: "Open provider console" },
+  "moonshot-ai-china": { url: "https://platform.kimi.com/console/api-keys", label: "Generate API key" },
+  nebius: { url: "https://tokenfactory.nebius.com/", label: "Open provider console" },
+  "sakana-ai": { url: "https://console.sakana.ai/", label: "Open provider console" },
+  chutes: { url: "https://chutes.ai/", label: "Open provider console" },
+  friendli: { url: "https://friendli.ai/suite/setting/tokens", label: "Generate API key" },
+  xiaomi: { url: "https://platform.xiaomimimo.com/", label: "Open provider console" },
+  databricks: { url: "https://accounts.cloud.databricks.com/", label: "Open provider console" },
+  helicone: { url: "https://us.helicone.ai/settings/api-keys", label: "Generate API key" },
+  requesty: { url: "https://app.requesty.ai/", label: "Open provider console" },
+  modal: { url: "https://modal.com/settings", label: "Open provider console" },
 };
 
-export function getProviderPortal(slug: string): ProviderPortal | null {
+/** Providers that discovery lists under another spelling of a provider we already have a page for: same account, same key page. */
+const providerAliases: Readonly<Record<string, string>> = {
+  vertex: "vertex-ai", "vertex-anthropic": "vertex-ai",
+  novitaai: "novita",
+  alibaba: "alibaba-model-studio",
+  "hf-inference": "hugging-face",
+  "siliconflow-china": "siliconflow",
+  together: "together-ai",
+  "google-gemini-api-ai-studio": "google-ai-studio",
+  "cohere-chat": "cohere",
+  "volcengine-ark-coding-plan": "volcengine-ark",
+  "stepfun-global": "stepfun", "stepfun-step-plan-global": "stepfun", "stepfun-step-plan-china": "stepfun",
+  "minimax-token-plan-minimax-io": "minimax",
+  "cloudflare-ai-gateway": "cloudflare-workers-ai",
+  "perplexity-agent": "perplexity",
+};
+
+/** The hand-curated page for exactly this provider, or null. Credential autodetect uses this alone: it derives API host guesses from the
+ *  portal's domain, which a docs page or an alias would only make worse. */
+export function getCuratedPortal(slug: string): ProviderPortal | null {
   return providerPortals[slug] ?? null;
 }
+
+/** Where to send someone to get a key for this provider, best first: its own curated page, then the page of the provider it is another
+ *  spelling of, then the provider's documentation as published by a discovery source (`docsUrl`), labelled as docs because it is not a key
+ *  page. Null when nothing is known, and the page then just says so. */
+export function getProviderPortal(slug: string, docsUrl?: string | null): ProviderPortal | null {
+  const curated = getCuratedPortal(slug) ?? getCuratedPortal(providerAliases[slug] ?? "");
+  if (curated) return curated;
+  return docsUrl && /^https?:\/\/[^\s]+$/i.test(docsUrl) ? { url: docsUrl, label: "Open provider docs" } : null;
+}
+
+export const portalSlugs = (): string[] => Object.keys(providerPortals);
+export const portalAliases = (): Readonly<Record<string, string>> => providerAliases;
 
 export function getCandidateProviderPortal(source:string,providerName:string|null,modelRef:string):ProviderPortal|null {
   if(source==="openrouter")return getProviderPortal("openrouter");
