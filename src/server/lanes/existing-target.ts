@@ -1,4 +1,4 @@
-import { bareModelKey } from "@/server/discovery/model-key";
+import { deploymentModelKey } from "@/server/discovery/model-key";
 
 interface KnownDeployment { litellmModelName: string; providerModelId: string; litellmDeploymentId: string | null; lifecycle: string }
 
@@ -17,6 +17,6 @@ export function isPresentInRouter(row: Pick<KnownDeployment, "litellmDeploymentI
  * to remove (with its failure streak and cooldown rules), never the promoter's to duplicate.
  */
 export function findExistingTarget<T extends KnownDeployment>(rows: readonly T[], modelName: string, providerModelId: string): T | undefined {
-  const key = bareModelKey(providerModelId);
-  return rows.find(row => row.litellmModelName === modelName && bareModelKey(row.providerModelId) === key && isPresentInRouter(row));
+  const key = deploymentModelKey(providerModelId);
+  return rows.find(row => row.litellmModelName === modelName && deploymentModelKey(row.providerModelId) === key && isPresentInRouter(row));
 }

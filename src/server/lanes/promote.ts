@@ -11,7 +11,7 @@ import type { ProviderDefinition as CatalogProviderDefinition } from "@/server/p
 import { definitionForProvider } from "@/server/providers/attribution";
 import { promotionGateReason } from "@/server/discovery/verification-policy";
 import { buildExtraHeaders, endpointBaseHint } from "@/server/providers/wiring";
-import { bareModelKey } from "@/server/discovery/model-key";
+import { deploymentModelKey } from "@/server/discovery/model-key";
 import { removalHistoryOf } from "@/server/discovery/auto-add-policy";
 import { bareCandidateModelRef, resolveCredentialWithSource, resolveVerificationEndpoint, verifyCandidateDirectly } from "@/server/discovery/verify";
 import { getGigaChatAccessToken } from "@/server/providers/gigachat";
@@ -57,14 +57,16 @@ export interface PromotionContext {
 }
 
 /** Resolves everything needed to register this candidate in LiteLLM, or throws PromotionBlocked with the exact gap. */
-export async function resolvePromotionContext(candidateId: string): Promise<PromotionContext> {
+/** `allowNonChat` lifts the "not a chat model" block for ONE deliberate case: a person adding a model that demonstrably answers chat requests
+ *  (a safety classifier such as Groq's Prompt Guard) as a direct alias. Everything else about the candidate is still checked. */
+export async function resolvePromotionContext(candidateId: string, options: { allowNonChat?: boolean } = {}): Promise<PromotionContext> {
   const db = getDb();
   const candidate = (await db.select().from(modelCandidates).where(eq(modelCandidates.id, candidateId)).limit(1))[0];
   if (!candidate) throw new PromotionBlocked("Candidate not found");
 
   const evidence = candidate.evidence as Record<string, unknown>;
   const blockedReason = (typeof evidence?.nonChatReason === "string" ? evidence.nonChatReason : null) ?? nonChatModelReason({ modelRef: candidate.modelRef, displayName: candidate.displayName, description: typeof evidence?.description === "string" ? evidence.description : null });
-  if (blockedReason) throw new PromotionBlocked(blockedReason);
+  if (blockedReason && !options.allowNonChat) throw new PromotionBlocked(blockedReason);
 
   const authorityReason = candidateOnlyBlockReason(candidate);
   if (authorityReason) throw new PromotionBlocked(authorityReason);
@@ -110,7 +112,9 @@ export interface TargetResult {
   error?: string;
 }
 
-export interface PromoteOptions { lanes?: LaneId[]; directAlias?: boolean; skipFallbackSync?: boolean; trigger?: "manual" | "auto" }
+/** `allowNonChat`: a manual override for a model classified as not-a-chat-model. It is only ever added as a direct alias, never into a lane
+ *  (a classifier in a lane would answer real traffic with scores), and never automatically. */
+export interface PromoteOptions { lanes?: LaneId[]; directAlias?: boolean; skipFallbackSync?: boolean; trigger?: "manual" | "auto"; allowNonChat?: boolean }
 
 export interface PromoteResult {
   candidateId: string;
@@ -168,15 +172,17 @@ export async function promoteCandidate(candidateId: string, options: PromoteOpti
   const [run] = await db.insert(syncRuns).values({ type: "CANDIDATE_PROMOTE", status: "RUNNING", correlationId, startedAt: new Date(), summary: { candidateId } }).returning();
 
   try {
-    const ctx = await resolvePromotionContext(candidateId);
+    if (options.allowNonChat && (options.trigger === "auto" || !options.directAlias || (options.lanes && options.lanes.length)))
+      throw new PromotionBlocked("A model that is not a chat model can only be added by hand, as a direct alias, never into a lane");
+    const ctx = await resolvePromotionContext(candidateId, { allowNonChat: options.allowNonChat });
 
     // The 5-in-a-row rule is enforced here, on the server, for every path (button, API, automation): hiding a button is never
     // the only enforcement (docs/DISCOVERY-PIPELINE.md I8). A model that has been in LiteLLM before keeps the human-override path.
     const everInLiteLLM = removalHistoryOf(ctx.candidate.evidence).length > 0 || ctx.candidate.addedToLitellmAt !== null
-      || (await db.select({ id: modelDeployments.id, key: modelDeployments.providerModelId }).from(modelDeployments).where(eq(modelDeployments.providerId, ctx.providerRow.id))).some(row => bareModelKey(row.key) === ctx.candidate.modelKey);
+      || (await db.select({ id: modelDeployments.id, key: modelDeployments.providerModelId }).from(modelDeployments).where(eq(modelDeployments.providerId, ctx.providerRow.id))).some(row => deploymentModelKey(row.key) === ctx.candidate.modelKey);
     // Only a first-time addition needs the streak. A model already in LiteLLM once (a lane repair by the reconciler, or a person
     // deciding to add it back) is re-verified live just below, which is the check that matters for it.
-    const gate = everInLiteLLM ? null : promotionGateReason({ consecutivePasses: ctx.candidate.consecutivePasses, lastCheckStatus: ctx.candidate.lastCheckStatus, previouslyInLiteLLM: false });
+    const gate = everInLiteLLM || options.allowNonChat ? null : promotionGateReason({ consecutivePasses: ctx.candidate.consecutivePasses, lastCheckStatus: ctx.candidate.lastCheckStatus, previouslyInLiteLLM: false });
     if (gate) throw new PromotionBlocked(`Not eligible yet: ${gate}`);
 
     // Prove the provider still serves it, via the exact endpoint+credential LiteLLM will use, before we touch the router.
@@ -193,7 +199,7 @@ export async function promoteCandidate(candidateId: string, options: PromoteOpti
 
     const classified = classifyCandidateLanes(ctx.candidate);
     const explicit = options.lanes && options.lanes.length ? options.lanes : null;
-    const deduped = (explicit ?? classified.filter(match => match.recommended).map(match => match.slug))
+    const deduped = (options.allowNonChat ? [] : explicit ?? classified.filter(match => match.recommended).map(match => match.slug))
       .filter((slug, index, all) => all.indexOf(slug) === index);
     // Each lane's maxDeployments is a real cap, not just UI copy: an explicit (manual or reconcile-repair) selection
     // is trusted as-is, but auto-selected "recommended" lanes are checked here so an unattended pass (auto-add,
@@ -215,19 +221,21 @@ export async function promoteCandidate(candidateId: string, options: PromoteOpti
 
     if (results.some(result => result.status === "added")) await syncLiteLLM({ dryRun: false }, adapter);
 
-    const key = bareModelKey(providerModelId(ctx.bareModel));
+    const key = deploymentModelKey(providerModelId(ctx.bareModel));
     const deployments = await getDeploymentsForProvider(ctx.providerRow.id);
     const laneRows = await db.select().from(lanes);
 
     for (const result of results) {
       if (result.status === "failed" || !result.lane) continue;
-      const deployment = deployments.find(row => row.litellmModelName === result.lane && bareModelKey(row.providerModelId) === key);
+      const deployment = deployments.find(row => row.litellmModelName === result.lane && deploymentModelKey(row.providerModelId) === key);
       if (!deployment) { result.status = "failed"; result.error = "Deployment did not appear after inventory sync"; continue; }
       result.deploymentId = deployment.id;
       const laneRow = laneRows.find(row => row.slug === result.lane);
       if (!laneRow) continue;
 
-      const smoke = await adapter.smokeTest(result.lane);
+      // The new deployment's OWN probe, by its router id. Probing the lane alias asks whichever of the lane's members LiteLLM picks (a lane holds
+      // up to twenty), so a slow or broken neighbour was recorded as this model failing — the same trap the health monitor already avoids.
+      const smoke = await adapter.smokeTest(deployment.litellmDeploymentId ?? result.lane);
       result.smokeOk = smoke.ok;
       const match = classified.find(item => item.slug === result.lane);
       const score = match?.score ?? 0.5;

@@ -9,8 +9,9 @@ import { encryptCredential } from "@/server/credentials/crypto";
 
 const inventory = (...items: unknown[]) => ({ listDeployments: async () => items }) as never;
 const item = (id: string) => ({ model_name: "smart-agent", litellm_params: { model: "groq/llama-3.3-70b-versatile" }, model_info: { id } });
-const run = (type: string, status: "SUCCEEDED" | "FAILED", finishedAt = new Date()) =>
-  getDb().insert(syncRuns).values({ type, status, correlationId: `${type}-${status}-${finishedAt.getTime()}`, finishedAt });
+const run = (type: string, status: "SUCCEEDED" | "FAILED", finishedAt = new Date(), summary: Record<string, unknown> = {}) =>
+  getDb().insert(syncRuns).values({ type, status, correlationId: `${type}-${status}-${finishedAt.getTime()}-${Math.random()}`, finishedAt, createdAt: finishedAt, summary });
+const minutesAgo = (n: number) => new Date(Date.now() - n * 60_000);
 
 /** A system where everything is working. */
 async function healthySystem() {
@@ -58,8 +59,47 @@ describe("getOperationalStatus", () => {
     const result = await getOperationalStatus();
     expect(result.status).toBe("degraded");
     expect(result.facts.failedRuns24h).toEqual({ MODEL_DISCOVERY: 1 });
-    expect(result.facts.credentials).toEqual({ invalid: 1, unverified: 1 });
+    expect(result.facts.credentials).toMatchObject({ invalid: 1, unverified: 1, invalidProviders: [provider.name], unverifiedProviders: [provider.name] });
     expect(result.reasons.find(reason => reason.area === "credentials" && reason.severity === "info")).toBeDefined();
+  });
+
+  it("stops reporting a failed run once a later one succeeds, but keeps reporting one that is still failing", async () => {
+    await healthySystem();
+    await getDb().delete(syncRuns);
+    await run("MODEL_DISCOVERY", "FAILED", minutesAgo(50));
+    await run("MODEL_DISCOVERY", "SUCCEEDED", minutesAgo(20));        // recovered: not a current problem
+    await run("HEALTH_MONITOR", "SUCCEEDED", minutesAgo(50));
+    await run("HEALTH_MONITOR", "FAILED", minutesAgo(20));            // failing now
+    const failed = (await getOperationalStatus()).facts.failedRuns24h;
+    expect(failed.MODEL_DISCOVERY).toBeUndefined();
+    expect(failed.HEALTH_MONITOR).toBe(1);
+  });
+
+  it("treats a failed promotion as resolved only when THAT model was added later, not when some other one was", async () => {
+    await healthySystem();
+    await getDb().delete(syncRuns);
+    await run("CANDIDATE_PROMOTE", "FAILED", minutesAgo(60), { candidateId: "model-a" });
+    await run("CANDIDATE_PROMOTE", "SUCCEEDED", minutesAgo(30), { candidateId: "model-a", ok: true });    // the same model, added since
+    await run("CANDIDATE_PROMOTE", "FAILED", minutesAgo(60), { candidateId: "model-b" });
+    await run("CANDIDATE_PROMOTE", "SUCCEEDED", minutesAgo(30), { candidateId: "model-c", ok: true });    // a different model: says nothing about model-b
+    expect((await getOperationalStatus()).facts.failedRuns24h.CANDIDATE_PROMOTE).toBe(1);
+  });
+
+  it("does not call a credential unverified when its provider has no way to verify it", async () => {
+    await healthySystem();
+    const db = getDb();
+    const [sarvam, groq] = await db.insert(providers).values([
+      { slug: "sarvam", name: "Sarvam", adapterKey: "openai-compatible", adapterCapability: "AUTOMATED" },       // no credential-test endpoint
+      { slug: "groq", name: "Groq", adapterKey: "openai-compatible", adapterCapability: "AUTOMATED" },           // has one
+    ]).onConflictDoNothing().returning();
+    const groqRow = groq ?? (await db.select().from(providers)).find(row => row.slug === "groq")!;
+    await db.insert(providerCredentialReferences).values([
+      { providerId: sarvam.id, environmentVariable: "SARVAM_API_KEY", encryptedValue: encryptCredential("fake-s-0123456789"), valid: null },
+      { providerId: groqRow.id, environmentVariable: "GROQ_API_KEY", encryptedValue: encryptCredential("fake-g-0123456789"), valid: null },
+    ]);
+    const credentials = (await getOperationalStatus()).facts.credentials;
+    expect(credentials.unverified).toBe(1);
+    expect(credentials.unverifiedProviders).toEqual(["Groq"]);
   });
 
   it("never includes a credential value or ciphertext in what it returns", async () => {

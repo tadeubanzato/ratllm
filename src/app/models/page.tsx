@@ -43,6 +43,8 @@ function setupAction(row: CandidateRow) {
 function lifecyclePill(row: CandidateRow) {
   if (row.liteLLMLifecycle === "DEACTIVATED") return <Tooltip label="Turned off in LiteLLM. Reactivate it from the LiteLLM page — it is not re-added from here."><span className="status-pill status-pill-sm status-warn">Deactivated</span></Tooltip>;
   if (row.liteLLMLifecycle !== "REMOVED") return null;
+  // Removed, and now known not to be a chat model (a safety classifier, speech, embedding…): it will never be added back, so no retry is promised.
+  if (row.checkBlocker === "NOT_CHAT_MODEL") return <Tooltip label="Automation removed this from LiteLLM after repeated failed health checks. It is classified as a safety/classifier model, so it is not added back automatically. Its direct checks against the provider still pass."><span className="status-pill status-pill-sm status-neutral">Removed</span></Tooltip>;
   if (!row.liteLLMRemovedReason) return <Tooltip label="This model was deleted from LiteLLM by hand."><span className="status-pill status-pill-sm status-neutral">Deleted</span></Tooltip>;
   return row.liteLLMNeedsReview
     ? <Tooltip label="Automation removed this after repeated failures, and it has now happened too many times to retry on its own. Add it back manually once you trust it again."><span className="status-pill status-pill-sm status-bad">Needs review</span></Tooltip>
@@ -107,7 +109,7 @@ export default async function ModelsPage({ searchParams }: { searchParams: Searc
             const points=candidateHistoryItems(history.get(row.id)??[]);
             const lifecycle=lifecyclePill(row);
             const live=Boolean(row.liteLLMDeploymentId);
-            const action=!live&&row.liteLLMLifecycle!=="DEACTIVATED"?(row.promotable?<AddToLiteLLMButton candidateId={row.id}/>:setupAction(row)):null;
+            const action=!live&&row.liteLLMLifecycle!=="DEACTIVATED"?(row.promotable?<AddToLiteLLMButton candidateId={row.id}/>:row.checkBlocker==="NOT_CHAT_MODEL"&&row.providerId&&row.lastCheckStatus==="available"?<AddToLiteLLMButton candidateId={row.id} nonChat/>:setupAction(row)):null;
             const toGo=!live&&row.checkBlocker===null&&row.consecutivePasses>0&&row.consecutivePasses<PROMOTION_PASSES;
             return <tr key={row.id}>
               <td style={wrap}>

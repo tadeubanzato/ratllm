@@ -118,8 +118,8 @@ Models found on a provider's catalog before they're added to LiteLLM. **Add to L
 
 The `smart-*` LiteLLM model groups (general, coding, agent, deep reasoning, long-context, vision, summary, speech) and which deployments currently back each one. The `LANE_RECONCILE` automation re-adds any missing lane member and re-pushes fallback chains on a schedule.
 
-### Benchmarks
-![Benchmarks](docs/screenshots/benchmarks.png)
+### Performance
+![Performance](docs/screenshots/benchmarks.png)
 
 Operational results from the automatic health probe for every deployment: pass/fail, latency, success rate over its last 20 smoke tests, p50/p95 latency percentiles, and average time-to-first-token.
 

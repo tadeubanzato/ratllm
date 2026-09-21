@@ -1,8 +1,8 @@
 import "server-only";
 import { reconcileCheckBlockers } from "@/server/discovery/blockers";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, isNotNull, ne, sql } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
-import { modelDeployments, providerCredentialReferences, providers } from "@/server/db/schema";
+import { modelDeployments, providerCredentialReferences, providerOffers, providers } from "@/server/db/schema";
 import { getProviderPortal } from "@/server/providers/portals";
 import { supportsCredentialTest } from "@/server/providers/verify";
 import { saveProviderCredential } from "@/server/providers/credentials";
@@ -17,11 +17,14 @@ export interface ProviderSettingsRow {
 
 export async function listProviderSettings(): Promise<ProviderSettingsRow[]> {
   const db = getDb();
-  const [rows, credentials, deploymentCounts] = await Promise.all([
+  const [rows, credentials, deploymentCounts, docsRows] = await Promise.all([
     db.select().from(providers).orderBy(providers.name),
     db.select().from(providerCredentialReferences),
     db.select({providerId: modelDeployments.providerId, count: sql<number>`count(*)::int`}).from(modelDeployments).groupBy(modelDeployments.providerId),
+    db.select({providerId: providerOffers.providerId, docsUrl: providerOffers.docsUrl}).from(providerOffers).where(and(isNotNull(providerOffers.docsUrl), ne(providerOffers.docsUrl, ""))).orderBy(providerOffers.source),
   ]);
+  const docsByProvider = new Map<string, string>();
+  for (const row of docsRows) if (row.docsUrl && !docsByProvider.has(row.providerId)) docsByProvider.set(row.providerId, row.docsUrl);
   const modelCountByProvider = new Map(deploymentCounts.map(row => [row.providerId, row.count]));
   return rows.map(provider => {
     const refs = credentials.filter(ref => ref.providerId === provider.id && !ref.disabled);
@@ -31,7 +34,7 @@ export async function listProviderSettings(): Promise<ProviderSettingsRow[]> {
     return {
       id: provider.id, slug: provider.slug, name: provider.name, enabled: provider.enabled, credentialState,
       lastValidatedAt: latest ?? null, environmentVariable: refs[0]?.environmentVariable ?? `${provider.slug.toUpperCase().replaceAll("-", "_")}_API_KEY`,
-      testSupported: supportsCredentialTest(provider.slug), portal: getProviderPortal(provider.slug), modelCount: modelCountByProvider.get(provider.id) ?? 0, config: refs[0]?.config ?? {},
+      testSupported: supportsCredentialTest(provider.slug), portal: getProviderPortal(provider.slug, docsByProvider.get(provider.id)), modelCount: modelCountByProvider.get(provider.id) ?? 0, config: refs[0]?.config ?? {},
     };
   });
 }

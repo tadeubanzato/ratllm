@@ -20,7 +20,8 @@ export interface StatusInput {
   litellm: { status: string; lastSuccessAt: number | null; error: string | null } | null;
   lastSuccessAt: Record<string, number | null>;
   failedRuns24h: Record<string, number>;
-  credentials: { invalid: number; unverified: number };
+  /** Counts, and the providers behind them so the message can name them. */
+  credentials: { invalid: number; unverified: number; invalidProviders?: string[]; unverifiedProviders?: string[] };
   fleet: { live: number; notServing: number; unmanagedNotServing: number };
   /** Problems with the environment itself (wrong mode for the database, missing DATABASE_URL). */
   deployment?: { problems: DeploymentProblem[] };
@@ -57,8 +58,9 @@ export function evaluateStatus(input: StatusInput): { status: "healthy" | "degra
     if (n > 0) add("degraded", "runs", `${LABEL[type] ?? type} failed ${n} time${n === 1 ? "" : "s"} in the last 24 hours.`);
   }
 
-  if (input.credentials.invalid > 0) add("degraded", "credentials", `${input.credentials.invalid} provider credential${input.credentials.invalid === 1 ? " is" : "s are"} invalid.`);
-  if (input.credentials.unverified > 0) add("info", "credentials", `${input.credentials.unverified} provider credential${input.credentials.unverified === 1 ? " has" : "s have"} not been verified yet.`);
+  const named = (names?: string[]) => (names && names.length ? `: ${names.join(", ")}` : "");
+  if (input.credentials.invalid > 0) add("degraded", "credentials", `${input.credentials.invalid} provider credential${input.credentials.invalid === 1 ? " is" : "s are"} invalid${named(input.credentials.invalidProviders)}.`);
+  if (input.credentials.unverified > 0) add("info", "credentials", `${input.credentials.unverified} provider credential${input.credentials.unverified === 1 ? " has" : "s have"} not been verified yet${named(input.credentials.unverifiedProviders)}.`);
 
   if (input.fleet.live === 0) add("degraded", "fleet", "No live deployments are recorded — inventory may never have been synced.");
   else {

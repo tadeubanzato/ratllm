@@ -3,7 +3,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { apiError, correlationId } from "@/server/http";
 import { getDb } from "@/server/db/client";
 import { laneAssignments, lanes, modelCandidates, modelDeployments } from "@/server/db/schema";
-import { bareModelKey } from "@/server/discovery/model-key";
+import { deploymentModelKey } from "@/server/discovery/model-key";
 import { classifyCandidateLanes, LANE_RULES } from "@/server/lanes/rules";
 import { getDeploymentsForProvider } from "@/server/lanes/shared";
 import { liveLaneMember } from "@/server/lanes/membership";
@@ -23,11 +23,11 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
   let directAliasName: string | null = null;
   let members: string[] = [];
   try {
-    const ctx = await resolvePromotionContext(candidateId);
+    const ctx = await resolvePromotionContext(candidateId, { allowNonChat: new URL(request.url).searchParams.get("allowNonChat") === "1" });
     directAliasName = ctx.directAliasName;
-    const key = bareModelKey(`openai/${ctx.bareModel}`);
+    const key = deploymentModelKey(`openai/${ctx.bareModel}`);
     const deploymentIds = (await getDeploymentsForProvider(ctx.providerRow.id))
-      .filter(row => bareModelKey(row.providerModelId) === key)
+      .filter(row => deploymentModelKey(row.providerModelId) === key)
       .map(row => row.id);
     if (deploymentIds.length) {
       members = (await db.select({ slug: lanes.slug }).from(laneAssignments)

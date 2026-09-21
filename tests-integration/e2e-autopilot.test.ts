@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
-import { candidateChecks, canonicalModels, laneAssignments, lanes, modelCandidates, modelDeployments, modelSources, providerCredentialReferences, providers } from "@/server/db/schema";
+import { smokeTests, candidateChecks, canonicalModels, laneAssignments, lanes, modelCandidates, modelDeployments, modelSources, providerCredentialReferences, providers } from "@/server/db/schema";
 import { runDiscovery } from "@/server/discovery/run";
 import { verifyDueCandidates } from "@/server/discovery/verify-due";
 import type { DiscoveredCandidate, DiscoverySource, ProviderOffer } from "@/server/discovery/types";
 import { runHealthMonitor } from "@/server/health/monitor";
+import { PromotionBlocked, promoteCandidate } from "@/server/lanes/promote";
+import { getPerformanceRows } from "@/server/performance";
+import { summarizePerformance } from "@/server/performance-rules";
+import { checkAgainstRouter } from "@/server/litellm/router-check";
 import { compareInventory } from "@/server/litellm/parity";
 import { adoptDeployment } from "@/server/litellm/adoption";
 import { HttpLiteLLMAdapter } from "@/server/litellm/client";
@@ -20,7 +24,7 @@ import { setLiteLLMManagementSettings } from "@/server/settings/litellm-manageme
 import { LANE_IDS, CURATOR_MANAGED_BY } from "@/lib/constants";
 import { AUTO_REMOVE_AFTER_FAILURES } from "@/server/health/failure-streak";
 import { PROMOTION_PASSES } from "@/server/discovery/verification-policy";
-import { EMPTY, FakeWorld, OK, failWith } from "./support/fake-world";
+import { EMPTY, FakeWorld, NO_STREAM, OK, failWith } from "./support/fake-world";
 
 /**
  * End to end, in RatLLM's own words: provider list -> model discovery -> model monitoring -> add to LiteLLM -> remove from LiteLLM,
@@ -36,7 +40,7 @@ const DAY = 24 * HOUR;
 const model = (source: string, modelRef: string, providerName: string, over: Partial<DiscoveredCandidate> = {}): DiscoveredCandidate =>
   ({ source, modelRef, displayName: modelRef, providerName, freeType: "FREE_TIER", verifiedFree: true, sourceUrl: "https://catalog.fake.test", evidence: {}, ...over });
 const groqCatalog = (...refs: string[]): DiscoverySource =>
-  ({ id: "groq", minExpected: 1, providerSlug: "groq", discover: async () => ({ candidates: refs.map(ref => model("groq", ref, "Groq", ref.includes("whisper") ? { nonChatReason: "Speech-to-text model" } : {})), offers: [] }) });
+  ({ id: "groq", minExpected: 1, providerSlug: "groq", discover: async () => ({ candidates: refs.map(ref => model("groq", ref, "Groq", ref.includes("whisper") ? { nonChatReason: "Speech-to-text model" } : ref.includes("prompt-guard") ? { nonChatReason: "Safety/classifier model — not a chat-completions model" } : {})), offers: [] }) });
 const FAKECLOUD_BASE = "https://api.fakecloud.test/v1";
 const fakecloudOffer: ProviderOffer = { source: "models_dev", providerName: "Fakecloud", freeType: "FREE_TIER", openaiBaseUrl: FAKECLOUD_BASE };
 const communityCatalog = (...refs: string[]): DiscoverySource =>
@@ -143,6 +147,17 @@ describe("E2E autopilot: provider list -> discovery -> monitoring -> add -> remo
     expect((await getCandidatePage({ view: "new", pageSize: 100 })).rows.map(row => row.id)).not.toContain(groqModels.id);
     expect((await getCandidatePage({ view: "added", pageSize: 100 })).rows.map(row => row.id)).toContain(groqModels.id);
 
+    // a model whose name has no digit ("fc-chat-large") is still recognised as live: the page shows it as added and RatLLM-managed, and
+    // running the automation again adds nothing more (it used to look "not in LiteLLM", so it was offered again and re-added)
+    const plain = (await getCandidatePage({ view: "all", pageSize: 100 })).rows.find(row => row.modelRef === "fc-chat-large")!;
+    expect(plain.liteLLMDeploymentId).toBeTruthy();
+    expect(plain.liteLLMManaged).toBe(true);
+    expect((await getCandidatePage({ view: "added", pageSize: 100 })).rows.map(row => row.modelRef)).toContain("fc-chat-large");
+    expect((await getCandidatePage({ view: "ready", pageSize: 100 })).rows.map(row => row.modelRef)).not.toContain("fc-chat-large");
+    const routerBefore = router.count();
+    await verifyPass(); await verifyPass();
+    expect(router.count()).toBe(routerBefore);
+
     // 5. MONITOR — healthy deployments stay healthy.
     await runHealthMonitor({ limit: 100 });
     expect((await liveDeployments()).every(row => row.health === "HEALTHY")).toBe(true);
@@ -165,6 +180,11 @@ describe("E2E autopilot: provider list -> discovery -> monitoring -> add -> remo
       expect((await db().select().from(laneAssignments).where(eq(laneAssignments.deploymentId, victim.id))).every(row => row.excluded)).toBe(true);
       expect((await db().select().from(canonicalModels).where(eq(canonicalModels.id, victim.canonicalModelId)))[0].lifecycle).toBe("QUARANTINED");
     }
+    // a removed model is history: the page must not call it live or RatLLM-managed
+    const removedRow = (await getCandidatePage({ view: "all", pageSize: 100 })).rows.find(row => row.modelRef === "gpt-oss-20b")!;
+    expect(removedRow.liteLLMDeploymentId).toBeNull();
+    expect(removedRow.liteLLMManaged).toBeNull();
+    expect(removedRow.liteLLMLifecycle).toBe("REMOVED");
     // everything else was untouched, and RatLLM's records still match the router exactly
     expect(router.count()).toBe(inRouter.length - victims.length);
     const removed = (await refresh((await candidateOf("groq", "gpt-oss-20b")).id)).evidence as { removalHistory?: unknown[] };
@@ -433,5 +453,147 @@ describe("E2E autopilot: provider list -> discovery -> monitoring -> add -> remo
     expect((await getCandidatePage({ pageSize: 100 })).rows.map(row => row.modelRef)).toEqual(expect.arrayContaining(models));
     expect((await getCandidatePage({ view: "added", pageSize: 100 })).rows.map(row => row.modelRef)).not.toContain("gpt-oss-20b");
     expect(compareInventory(await trackedNow(), router.list() as never).inSync).toBe(true);
+  });
+
+  it("does not judge a model dead because it cannot stream, and still removes one that really is dead", async () => {
+    const models = ["llama-3.3-70b-versatile", "gpt-oss-120b", "batch-only-model", "steady-model"];
+    const { router, groq } = await groqAdded(models);
+    const lanesOf = (name: string) => router.list().filter(item => String(item.litellm_params.model).endsWith(name)).length;
+    const before = lanesOf("batch-only-model");
+    expect(before).toBeGreaterThan(0);
+
+    groq.set("batch-only-model", NO_STREAM);                        // works for ordinary requests, rejects streaming
+    groq.set("gpt-oss-120b", failWith(500, "Internal error"));      // genuinely dead
+    await healthRuns(AUTO_REMOVE_AFTER_FAILURES + 2);
+
+    expect(lanesOf("batch-only-model")).toBe(before);               // kept: it answers
+    expect(lanesOf("gpt-oss-120b")).toBe(0);                         // removed: it does not
+    expect((await liveDeployments()).filter(row => row.providerModelId.endsWith("batch-only-model")).every(row => row.health === "HEALTHY")).toBe(true);
+    expect(compareInventory(await trackedNow(), router.list() as never).inSync).toBe(true);
+  });
+
+  it("lets a person add a classifier that answers chat as a direct alias only — never into a lane, never automatically", async () => {
+    const models = ["llama-3.3-70b-versatile", "gpt-oss-120b", "gpt-oss-20b", "steady-model", "prompt-guard-2-22m"];
+    const { router, groq } = await boot();
+    groq.serve(...models);
+    groq.set("prompt-guard-2-22m", NO_STREAM);                         // answers ordinary requests, cannot stream
+    await runDiscovery({ sources: [groqCatalog(...models)] });
+    await connectProvider("groq", "gsk-groq-key", "GROQ_API_KEY");
+    for (let pass = 0; pass < PROMOTION_PASSES + 1; pass++) await verifyPass();
+    const guard = await candidateOf("groq", "prompt-guard-2-22m");
+    const inRouter = () => router.list().filter(item => String(item.litellm_params.model).endsWith("prompt-guard-2-22m"));
+
+    // automation never adds it: it is blocked as a non-chat model and never even called
+    expect(guard.checkBlocker).toBe("NOT_CHAT_MODEL");
+    expect(inRouter()).toHaveLength(0);
+    expect(groq.callsTo("prompt-guard-2-22m")).toBe(0);
+    // the guardrails: only by hand, only as a direct alias, never with lanes
+    await expect(promoteCandidate(guard.id, { allowNonChat: true, directAlias: true, trigger: "auto" })).rejects.toBeInstanceOf(PromotionBlocked);
+    await expect(promoteCandidate(guard.id, { allowNonChat: true })).rejects.toBeInstanceOf(PromotionBlocked);
+    await expect(promoteCandidate(guard.id, { allowNonChat: true, directAlias: true, lanes: ["smart-summary"] })).rejects.toBeInstanceOf(PromotionBlocked);
+    await expect(promoteCandidate(guard.id, { directAlias: true })).rejects.toBeInstanceOf(PromotionBlocked);   // without the override it is still refused
+    expect(inRouter()).toHaveLength(0);
+
+    // a person adds it as a direct alias: one deployment, in no lane, owned by RatLLM
+    const result = await promoteCandidate(guard.id, { allowNonChat: true, directAlias: true });
+    expect(result.ok).toBe(true);
+    expect(inRouter()).toHaveLength(1);
+    expect(inRouter()[0].model_name).toBe("groq/prompt-guard-2-22m");
+    expect(inRouter()[0].model_info.managed_by).toBe(CURATOR_MANAGED_BY);
+    expect(router.list().filter(item => item.model_name.startsWith("smart-")).some(item => String(item.litellm_params.model).endsWith("prompt-guard-2-22m"))).toBe(false);
+    const deployed = (await db().select().from(modelDeployments)).find(row => row.providerModelId.endsWith("prompt-guard-2-22m"))!;
+    expect(deployed.managed).toBe(true);
+    expect((await db().select().from(laneAssignments).where(eq(laneAssignments.deploymentId, deployed.id))).length).toBe(0);
+
+    // RatLLM then monitors it like any other, and the streaming refusal does not get it removed
+    await healthRuns(AUTO_REMOVE_AFTER_FAILURES + 2);
+    expect(inRouter()).toHaveLength(1);
+    expect((await db().select().from(modelDeployments).where(eq(modelDeployments.id, deployed.id)))[0].health).toBe("HEALTHY");
+    expect(compareInventory(await trackedNow(), router.list() as never).inSync).toBe(true);
+  });
+
+  it("judges a newly added model by its own smoke test, not by whichever member of the lane answers", async () => {
+    const { router, groq } = await boot();
+    groq.serve("fresh-model", "broken-model");
+    groq.set("broken-model", failWith(500, "Internal error"));
+    // the lane already has a broken member, added earlier; a lane-level probe would pick it first
+    router.addExternally("smart-general", "openai/broken-model", "https://api.groq.com/openai/v1", "gsk-groq-key", CURATOR_MANAGED_BY);
+    await runDiscovery({ sources: [groqCatalog("fresh-model")] });
+    await connectProvider("groq", "gsk-groq-key", "GROQ_API_KEY");
+    for (let pass = 0; pass < PROMOTION_PASSES; pass++) await verifyPass();
+
+    expect(router.list().some(item => String(item.litellm_params.model).endsWith("fresh-model") && item.model_name === "smart-general")).toBe(true);
+    const fresh = (await db().select().from(modelDeployments)).find(row => row.providerModelId.endsWith("fresh-model"))!;
+    const assignment = (await db().select().from(laneAssignments).where(eq(laneAssignments.deploymentId, fresh.id)))[0];
+    expect((assignment.explanation as { smokeOk?: boolean }).smokeOk).toBe(true);    // it works, whatever its neighbour does
+  });
+
+  it("keeps the Performance list equal to what is in LiteLLM as models are added, removed, probed and changed behind RatLLM's back", async () => {
+    const models = ["llama-3.3-70b-versatile", "gpt-oss-120b", "gpt-oss-20b", "steady-model"];
+    const { router, groq } = await groqAdded(models);
+    const routerIds = () => router.list().map(item => String(item.model_info.id)).sort();
+    const rows = async () => getPerformanceRows();
+    const rowIds = async () => (await rows()).map(row => row.d.litellmDeploymentId as string).sort();
+
+    // added: every deployment in LiteLLM is on the page at once, awaiting its first probe
+    expect(await rowIds()).toEqual(routerIds());
+    expect((await rows()).every(row => row.displayStatus === "NOT_RUN")).toBe(true);
+    expect(summarizePerformance(await rows())).toMatchObject({ deployments: router.count(), awaitingFirstProbe: router.count(), checkedLast24h: 0 });
+
+    // probed: each row shows its own result, and coverage counts them all
+    await healthRuns(1);
+    const probed = await rows();
+    expect(probed.every(row => row.displayStatus === "HEALTHY" && row.t !== null && row.stat !== null)).toBe(true);
+    expect(summarizePerformance(probed)).toMatchObject({ deployments: router.count(), checkedLast24h: router.count(), passed: router.count(), failed: 0, awaitingFirstProbe: 0 });
+
+    // a deployment probed long ago still shows its real history even when hundreds of newer probes exist elsewhere in the fleet
+    const others = probed.slice(1).map(row => row.d.id);
+    const quiet = probed[0].d.id;
+    await db().execute(sql`update smoke_tests set created_at = created_at - interval '3 days' where deployment_id = ${quiet}`);
+    // (25 hours old: far newer than the quiet deployment's probes, but outside the provider's 24-hour call budget window)
+    await db().insert(smokeTests).values(Array.from({ length: 400 }, (_, i) => ({ deploymentId: others[i % others.length], correlationId: "bulk", status: "PASSED" as const, latencyMs: 100, httpStatus: 200, createdAt: new Date(Date.now() - 25 * HOUR) })));
+    const afterBulk = await rows();
+    const quietRow = afterBulk.find(row => row.d.id === quiet)!;
+    expect(quietRow.displayStatus).toBe("HEALTHY");                                    // not "NOT RUN, last tested never"
+    expect(Date.now() - quietRow.t!.createdAt.getTime()).toBeGreaterThan(2.5 * 24 * HOUR);
+    expect(summarizePerformance(afterBulk).checkedLast24h).toBe(router.count() - 1);
+
+    // a new model is discovered and added by RatLLM: it appears
+    groq.serve("late-model");
+    await runDiscovery({ sources: [groqCatalog(...models, "late-model")] });
+    for (let pass = 0; pass < PROMOTION_PASSES; pass++) await verifyPass();
+    expect(router.list().some(item => String(item.litellm_params.model).endsWith("late-model"))).toBe(true);
+    expect(await rowIds()).toEqual(routerIds());
+    expect((await rows()).filter(row => row.d.providerModelId.endsWith("late-model")).every(row => row.displayStatus === "NOT_RUN")).toBe(true);
+
+    // a model dies and RatLLM removes it: it disappears
+    groq.set("gpt-oss-120b", failWith(500, "Internal error"));
+    await healthRuns(AUTO_REMOVE_AFTER_FAILURES);
+    expect(router.list().some(item => String(item.litellm_params.model).endsWith("gpt-oss-120b"))).toBe(false);
+    expect(await rowIds()).toEqual(routerIds());
+    expect((await rows()).some(row => row.d.providerModelId.endsWith("gpt-oss-120b"))).toBe(false);
+
+    // added behind RatLLM's back: the page says its list is out of date until the next sync, then includes it
+    groq.serve("legacy-model");
+    const legacyId = router.addExternally("smart-general", "openai/legacy-model", "https://api.groq.com/openai/v1", "gsk-groq-key", "legacy-tool");
+    const stale = await checkAgainstRouter(await getDeployments());
+    expect(stale.reachable && !stale.parity.inSync && stale.parity.unknownToRatllm.some(issue => issue.deploymentId === legacyId)).toBe(true);
+    expect(await rowIds()).not.toContain(legacyId);
+    await syncLiteLLM();
+    expect(await rowIds()).toEqual(routerIds());
+    const fresh = await checkAgainstRouter(await getDeployments());
+    expect(fresh.reachable && fresh.parity.inSync).toBe(true);
+
+    // changed by hand in LiteLLM (deleted): noticed, then gone from the list after the sync
+    router.removeExternally(legacyId);
+    const gone = await checkAgainstRouter(await getDeployments());
+    expect(gone.reachable && gone.parity.goneFromRouter.some(issue => issue.deploymentId === legacyId)).toBe(true);
+    await syncLiteLLM();
+    expect(await rowIds()).toEqual(routerIds());
+
+    // and if LiteLLM cannot be reached the page can say so instead of pretending
+    router.down = 503;
+    expect((await checkAgainstRouter(await getDeployments())).reachable).toBe(false);
+    router.down = null;
   });
 });

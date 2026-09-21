@@ -3,7 +3,7 @@ import { eq, inArray, and, isNull, sql } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
 import { candidateChecks, modelCandidates, modelDeployments, providers } from "@/server/db/schema";
 import { attributeProvider, catalogIdentity } from "@/server/providers/attribution";
-import { bareModelKey } from "./model-key";
+import { bareModelKey, deploymentModelKey } from "./model-key";
 import { sourceRegistry } from "./registry";
 import { isPlausibleScrapedModelId } from "./sources";
 import { recomputeCheckState } from "./check-state";
@@ -124,7 +124,7 @@ export async function consolidateModelCandidates(options: { succeededSourceIds?:
 async function retireUnlistedModels(db: ReturnType<typeof getDb>, succeededSourceIds: ReadonlySet<string>): Promise<number> {
   if (!succeededSourceIds.size) return 0;
   const deployments = await db.select({providerId: modelDeployments.providerId, providerModelId: modelDeployments.providerModelId}).from(modelDeployments);
-  const inLiteLLM = new Set(deployments.map(row => `${row.providerId}::${bareModelKey(row.providerModelId)}`));
+  const inLiteLLM = new Set(deployments.map(row => `${row.providerId}::${deploymentModelKey(row.providerModelId)}`));
   const stale = await db.select({id: modelCandidates.id, providerId: modelCandidates.providerId, modelKey: modelCandidates.modelKey}).from(modelCandidates)
     .where(and(inArray(modelCandidates.source, [...succeededSourceIds]), sql`${modelCandidates.lastSeenAt} < now() - (${RETIRE_AFTER_MS} * interval '1 millisecond')`, isNull(modelCandidates.addedToLitellmAt)));
   const doomed = stale.filter(row => !(row.providerId && inLiteLLM.has(`${row.providerId}::${row.modelKey}`))).map(row => row.id);

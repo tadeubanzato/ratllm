@@ -26,6 +26,9 @@ const NON_CHAT_NAME_PATTERNS: Array<[RegExp, string]> = [
   [/(^|[\/_-])(flux|sdxl|stable-diffusion|stable-image|dall-?e|imagen|midjourney|seedream)([\/_.0-9-]|$)|image-(gen|edit)|qwen-image|text-to-image/i, "Image-generation model — not a chat-completions model"],
   [/(^|[\/_-])(veo|sora|kling|hailuo)[-_.0-9]|wan-ai\/wan|(^|[\/_-])wan[0-9]|text-to-video|video-gen/i, "Video-generation model — not a chat-completions model"],
   [/lyria|musicgen|text-to-music|stable-audio/i, "Music-generation model — not a chat-completions model"],
+  // Specialised text models. They answer a chat request (so they pass a direct check) but only do one job, so they must not join a general lane.
+  [/(^|[\/_.-])ocr([\/_.0-9-]|$)|paddleocr|olmocr|mineru|nanonets-ocr/i, "OCR / document-reading model — reads images and documents, not a general chat model"],
+  [/(^|[\/_-])mt([-_.]|$)|translat(e|ion|or)|(^|[\/_-])(nllb|madlad)/i, "Machine-translation model — only translates, not a general chat model"],
   [/segformer|(^|[\/_-])(clip|siglip)([\/_.0-9-]|$)|(^|[\/_-])(dinov2|vit-)/i, "Vision-encoder model — not a chat-completions model"],
 ];
 

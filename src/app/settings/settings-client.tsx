@@ -35,7 +35,7 @@ const jobTypeDescriptions: Record<string, string> = {
   RATE_LIMIT_LEARNING: "Records each deployment's recent smoke-test results and last 429. It does not measure RPM/TPM limits yet, so it publishes no estimates.",
   PROVIDER_VERIFICATION: "Re-checks every enabled provider's credential against a safe, low-cost endpoint, keeping the Providers page status current automatically instead of only on manual click.",
   APPLY_APPROVED_PLANS: "Applies validated LiteLLM configuration changes.",
-  DEEP_BENCHMARK: "The same health check as Health Monitor, run against nearly the entire inventory once a day — this is what populates the Benchmarks page.",
+  DEEP_BENCHMARK: "The same health check as Health Monitor, run against nearly the entire inventory once a day — this is what keeps the Performance page current.",
   LANE_RECONCILE: "Re-adds any smart-* lane member missing from LiteLLM and re-pushes the cross-lane fallback chains.",
   MAINTENANCE: "Cleans up expired leases and stale internal state.",
 };

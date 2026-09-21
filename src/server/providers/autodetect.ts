@@ -3,7 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
 import { providerCredentialReferences, providers } from "@/server/db/schema";
 import { resolveCredentialSecret } from "@/server/discovery/verify";
-import { getProviderPortal } from "./portals";
+import { getCuratedPortal } from "./portals";
 
 export interface DetectCandidateResult { url: string; outcome: "hit" | "miss"; status: number | null; detail: string }
 export interface DetectResult { candidates: DetectCandidateResult[]; suggestion: string | null }
@@ -60,7 +60,7 @@ const PATH_SUFFIXES = ["/v1/chat/completions", "/openai/v1/chat/completions"];
 function candidateUrls(slug: string, existingBaseUrl: string | null): string[] {
   const bases = new Set<string>();
   if (existingBaseUrl) bases.add(existingBaseUrl.replace(/\/$/, "").replace(/\/v1$/, ""));
-  const portal = getProviderPortal(slug);
+  const portal = getCuratedPortal(slug);
   if (portal) {
     try {
       const host = new URL(portal.url).hostname;

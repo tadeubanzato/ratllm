@@ -50,7 +50,12 @@ export class HttpLiteLLMAdapter implements LiteLLMAdapter {
       });
       if (!response.ok || !response.body) {
         const body = await response.json().catch(() => ({})) as { error?: { message?: string } };
-        return { ok: false, status: response.status, latencyMs: Math.round(performance.now() - start), error: body.error?.message?.slice(0, 300) ?? `HTTP ${response.status}` };
+        const message = body.error?.message?.slice(0, 300);
+        // Some models cannot stream at all (text-classification models such as Groq's Prompt Guard answer 400 "do not support streaming").
+        // That says nothing about whether they work, so ask again without streaming instead of judging them dead: they were being
+        // auto-removed after five such probes while answering every ordinary request.
+        if (response.status === 400 && message && /stream/i.test(message)) return this.smokeTestWithoutStreaming(model, start);
+        return { ok: false, status: response.status, latencyMs: Math.round(performance.now() - start), error: message ?? `HTTP ${response.status}` };
       }
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -77,6 +82,23 @@ export class HttpLiteLLMAdapter implements LiteLLMAdapter {
       }
       const trimmed = content.trim();
       return { ok: response.ok && trimmed.length > 0, status: response.status, latencyMs: Math.round(performance.now() - start), firstTokenMs, content: trimmed.slice(0, 200), error: trimmed.length > 0 ? undefined : "Empty completion" };
+    } catch (error) {
+      return { ok: false, status: 0, latencyMs: Math.round(performance.now() - start), error: error instanceof Error ? error.message : "Unknown LiteLLM error" };
+    }
+  }
+
+  /** The same probe as smokeTest, for a model that refuses to stream: one ordinary request, judged by whether it answered. There is no
+   *  first token to time, so `firstTokenMs` stays unset. */
+  private async smokeTestWithoutStreaming(model: string, start: number): Promise<SmokeResult> {
+    try {
+      const response = await fetch(`${this.baseUrl!.replace(/\/$/, "")}/v1/chat/completions`, {
+        method: "POST", headers: this.headers(), signal: AbortSignal.timeout(30_000),
+        body: JSON.stringify({ model, messages: [{ role: "user", content: "Reply with exactly: OK" }], max_tokens: PROBE_MAX_TOKENS, temperature: 0 }),
+      });
+      const body = await response.json().catch(() => ({})) as { error?: { message?: string }; choices?: Array<{ message?: { content?: string | null } }> };
+      if (!response.ok) return { ok: false, status: response.status, latencyMs: Math.round(performance.now() - start), error: body.error?.message?.slice(0, 300) ?? `HTTP ${response.status}` };
+      const content = (body.choices?.[0]?.message?.content ?? "").trim();
+      return { ok: content.length > 0, status: response.status, latencyMs: Math.round(performance.now() - start), content: content.slice(0, 200), error: content.length > 0 ? undefined : "Empty completion" };
     } catch (error) {
       return { ok: false, status: 0, latencyMs: Math.round(performance.now() - start), error: error instanceof Error ? error.message : "Unknown LiteLLM error" };
     }

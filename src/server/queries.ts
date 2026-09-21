@@ -4,7 +4,7 @@ import { liveLaneMember } from "@/server/lanes/membership";
 import { desc, eq, inArray, isNotNull, ne, sql } from "drizzle-orm";
 import { getDb } from "./db/client";
 import { canonicalModels, laneAssignments, lanes, modelCandidates, modelDeployments, providerOffers, providers, providerCredentialReferences, rateLimitProfiles, smokeTests, syncRuns, systemSettings } from "./db/schema";
-import { bareModelKey, matchDeployment, matchDeployments } from "./discovery/model-key";
+import { deploymentModelKey, matchDeployment, matchDeployments } from "./discovery/model-key";
 import { isFlapLimited, removalHistoryOf } from "./discovery/auto-add-policy";
 import { BLOCKER_LABELS, providerBlocker, type CheckBlocker } from "./discovery/blockers";
 import { effectiveFreeKind, promotionGateReason, PROMOTION_PASSES, type FreeKind } from "./discovery/verification-policy";
@@ -100,7 +100,9 @@ export async function getProvider(id: string) {
   if(!provider)return null;
   const credentials=await db.select({environmentVariable:providerCredentialReferences.environmentVariable,/* the stored hint is never sent to the page: only whether a value is stored */stored:sql<boolean>`${providerCredentialReferences.encryptedValue} is not null`,valid:providerCredentialReferences.valid,lastValidatedAt:providerCredentialReferences.lastValidatedAt,config:providerCredentialReferences.config}).from(providerCredentialReferences).where(eq(providerCredentialReferences.providerId,id));
   const deployments=await getDeployments();
-  return {provider,credentials,deployments:deployments.filter(item=>item.providerName===provider.name)};
+  // The provider's own documentation as a discovery source published it: the fallback when no key page is curated for it.
+  const docsUrl=(await db.select({docsUrl:providerOffers.docsUrl}).from(providerOffers).where(eq(providerOffers.providerId,id)).orderBy(providerOffers.source)).map(row=>row.docsUrl).find(url=>Boolean(url))??null;
+  return {provider,credentials,docsUrl,deployments:deployments.filter(item=>item.providerName===provider.name)};
 }
 
 // How many recent PASSED checks the LiteLLM page's response-time columns average over — enough to smooth out one
@@ -147,7 +149,7 @@ export async function getSourceYield(): Promise<Map<string, SourceYield>> {
   // One aggregate over the candidates instead of loading every row and matching deployments in memory (docs/DISCOVERY-PIPELINE.md I12).
   // "Promoted" is a candidate that is live in LiteLLM right now; the deployments table is tiny, so it becomes a literal VALUES list.
   const deploymentRows = await db.select({ providerId: modelDeployments.providerId, providerModelId: modelDeployments.providerModelId }).from(modelDeployments).where(eq(modelDeployments.lifecycle, "ACTIVE"));
-  const live = pairList(deploymentRows.map(row => [row.providerId, bareModelKey(row.providerModelId)] as const));
+  const live = pairList(deploymentRows.map(row => [row.providerId, deploymentModelKey(row.providerModelId)] as const));
   const promoted = live ? sql`(c.provider_id, c.model_key) in (${live})` : sql`false`;
   const rows = await db.execute(sql`
     select c.source, count(*)::int as discovered, (count(*) filter (where c.verified_free))::int as "verifiedFree", (count(*) filter (where ${promoted}))::int as promoted,
@@ -219,7 +221,7 @@ export async function getCandidatePage(query: CandidateQuery = {}) {
 
   // (provider, model key) of every model that is in LiteLLM — in any state for "was ever added", live for "is added now". The
   // deployments table is tiny, so these become a literal VALUES list instead of a join.
-  const keyOf = (row: { providerId: string; providerModelId: string }) => [row.providerId, bareModelKey(row.providerModelId)] as const;
+  const keyOf = (row: { providerId: string; providerModelId: string }) => [row.providerId, deploymentModelKey(row.providerModelId)] as const;
   const anyPairs = pairList(deploymentRows.map(keyOf));
   const livePairs = pairList(deploymentRows.filter(row => row.lifecycle === "ACTIVE").map(keyOf));
   const inAny = anyPairs ? sql`(c.provider_id, c.model_key) in (${anyPairs})` : sql`false`;
@@ -298,7 +300,9 @@ export async function getCandidatePage(query: CandidateQuery = {}) {
       credentialConfigured: credentials.length > 0, credentialVerified, credentialRequired,
       freeKind: effectiveFreeKind(row.freeType, offers.map(offer => offer.freeType)),
       offer: offers.find(offer => offer.freeType !== "UNKNOWN") ?? offers[0] ?? null,
-      liteLLMDeploymentId: liveLiteLLMDeploymentId, liteLLMHealth: deployment?.health ?? null, liteLLMManaged: deployment?.managed ?? null,
+      liteLLMDeploymentId: liveLiteLLMDeploymentId, liteLLMHealth: deployment?.health ?? null,
+      // Only a live deployment is "managed by RatLLM" right now; a removed one is history and must not show the R flag.
+      liteLLMManaged: liveLiteLLMDeploymentId ? deployment?.managed ?? null : null,
       liteLLMLifecycle: deployment?.lifecycle ?? null, liteLLMRemovedReason, liteLLMNeedsReview, laneMemberships,
       addedAt, addedBy: liveLiteLLMDeploymentId ? row.addedBy : null,
       isNew: Boolean(meta?.is_new), alsoAt: Number(meta?.also_at ?? 0),

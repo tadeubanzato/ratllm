@@ -12,12 +12,15 @@ describe("non-chat model names", () => {
     "black-forest-labs/FLUX.1-schnell", "stabilityai/stable-diffusion-xl-base-1.0", "google/imagen-4.0-generate", "Qwen/Qwen-Image-Edit", "qwen-image-2.0-pro",
     "google/veo-3.1", "Wan-AI/Wan2.1-T2V-14B", "wan2.2-animate", "google/lyria-3-pro-preview", "facebook/musicgen-large",
     "nvidia/segformer-b4-finetuned-cityscapes-1024-1024", "openai/clip-vit-large", "google/siglip-so400m",
+    "typhoon-ocr", "typhoon-ocr-preview", "typhoon-ocr-v1.5", "deepseek-ai/DeepSeek-OCR", "PaddlePaddle/PaddleOCR-VL", "allenai/olmOCR-7B-0825",
+    "qwen-mt-plus", "qwen-mt-turbo", "tencent/Hunyuan-MT-7B", "facebook/nllb-200-distilled-600M", "google/madlad400-3b-mt", "gpt-4o-translate",
   ])("flags %s", ref => expect(reason(ref), ref).not.toBeNull());
 
   it.each([
     "llama-3.3-70b-versatile", "openai/gpt-oss-120b", "gemma-4-26b-a4b-it", "qwen3-235b-a22b", "deepseek-ai/DeepSeek-V4-Pro", "meta-llama/Llama-3.1-8B-Instruct",
     "claude-sonnet-5", "mistral-large-latest", "ibm-granite/granite-4.1-8b", "nemotron-3-nano:30b", "zai-org/GLM-5.3", "moonshotai/kimi-k2",
     "groq/compound", "gemini-2.5-flash", "qwen-plus", "wan-ai-chat-7b-not-a-video", "Kimi-K2-Thinking", "google/gemma-3n-e4b-it", "microsoft/phi-4-mini-instruct",
+    "typhoon-v2.5-30b-a3b-instruct", "qwen-max", "qwen-flash", "qwen-turbo", "socrates-7b-instruct", "mistral-small-latest", "kimi-k2-instruct", "gemini-flash-lite-latest",
   ])("leaves the chat model %s alone", ref => expect(reason(ref), ref).toBeNull());
 
   it("still catches the original safety/classifier families", () => {
