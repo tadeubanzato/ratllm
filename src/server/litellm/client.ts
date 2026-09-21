@@ -1,4 +1,5 @@
 import "server-only";
+import { PROBE_MAX_TOKENS } from "@/lib/constants";
 import { deploymentIdentity } from "./classify";
 import { connectionConfig } from "@/server/settings/connections";
 import { deploymentSchema, type FallbackType, type LiteLLMAdapter, type LiteLLMDeployment, type SmokeResult } from "./types";
@@ -45,7 +46,7 @@ export class HttpLiteLLMAdapter implements LiteLLMAdapter {
       await this.configure();
       const response = await fetch(`${this.baseUrl!.replace(/\/$/, "")}/v1/chat/completions`, {
         method: "POST", headers: this.headers(), signal: AbortSignal.timeout(30_000),
-        body: JSON.stringify({ model, messages: [{ role: "user", content: "Reply with exactly: OK" }], max_tokens: 128, temperature: 0, stream: true }),
+        body: JSON.stringify({ model, messages: [{ role: "user", content: "Reply with exactly: OK" }], max_tokens: PROBE_MAX_TOKENS, temperature: 0, stream: true }),
       });
       if (!response.ok || !response.body) {
         const body = await response.json().catch(() => ({})) as { error?: { message?: string } };

@@ -1,4 +1,5 @@
 import "server-only";
+import { reconcileCheckBlockers } from "@/server/discovery/blockers";
 import { and, eq } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
 import { auditEvents, providerCredentialReferences, providers } from "@/server/db/schema";
@@ -25,6 +26,8 @@ export async function saveProviderCredential(providerId: string, input: {apiKey?
     .values({providerId, environmentVariable: input.environmentVariable, encryptedValue, valueHint: "Configured", config})
     .onConflictDoUpdate({target: [providerCredentialReferences.providerId, providerCredentialReferences.environmentVariable], set: {encryptedValue, valueHint: "Configured", config, valid: null, disabled: false, lastValidatedAt: null, updatedAt: new Date()}});
   await db.insert(auditEvents).values({actor: "admin", action: "provider.credential.updated", entityType: "provider", entityId: providerId, after: {environmentVariable: input.environmentVariable, configured: true}, correlationId});
+  // The Discovered Models "Needs setup" list and what gets tested follow the blockers, so bring them up to date now, not at the next hourly job.
+  await reconcileCheckBlockers(db);
   return {configured: true, hint: "Configured"};
 }
 
@@ -33,10 +36,12 @@ export async function setProviderCredentialDisabled(providerId: string, environm
     .where(and(eq(providerCredentialReferences.providerId, providerId), eq(providerCredentialReferences.environmentVariable, environmentVariable)))
     .returning({environmentVariable: providerCredentialReferences.environmentVariable, disabled: providerCredentialReferences.disabled});
   if (!row) throw new CredentialNotFoundError("Credential not found");
+  await reconcileCheckBlockers(getDb());
   return row;
 }
 
 export async function deleteProviderCredential(providerId: string, environmentVariable: string) {
   await getDb().delete(providerCredentialReferences)
     .where(and(eq(providerCredentialReferences.providerId, providerId), eq(providerCredentialReferences.environmentVariable, environmentVariable)));
+  await reconcileCheckBlockers(getDb());
 }

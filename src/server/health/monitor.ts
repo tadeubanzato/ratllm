@@ -1,14 +1,15 @@
 import "server-only";
-import { and, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, notInArray, sql } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
 import { auditEvents, canonicalModels, laneAssignments, modelCandidates, modelDeployments, providers, smokeTests } from "@/server/db/schema";
-import { removalHistoryOf } from "@/server/discovery/auto-add-policy";
+import { removalHistoryOf, withRemoval } from "@/server/discovery/auto-add-policy";
 import { HttpLiteLLMAdapter } from "@/server/litellm/client";
 import { log } from "@/server/logging";
 import { recordLaneSnapshots } from "@/server/lanes/snapshots";
 import { recordConnection } from "@/server/settings/connections";
 import { getLiteLLMManagementSettings } from "@/server/settings/litellm-management";
 import { healthFromSmokeResult } from "@/server/status";
+import { HEALTH_PROBES_LAST_24H_SQL, remainingCalls } from "@/server/providers/call-budget-policy";
 import { AUTO_REMOVE_AFTER_FAILURES, computeFailureStreak, isAutoRemoveEligible } from "./failure-streak";
 import { SYSTEMIC, detectSystemicFailures, type RunProbe } from "./probe-policy";
 import { randomUUID } from "node:crypto";
@@ -34,7 +35,7 @@ async function recordCandidateRemoval(db: ReturnType<typeof getDb>, deployment: 
   if (!candidateId) return;
   const candidate = (await db.select({ evidence: modelCandidates.evidence }).from(modelCandidates).where(eq(modelCandidates.id, candidateId)).limit(1))[0];
   if (!candidate) return;
-  const history = [...removalHistoryOf(candidate.evidence), { at: new Date().toISOString(), reason }];
+  const history = withRemoval(removalHistoryOf(candidate.evidence), { at: new Date().toISOString(), reason });
   await db.update(modelCandidates).set({ evidence: { ...candidate.evidence, removalHistory: history }, updatedAt: new Date() }).where(eq(modelCandidates.id, candidateId));
 }
 
@@ -90,11 +91,20 @@ async function lastPassedAt(db: ReturnType<typeof getDb>, deploymentIds: string[
   return new Map(rows.filter(row => row.id && row.at).map(row => [row.id as string, new Date(row.at as Date | string)]));
 }
 
+/** Providers whose health probes alone have already used the whole daily call budget, so probing them more would only burn a free tier
+ *  that real traffic also needs. What discovery spent does not count here: discovery yields to probing, never the other way round.
+ *  Their deployments are picked up again as probes age out of the 24 hours. */
+async function providersOutOfBudget(db:ReturnType<typeof getDb>):Promise<string[]>{
+  const usage=await db.execute(sql`select p.id, p.slug, u.n from (${sql.raw(HEALTH_PROBES_LAST_24H_SQL)}) u join providers p on p.id = u.provider_id`) as unknown as Array<{id:string;slug:string;n:number}>;
+  return usage.filter(row=>remainingCalls(row.slug,Number(row.n))<=0).map(row=>row.id);
+}
+
 export async function runHealthMonitor(options:{limit?:number; adapter?:HealthAdapter}={}){
   const db=getDb();
+  const outOfBudget=await providersOutOfBudget(db);
   const rows=await db.select({deployment:modelDeployments,providerSlug:providers.slug}).from(modelDeployments)
     .innerJoin(providers,eq(modelDeployments.providerId,providers.id))
-    .where(and(isNotNull(modelDeployments.litellmDeploymentId),eq(modelDeployments.lifecycle,"ACTIVE"),eq(providers.enabled,true)))
+    .where(and(isNotNull(modelDeployments.litellmDeploymentId),eq(modelDeployments.lifecycle,"ACTIVE"),eq(providers.enabled,true),outOfBudget.length?notInArray(modelDeployments.providerId,outOfBudget):undefined))
     .orderBy(sql`${modelDeployments.lastTestedAt} asc nulls first`)
     .limit(options.limit??25);
   const deployments=rows.map(row=>row.deployment);

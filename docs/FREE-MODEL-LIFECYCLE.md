@@ -63,11 +63,14 @@ is exactly the signal that tells you *where* the problem is.
 
 ## 3. Status label taxonomy
 
-**Direct-provider availability** (`/models` → Availability column, from `availabilityFor()`):
-`AVAILABLE`, `RATE_LIMITED`, `UNAVAILABLE`, `AUTH_ERROR`, `CREDENTIAL_MISSING`, `CREDENTIAL_UNVERIFIED`,
-`PROVIDER_UNRESOLVED`, `VERIFIER_NOT_CONFIGURED`, `QUEUED`. This taxonomy is fine as-is.
+**Direct-provider outcomes** (`candidate_checks`, the Availability bars): only real calls are recorded — `available`,
+`unavailable`, `rate_limited`, `auth_error`, and `out_of_credits` (a provider-account fact, not a model failure).
+States where no call could be made (no provider, not a chat model, no endpoint, no credential, credential not verified) are a
+**blocker on the candidate** (`check_blocker`), never history; see `docs/DISCOVERY-PIPELINE.md` §6. The Discovered Models page shows
+only what a person can act on (Add credential, Verify credential, Set base URL); every other blocker stays in the database.
 
-**LiteLLM lifecycle** (`/models` → LiteLLM column, `/litellm` page):
+**LiteLLM lifecycle** (`/models` → LiteLLM column, `/litellm` page). The `/models` column shows one short pill with the explanation on
+hover (`Added <date>`, `Will retry`, `Needs review`, `Deleted`, `Deactivated`); the tables below use the long names:
 
 | State | Badge | Manual "Add to LiteLLM" button shown? |
 |---|---|---|
@@ -152,6 +155,10 @@ passed is never shielded.
 
 ## 6. Fast-track ramp for new candidates
 
+> Superseded in part by `docs/DISCOVERY-PIPELINE.md` §6: the streak is stored (`consecutive_passes`) rather than re-read from history, a
+> candidate is eligible after `PROMOTION_PASSES` (5) consecutive *real* passes, and trial / recurring-quota providers are tested a
+> quarter as often (24h recheck, 6h while proving) because a test spends their quota. The rest of this section still holds.
+
 Decision: **fast-track only candidates still proving themselves**, not everyone — steady-state request
 volume against providers must not multiply just because most candidates are already known-good or
 known-bad and sitting on the standard cadence.
@@ -222,3 +229,18 @@ known-bad and sitting on the standard cadence.
   (that disagreement with LiteLLM is what makes it flap-limited in the first place) — so the
   human-override button those cases are supposed to keep stays intact. The only route into LiteLLM for
   an unproven or non-chat candidate now is the automatic 5-consecutive-pass path (§6), same as BAU.
+
+- **2026-09-21** — Autopilot audit, end to end (discover → verify → add → monitor → remove) against the live router. Found and fixed:
+  a single model's 401/403 was invalidating the provider's whole credential, which deferred every model of that provider for hours
+  (I13); RatLLM's own probes were spending free tiers (803 OpenRouter calls in a day against a 50/day cap) with no ceiling (I14);
+  a deferred candidate waited up to a day for its next check before auto-add tried again (I15); reasoning models were judged
+  unavailable at a 128-token reply budget (I16); the LiteLLM page, overview count and benchmarks counted removed deployments as
+  live and could not tell when they were out of step with the router (I17); adoption rejected valid deployments whose metadata
+  held empty fields (`null`, `[]`, `{}`) that the router leaves out after an update. Operational notes: lane caps live in
+  `LANE_RULES` (code), not in the database; auto-add defers a model whose recommended lanes are full (`smart-general` is fed by five
+  self-hosted models), which is by design; RatLLM runs all of its own schedules, so no external scheduler is needed.
+- **2026-09-21 (end-to-end suite)** — Added the simulated-world E2E suite (docs/DISCOVERY-PIPELINE.md, "Testing end to end"). It found and
+  fixed: concurrent auto-adds racing on the inventory sync (I18); one incident writing one removal per lane, so a model in three lanes was
+  flap-limited by a single failure (I19); the "Needs setup" list staying stale for up to an hour after an operator added a key (I20); and
+  a regression in the deferred-retry step that stopped a removed model from ever being auto-re-added.
+

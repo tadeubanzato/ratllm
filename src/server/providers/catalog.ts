@@ -28,15 +28,34 @@ export const providerDefinitions:readonly ProviderDefinition[]=[
   // portal-linked) but deliberately NOT wired — see WIRING_PENDING in wiring.ts for the specific reason each needs
   // verification before a check/completions pair is added.
   {slug:"yi",name:"01.AI / Yi",adapterKey:"manual",adapterCapability:"MANUAL"},
+  // Added 2026-09-19: additional providers with free tiers per freellm.net + community audits.
+  {slug:"github-models",name:"GitHub Models",adapterKey:"openai-compatible",adapterCapability:"PARTIAL"},
+  {slug:"ovhcloud",name:"OVHcloud AI Endpoints",adapterKey:"openai-compatible",adapterCapability:"PARTIAL"},
+  {slug:"aion-labs",name:"Aion Labs",adapterKey:"openai-compatible",adapterCapability:"PARTIAL"},
+  // Added 2026-09-20: additional free providers found during web audit — permanent free tiers or generous trial credits.
+  {slug:"chutes",name:"Chutes AI",adapterKey:"openai-compatible",adapterCapability:"PARTIAL"},
+  {slug:"nebius",name:"Nebius Token Factory",adapterKey:"openai-compatible",adapterCapability:"PARTIAL"},
+  {slug:"btl-runtime",name:"BTL Runtime",adapterKey:"openai-compatible",adapterCapability:"PARTIAL"},
+  {slug:"cline",name:"Cline",adapterKey:"openai-compatible",adapterCapability:"PARTIAL"},
 ] as const;
 const bySlug=new Map(providerDefinitions.map(item=>[item.slug,item]));
+/** The catalog entry for a provider slug (e.g. one read back from the providers table), or null if it isn't catalogued. */
+export function providerDefinitionBySlug(slug:string|null|undefined):ProviderDefinition|null{return slug?bySlug.get(slug)??null:null;}
 const aliases:Readonly<Record<string,string>>={gemini:"google-ai-studio",google:"google-ai-studio",google_ai_studio:"google-ai-studio",google_gemini:"google-ai-studio",nvidia_nim:"nvidia",huggingface:"hugging-face",hugging_face:"hugging-face",cloudflare:"cloudflare-workers-ai",cloudflare_ai:"cloudflare-workers-ai",watsonx:"ibm-watsonx",watsonx_ai:"ibm-watsonx",zai:"zhipu",zhipuai:"zhipu",z_ai:"zhipu",zai_glm:"zhipu",codestral:"mistral",together_ai:"together-ai",publicai:"public-ai",volcengine:"volcengine-ark",vertex_ai:"vertex-ai",vertex_ai_llama_models:"vertex-ai",vercel_ai_gateway:"vercel-ai-gateway",ollama_cloud:"ollama-cloud",wandb_inference:"wandb",byteplus:"byteplus-modelark",modelark:"byteplus-modelark",kimi:"moonshot",moonshot_ai:"moonshot","01_ai":"yi","01ai":"yi",zero_one_ai:"yi",lingyiwanwu:"yi",fireworks_ai:"fireworks",featherless_ai:"featherless",
   // These are models.dev's own display names for providers already in providerDefinitions above — without an
   // alias here, a normalized name-match miss used to fall through to guessing a provider from the model ref's
   // own path prefix (see below), which is how e.g. an EdenAI or LLM Gateway routing entry like "deepinfra/foo"
   // got misfiled onto the real DeepInfra provider despite never having come from DeepInfra's own catalog.
-  deep_infra:"deepinfra","stepfun_china":"stepfun","minimax_minimax_io":"minimax",coreweave:"wandb",kilo_gateway:"kilo",sarvam_ai:"sarvam",ai21_labs:"ai21"};
+  deep_infra:"deepinfra","stepfun_china":"stepfun","minimax_minimax_io":"minimax",coreweave:"wandb",kilo_gateway:"kilo",sarvam_ai:"sarvam",ai21_labs:"ai21","github_models":"github-models","ovhcloud":"ovhcloud","aion_labs":"aion-labs","sambanova_cloud":"sambanova","llm7":"llm7","opencode_zen":"opencode-zen"};
 const normalized=(value:string)=>value.trim().toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"");
+/** The one rule that turns a provider's name into its slug. Shared with attribution.ts so a provider a source names and a
+ *  provider the catalog knows can never disagree about what "the same name" means. */
+export const normalizeProviderName=normalized;
+// A provider's own display name ("W&B Inference", "Chutes AI", "Novita AI") is what discovery sources store as
+// providerName once a record has been matched to it, and it never appears in `aliases` — so without this a
+// perfectly catalogued provider fell through to "unresolved" purely because its name isn't spelled like its slug.
+const byName=new Map(providerDefinitions.map(item=>[normalized(item.name),item]));
+
 /** Resolve source metadata and bare community model IDs to a known provider. The model-ref-prefix guess (a
  *  provider slug happens to be the model id's first path segment) is only trusted when there's no providerName
  *  to check it against, or when providerName itself corroborates the same provider — otherwise a providerName
@@ -46,5 +65,5 @@ const normalized=(value:string)=>value.trim().toLowerCase().replace(/[^a-z0-9]+/
  *  id, not a real DeepInfra model, and providerName ("EdenAI") doesn't corroborate "deepinfra" — while a source
  *  like ModelScope's own listing has providerName "ModelScope API-Inference" *and* a "modelscope/..." modelRef,
  *  which do corroborate each other and should still resolve. */
-export function resolveProvider(providerName:string|null|undefined,modelRef:string):ProviderDefinition|null {const raw=normalized(providerName??"");const candidate=aliases[raw]??aliases[raw.replaceAll("-","_")]??raw;if(candidate&&bySlug.has(candidate))return bySlug.get(candidate)??null;const model=modelRef.trim().toLowerCase();const prefix=model.split("/",1)[0]??"";const mappedPrefix=aliases[normalized(prefix)]??normalized(prefix);if(bySlug.has(mappedPrefix)&&(!raw||raw.includes(mappedPrefix)))return bySlug.get(mappedPrefix)??null;if(/^(?:zai-org\/)?glm[-_]/.test(model))return bySlug.get("zhipu")??null;if(/^(?:qwen|tongyi)[-_]/.test(model))return bySlug.get("alibaba-model-studio")??null;return null;}
+export function resolveProvider(providerName:string|null|undefined,modelRef:string):ProviderDefinition|null {const raw=normalized(providerName??"");const candidate=aliases[raw]??aliases[raw.replaceAll("-","_")]??raw;if(candidate&&bySlug.has(candidate))return bySlug.get(candidate)??null;if(raw&&byName.has(raw))return byName.get(raw)??null;const model=modelRef.trim().toLowerCase();const prefix=model.split("/",1)[0]??"";const mappedPrefix=aliases[normalized(prefix)]??normalized(prefix);if(bySlug.has(mappedPrefix)&&(!raw||raw.includes(mappedPrefix)))return bySlug.get(mappedPrefix)??null;if(/^(?:zai-org\/)?glm[-_]/.test(model))return bySlug.get("zhipu")??null;if(/^(?:qwen|tongyi)[-_]/.test(model))return bySlug.get("alibaba-model-studio")??null;return null;}
 export function providerSlug(providerName:string|null|undefined,modelRef:string):string|null{return resolveProvider(providerName,modelRef)?.slug??null;}

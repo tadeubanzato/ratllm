@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AUTO_ADD_DEFER_MS, FLAP_LIMIT, REMOVE_COOLDOWN_MS, autoAddDeferredUntil, isAutoAddDeferred, inRemovalCooldown, isAutoReAddBlocked, isFlapLimited, removalHistoryOf, unprovenCheckReason } from "../src/server/discovery/auto-add-policy";
+import { AUTO_ADD_DEFER_MS, FLAP_LIMIT, REMOVE_COOLDOWN_MS, autoAddDeferredUntil, isAutoAddDeferred, inRemovalCooldown, isAutoReAddBlocked, isFlapLimited, removalHistoryOf, withRemoval, SAME_REMOVAL_EVENT_MS } from "../src/server/discovery/auto-add-policy";
 
 const NOW = new Date("2026-09-13T12:00:00Z").getTime();
 const hoursAgo = (h: number) => new Date(NOW - h * 60 * 60_000).toISOString();
@@ -86,20 +86,6 @@ describe("isAutoReAddBlocked", () => {
   });
 });
 
-describe("unprovenCheckReason", () => {
-  it("blocks a candidate that has never been checked", () => {
-    expect(unprovenCheckReason({})).toBe("Not checked yet");
-  });
-
-  it("blocks a candidate whose most recent check failed, even after many failures", () => {
-    expect(unprovenCheckReason({ lastStatus: "unavailable" })).toBe("Last check did not pass yet");
-    expect(unprovenCheckReason({ lastStatus: "rate_limited" })).toBe("Last check did not pass yet");
-  });
-
-  it("clears once the most recent check actually passed", () => {
-    expect(unprovenCheckReason({ lastStatus: "available" })).toBeNull();
-  });
-});
 
 describe("auto-add deferral", () => {
   const T0 = new Date("2026-09-18T12:00:00Z").getTime();
@@ -118,5 +104,28 @@ describe("auto-add deferral", () => {
   it("ignores a malformed marker instead of blocking forever", () => {
     expect(isAutoAddDeferred({ autoAddDeferredUntil: "garbage" }, T0)).toBe(false);
     expect(isAutoAddDeferred({ autoAddDeferredUntil: 12345 }, T0)).toBe(false);
+  });
+});
+
+describe("withRemoval", () => {
+  const at = (ms: number) => new Date(NOW + ms).toISOString();
+  it("counts the several deployments of one model, removed together, as one event", () => {
+    let history = withRemoval([], { at: at(0), reason: "5 consecutive failed health checks" });
+    history = withRemoval(history, { at: at(2_000), reason: "5 consecutive failed health checks" });
+    history = withRemoval(history, { at: at(4_000), reason: "5 consecutive failed health checks" });
+    expect(history).toHaveLength(1);
+    expect(isFlapLimited(history, NOW + 10_000)).toBe(false);          // a model in three lanes must not be flap-limited by one incident
+  });
+  it("counts removals further apart as separate events, so a model that keeps dying still hits the flap limit", () => {
+    let history = withRemoval([], { at: at(0), reason: "r" });
+    history = withRemoval(history, { at: at(SAME_REMOVAL_EVENT_MS + 1), reason: "r" });
+    history = withRemoval(history, { at: at(2 * (SAME_REMOVAL_EVENT_MS + 1)), reason: "r" });
+    expect(history).toHaveLength(FLAP_LIMIT);
+    expect(isFlapLimited(history, NOW + 3 * SAME_REMOVAL_EVENT_MS)).toBe(true);
+  });
+  it("does not mutate the history it was given", () => {
+    const history = [{ at: at(0), reason: "r" }];
+    withRemoval(history, { at: at(1_000), reason: "r" });
+    expect(history).toHaveLength(1);
   });
 });

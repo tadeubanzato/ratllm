@@ -33,6 +33,16 @@ describe("adoptionFields / verifyAdoption", () => {
     expect(verifyAdoption(before, { managed_by: CURATOR_MANAGED_BY })).toMatchObject({ ok: false, lostKeys: ["lane", "rpm"] });
     expect(verifyAdoption(before, before)).toMatchObject({ ok: false, managedNow: false });
   });
+  it("does not count a field that was empty before as lost when the router leaves it out afterwards", () => {
+    const before = { managed_by: "manual-free-add", lane: "smart-agent", team_id: null, base_model: null, created_at: null };
+    expect(verifyAdoption(before, { managed_by: CURATOR_MANAGED_BY, lane: "smart-agent" })).toEqual({ ok: true, managedNow: true, lostKeys: [] });
+    expect(verifyAdoption(before, { managed_by: CURATOR_MANAGED_BY })).toMatchObject({ ok: false, lostKeys: ["lane"] });
+  });
+  it("treats empty lists and objects as empty, but still counts false and real values as data", () => {
+    const before = { managed_by: "smart-free-sync", access_groups: [], extra: {}, blocked: false, teams: ["a"] };
+    expect(verifyAdoption(before, { managed_by: CURATOR_MANAGED_BY, blocked: false, teams: ["a"] })).toEqual({ ok: true, managedNow: true, lostKeys: [] });
+    expect(verifyAdoption(before, { managed_by: CURATOR_MANAGED_BY, teams: ["a"] })).toMatchObject({ ok: false, lostKeys: ["blocked"] });
+  });
 });
 
 /** A fake router. `mode` decides what its PATCH does to model_info: merge it in, or (badly) replace it. */

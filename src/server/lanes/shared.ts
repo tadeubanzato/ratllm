@@ -23,8 +23,12 @@ export function getDeploymentsForProvider(providerId: string) {
 /** Current non-excluded member count for one lane, against its `LANE_RULES.maxDeployments` soft cap. Mirrors the
  *  bulk per-lane count the "Add to LiteLLM" picker (`/api/candidates/[id]/lanes`) already shows as "lane full" —
  *  this is the gate `promoteCandidate` gained to actually enforce that cap on auto-selected lanes, since the
- *  picker's own `full` flag only ever disabled a checkbox and never stopped an unattended promotion. */
+ *  picker's own `full` flag only ever disabled a checkbox and never stopped an unattended promotion.
+ *
+ *  A disabled (retired) lane has no capacity however empty it is, so nothing is ever added to it automatically. */
 export async function laneHasCapacity(slug: LaneId): Promise<boolean> {
+  const [state] = await getDb().select({ enabled: lanes.enabled }).from(lanes).where(eq(lanes.slug, slug)).limit(1);
+  if (state && !state.enabled) return false;
   const [row] = await getDb().select({ total: sql<number>`count(*)` }).from(laneAssignments)
     .innerJoin(lanes, eq(laneAssignments.laneId, lanes.id))
     .innerJoin(modelDeployments, eq(laneAssignments.deploymentId, modelDeployments.id))

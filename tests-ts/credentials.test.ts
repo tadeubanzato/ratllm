@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 vi.hoisted(() => { process.env.CREDENTIAL_ENCRYPTION_KEY = "test-encryption-key-at-least-32-characters"; });
 vi.mock("server-only", () => ({}));
 vi.mock("@/server/config", () => ({ env: { CREDENTIAL_ENCRYPTION_KEY: "test-encryption-key-at-least-32-characters" } }));
+// Recomputing candidate blockers after a credential change touches other tables; it is covered against a real database (tests-integration).
+vi.mock("@/server/discovery/blockers", () => ({ reconcileCheckBlockers: async () => 0 }));
 
 const state = vi.hoisted(() => ({ existingConfig: {} as Record<string, string>, inserted: [] as Array<{ table: string; row: unknown }> }));
 

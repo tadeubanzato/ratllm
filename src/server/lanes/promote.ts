@@ -4,11 +4,13 @@ import { eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { CURATOR_MANAGED_BY, CURATOR_VERSION, type LaneId } from "@/lib/constants";
 import { getDb } from "@/server/db/client";
-import { auditEvents, laneAssignments, lanes, modelCandidates, providerCredentialReferences, providers, syncRuns } from "@/server/db/schema";
+import { auditEvents, laneAssignments, lanes, modelCandidates, modelDeployments, providerCredentialReferences, providerOffers, providers, syncRuns } from "@/server/db/schema";
 import { HttpLiteLLMAdapter, LiteLLMError } from "@/server/litellm/client";
 import { syncLiteLLM } from "@/server/litellm/sync";
-import { resolveProvider } from "@/server/providers/catalog";
-import { buildExtraHeaders } from "@/server/providers/wiring";
+import type { ProviderDefinition as CatalogProviderDefinition } from "@/server/providers/catalog";
+import { definitionForProvider } from "@/server/providers/attribution";
+import { promotionGateReason } from "@/server/discovery/verification-policy";
+import { buildExtraHeaders, endpointBaseHint } from "@/server/providers/wiring";
 import { bareModelKey } from "@/server/discovery/model-key";
 import { removalHistoryOf } from "@/server/discovery/auto-add-policy";
 import { bareCandidateModelRef, resolveCredentialWithSource, resolveVerificationEndpoint, verifyCandidateDirectly } from "@/server/discovery/verify";
@@ -37,7 +39,7 @@ export class PromotionDeferred extends PromotionBlocked {
 }
 
 type Candidate = typeof modelCandidates.$inferSelect;
-type ProviderDefinition = NonNullable<ReturnType<typeof resolveProvider>>;
+type ProviderDefinition = CatalogProviderDefinition;
 
 export interface PromotionContext {
   candidate: Candidate;
@@ -50,6 +52,8 @@ export interface PromotionContext {
   bareModel: string;
   apiBase: string;
   directAliasName: string;
+  /** What to pass as the base URL for this provider's endpoint; see endpointBaseHint. */
+  endpointHint: string | null;
 }
 
 /** Resolves everything needed to register this candidate in LiteLLM, or throws PromotionBlocked with the exact gap. */
@@ -59,23 +63,26 @@ export async function resolvePromotionContext(candidateId: string): Promise<Prom
   if (!candidate) throw new PromotionBlocked("Candidate not found");
 
   const evidence = candidate.evidence as Record<string, unknown>;
-  const blockedReason = nonChatModelReason({ modelRef: candidate.modelRef, displayName: candidate.displayName, description: typeof evidence?.description === "string" ? evidence.description : null });
+  const blockedReason = (typeof evidence?.nonChatReason === "string" ? evidence.nonChatReason : null) ?? nonChatModelReason({ modelRef: candidate.modelRef, displayName: candidate.displayName, description: typeof evidence?.description === "string" ? evidence.description : null });
   if (blockedReason) throw new PromotionBlocked(blockedReason);
 
   const authorityReason = candidateOnlyBlockReason(candidate);
   if (authorityReason) throw new PromotionBlocked(authorityReason);
 
-  const definition = resolveProvider(candidate.source === "openrouter" ? "openrouter" : candidate.providerName, candidate.modelRef);
-  if (!definition) throw new PromotionBlocked("No known provider resolves for this candidate");
-
-  const providerRow = (await db.select().from(providers).where(eq(providers.slug, definition.slug)).limit(1))[0];
-  if (!providerRow) throw new PromotionDeferred(`${definition.name} is not registered yet — run discovery first`);
+  // The provider is the one discovery decided and stored (docs/DISCOVERY-PIPELINE.md I1); it is never re-guessed from text here.
+  if (!candidate.providerId) throw new PromotionBlocked("No provider has been resolved for this candidate");
+  const providerRow = (await db.select().from(providers).where(eq(providers.id, candidate.providerId)).limit(1))[0];
+  if (!providerRow) throw new PromotionDeferred("This candidate's provider is not registered yet — run discovery first");
+  const definition = definitionForProvider(providerRow);
 
   const credential = (await db.select().from(providerCredentialReferences).where(eq(providerCredentialReferences.providerId, providerRow.id)).limit(1))[0];
   if (!credential) throw new PromotionDeferred(`Add a credential for ${definition.name} first`);
   if (credential.valid !== true) throw new PromotionDeferred(`Verify the ${definition.name} credential first`);
 
-  const chatUrl = resolveVerificationEndpoint(definition, providerRow.baseUrl);
+  // A provider the catalog has no wiring for is reachable at the OpenAI-compatible base URL a source published for it.
+  const offerBaseUrl = (await db.select({ url: providerOffers.openaiBaseUrl }).from(providerOffers).where(eq(providerOffers.providerId, providerRow.id))).map(row => row.url).find(Boolean) ?? null;
+  const endpointHint = endpointBaseHint(providerRow.slug, providerRow.baseUrl, offerBaseUrl);
+  const chatUrl = resolveVerificationEndpoint(definition, endpointHint);
   if (!chatUrl) throw new PromotionBlocked(`${definition.name} has no known OpenAI-compatible endpoint`);
 
   const resolved = resolveCredentialWithSource(credential);
@@ -90,8 +97,8 @@ export async function resolvePromotionContext(candidateId: string): Promise<Prom
     apiKey = tokenResult.token;
   }
 
-  const bareModel = bareCandidateModelRef({ modelRef: candidate.modelRef, source: candidate.source, provider: definition, providerBaseUrl: providerRow.baseUrl });
-  return { candidate, definition, providerRow, credential, apiKey, credentialProvenance: credentialProvenance(credential, resolved), bareModel, apiBase: chatUrl.replace(/\/chat\/completions$/, ""), directAliasName: `${definition.slug}/${bareModel}` };
+  const bareModel = bareCandidateModelRef({ modelRef: candidate.modelRef, source: candidate.source, provider: definition, providerBaseUrl: endpointHint });
+  return { candidate, definition, providerRow, credential, apiKey, credentialProvenance: credentialProvenance(credential, resolved), bareModel, apiBase: chatUrl.replace(/\/chat\/completions$/, ""), directAliasName: `${definition.slug}/${bareModel}`, endpointHint };
 }
 
 export interface TargetResult {
@@ -163,15 +170,24 @@ export async function promoteCandidate(candidateId: string, options: PromoteOpti
   try {
     const ctx = await resolvePromotionContext(candidateId);
 
+    // The 5-in-a-row rule is enforced here, on the server, for every path (button, API, automation): hiding a button is never
+    // the only enforcement (docs/DISCOVERY-PIPELINE.md I8). A model that has been in LiteLLM before keeps the human-override path.
+    const everInLiteLLM = removalHistoryOf(ctx.candidate.evidence).length > 0 || ctx.candidate.addedToLitellmAt !== null
+      || (await db.select({ id: modelDeployments.id, key: modelDeployments.providerModelId }).from(modelDeployments).where(eq(modelDeployments.providerId, ctx.providerRow.id))).some(row => bareModelKey(row.key) === ctx.candidate.modelKey);
+    // Only a first-time addition needs the streak. A model already in LiteLLM once (a lane repair by the reconciler, or a person
+    // deciding to add it back) is re-verified live just below, which is the check that matters for it.
+    const gate = everInLiteLLM ? null : promotionGateReason({ consecutivePasses: ctx.candidate.consecutivePasses, lastCheckStatus: ctx.candidate.lastCheckStatus, previouslyInLiteLLM: false });
+    if (gate) throw new PromotionBlocked(`Not eligible yet: ${gate}`);
+
     // Prove the provider still serves it, via the exact endpoint+credential LiteLLM will use, before we touch the router.
     // A 429 here is exactly as inconclusive as it is everywhere else in this app (computeFailureStreak explicitly
     // never counts one, verify-due.ts just backs off and retries later) — one unlucky rate limit at the instant
     // someone clicks "Add" shouldn't permanently block a candidate with a 100% pass history. Retry it the same way
     // registerTarget below already retries transient LiteLLM errors, before giving up and blocking.
-    let live = await verifyCandidateDirectly({ modelRef: ctx.candidate.modelRef, source: ctx.candidate.source, provider: ctx.definition, providerBaseUrl: ctx.providerRow.baseUrl, credential: ctx.credential });
+    let live = await verifyCandidateDirectly({ modelRef: ctx.candidate.modelRef, source: ctx.candidate.source, provider: ctx.definition, providerBaseUrl: ctx.endpointHint, credential: ctx.credential });
     for (let attempt = 1; attempt < MAX_ATTEMPTS && live.status === "rate_limited"; attempt++) {
       await sleep(400 * 2 ** attempt);
-      live = await verifyCandidateDirectly({ modelRef: ctx.candidate.modelRef, source: ctx.candidate.source, provider: ctx.definition, providerBaseUrl: ctx.providerRow.baseUrl, credential: ctx.credential });
+      live = await verifyCandidateDirectly({ modelRef: ctx.candidate.modelRef, source: ctx.candidate.source, provider: ctx.definition, providerBaseUrl: ctx.endpointHint, credential: ctx.credential });
     }
     if (live.status !== "available") throw new PromotionBlocked(`Provider check failed (${live.status}${live.httpStatus ? ` HTTP ${live.httpStatus}` : ""}); not adding to LiteLLM`);
 
@@ -233,6 +249,10 @@ export async function promoteCandidate(candidateId: string, options: PromoteOpti
     const fallback = options.skipFallbackSync ? null : await syncFallbackConfig(adapter).catch(error => ({ ok: false, applied: [], errors: [{ model: "*", type: "general", error: error instanceof Error ? error.message : "fallback sync failed" }] }));
 
     const ok = results.every(result => result.status !== "failed");
+    // "Added <date>" (I11): stamped when something was actually registered, by whom. A no-op re-run against a deployment that was
+    // already there must not move the date.
+    if (ok && results.some(result => result.status === "added"))
+      await db.update(modelCandidates).set({ addedToLitellmAt: new Date(), addedBy: options.trigger === "auto" ? "auto" : "manual", updatedAt: new Date() }).where(eq(modelCandidates.id, candidateId));
     // A manual promotion (someone clicking "Add to LiteLLM" themselves, including on a flap-limited candidate the
     // UI is offering the button back for) is the human review the flap limit exists to require — clear the
     // candidate's removal history so it starts this run with a clean slate rather than carrying old flaps forward

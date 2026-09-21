@@ -10,16 +10,7 @@ export const providerStatus = pgEnum("provider_status", ["ACTIVE", "DEGRADED", "
 export const adapterCapability = pgEnum("adapter_capability", ["AUTOMATED", "PARTIAL", "MANUAL", "DISABLED"]);
 export const modelLifecycle = pgEnum("model_lifecycle", ["DISCOVERED", "CANDIDATE", "ACTIVE", "DEGRADED", "QUARANTINED", "RETIRED", "REMOVED"]);
 export const deploymentHealth = pgEnum("deployment_health", ["HEALTHY", "DEGRADED", "RATE_LIMITED", "UNAVAILABLE", "AUTH_ERROR", "UNKNOWN"]);
-// Was tracked only as a `rawMetadata.lifecycle` string (ACTIVE/DEACTIVATED/REMOVED/AUTO_REMOVED) — untyped, so no
-// query could filter or select on it. Promoted to a real column so the Discovered Models page can show a deployment
-// that was deactivated or deleted straight in LiteLLM instead of leaving a stale "Added to LiteLLM" badge. AUTO_REMOVED
-// folds into REMOVED here (same user-facing state); the distinguishing reason still lives in rawMetadata.removedReason.
 export const deploymentLifecycle = pgEnum("deployment_lifecycle", ["ACTIVE", "DEACTIVATED", "REMOVED"]);
-// RECURRING_CREDIT/TRIAL_QUOTA/OPEN_WEIGHT_SELF_HOSTED/PROVIDER_SPECIFIC_FREE added 2026-09-11 per docs/models_source.md's
-// free_type taxonomy — a recurring dollar credit (Vercel), a token quota that expires (Alibaba's 90-day per-model
-// grant), a self-hosted open-weight model (no provider "free" claim applies at all), and a named-model-specific
-// free list (Z.AI's GLM-Flash line) each need their own bucket; folding them into TRIAL_CREDIT/FREE_TIER/PERMANENT_FREE
-// was actively misleading.
 export const freeType = pgEnum("free_type", ["PERMANENT_FREE", "RECURRING_DAILY", "RECURRING_MONTHLY", "RECURRING_CREDIT", "FREE_TIER", "TRIAL_CREDIT", "TRIAL_QUOTA", "PROMOTIONAL", "OPEN_WEIGHT_SELF_HOSTED", "PROVIDER_SPECIFIC_FREE", "UNKNOWN", "PAID"]);
 export const confidence = pgEnum("confidence", ["UNKNOWN", "LOW", "MEDIUM", "HIGH"]);
 export const limitSource = pgEnum("limit_source", ["DOCUMENTED", "OBSERVED", "ESTIMATED", "MANUAL", "UNKNOWN"]);
@@ -38,6 +29,8 @@ export const providers = pgTable("providers", {
   baseUrl: text("base_url"),
   enabled: boolean("enabled").notNull().default(true),
   lastDiscoveryAt: timestamp("last_discovery_at", { withTimezone: true }),
+  /** CATALOG: defined in providers/catalog.ts. DISCOVERED: created because a source named it (docs/DISCOVERY-PIPELINE.md I3). */
+  origin: text("origin").notNull().default("CATALOG"),
   ...timestamps,
 }, (table) => [index("providers_status_idx").on(table.status)]);
 
@@ -47,8 +40,6 @@ export const providerCredentialReferences = pgTable("provider_credential_referen
   environmentVariable: text("environment_variable").notNull(),
   encryptedValue: text("encrypted_value"),
   valueHint: text("value_hint"),
-  /** Non-secret, provider-specific extra fields a bearer key alone can't express (e.g. Alibaba Model Studio's
-   *  optional workspace ID) — see EXTRA_CREDENTIAL_FIELDS in providers/wiring.ts for which providers use which keys. */
   config: jsonb("config").$type<Record<string, string>>().notNull().default({}),
   lastValidatedAt: timestamp("last_validated_at", { withTimezone: true }),
   valid: boolean("valid"),
@@ -74,9 +65,6 @@ export const modelCandidates = pgTable("model_candidates", {
   modelRef: text("model_ref").notNull(),
   displayName: text("display_name").notNull(),
   providerName: text("provider_name"),
-  /** Resolved once at write time (discovery/consolidation), via the same catalog matching `providerName` used to
-   *  fall back on — reads trust this column directly instead of re-guessing the match on every query. Null means
-   *  genuinely unresolved (no known provider matches), not "not yet looked up". */
   providerId: uuid("provider_id").references(() => providers.id, { onDelete: "set null" }),
   lifecycle: modelLifecycle("lifecycle").notNull().default("DISCOVERED"),
   freeType: freeType("free_type").notNull().default("UNKNOWN"),
@@ -90,8 +78,34 @@ export const modelCandidates = pgTable("model_candidates", {
   evidence: jsonb("evidence").$type<Record<string, unknown>>().notNull().default({}),
   firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
   lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  /** bareModelKey(modelRef), stored so "same model at this provider" is an indexed lookup rather than a scan (I10, I12). */
+  modelKey: text("model_key").notNull().default(""),
+  // Direct-check state (I6, I7). Real provider calls only; see docs/DISCOVERY-PIPELINE.md §6.
+  lastCheckStatus: text("last_check_status"),
+  lastCheckedAt: timestamp("last_checked_at", { withTimezone: true }),
+  lastPassedAt: timestamp("last_passed_at", { withTimezone: true }),
+  consecutivePasses: integer("consecutive_passes").notNull().default(0),
+  everFailed: boolean("ever_failed").notNull().default(false),
+  nextCheckAt: timestamp("next_check_at", { withTimezone: true }),
+  /** Why no call can be made right now (null = testable). Not history: it never breaks or extends a streak (I6). */
+  checkBlocker: text("check_blocker"),
+  /** Stamped by a successful promotion (I11). */
+  addedToLitellmAt: timestamp("added_to_litellm_at", { withTimezone: true }),
+  addedBy: text("added_by"),
   ...timestamps,
-}, (table) => [uniqueIndex("candidate_source_model_uidx").on(table.source, table.modelRef),index("candidate_lifecycle_idx").on(table.lifecycle),index("candidate_free_idx").on(table.freeType,table.verifiedFree),index("candidate_provider_idx").on(table.providerId)]);
+}, (table) => [
+  // A candidate is one model at one provider as one source lists it (docs/DISCOVERY-PIPELINE.md I10). A source that lists the same
+  // model id under several providers (models.dev lists "gemini-flash-latest" under Google and under Vertex) therefore has one row for
+  // each. Unique on the model id alone, the providers overwrote each other and the last one written won. `provider_id` is nullable,
+  // so it is coalesced to a fixed value: two unattributed rows with the same id are still one candidate.
+  uniqueIndex("candidate_source_model_uidx").on(table.source, table.modelRef, sql`coalesce(${table.providerId}, '00000000-0000-0000-0000-000000000000'::uuid)`), index("candidate_lifecycle_idx").on(table.lifecycle),
+  index("candidate_free_idx").on(table.freeType, table.verifiedFree), index("candidate_provider_idx").on(table.providerId),
+  index("candidate_provider_key_idx").on(table.providerId, table.modelKey),
+  index("candidate_model_key_idx").on(table.modelKey),
+  index("candidate_next_check_idx").on(table.nextCheckAt),
+  index("candidate_rank_idx").on(table.consecutivePasses, table.lastPassedAt),
+  index("candidate_first_seen_idx").on(table.firstSeenAt),
+]);
 
 export const candidateChecks = pgTable("candidate_checks", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -205,14 +219,45 @@ export const leases = pgTable("leases", {
 
 export const automationJobs = pgTable("automation_jobs", {
   id: uuid("id").primaryKey().defaultRandom(), type: text("type").notNull().unique(), enabled: boolean("enabled").notNull().default(true), schedule: text("schedule").notNull(), customSchedule: boolean("custom_schedule").notNull().default(false), timezone: text("timezone").notNull().default("UTC"), status: automationStatus("status").notNull().default("IDLE"), lastRunAt: timestamp("last_run_at", { withTimezone: true }), nextRunAt: timestamp("next_run_at", { withTimezone: true }), durationMs: integer("duration_ms"), failureCount: integer("failure_count").notNull().default(0), lastError: text("last_error"),
-  /** Set when an operator asks for an immediate run. The worker picks it up on its next tick and clears it when it starts the job,
-   *  so a manual run goes through the same lease and reporting as a scheduled one instead of running inside a web request. */
   runRequestedAt: timestamp("run_requested_at", { withTimezone: true }), requestedOptions: jsonb("requested_options").$type<{ candidateScope?: "due" | "connected" }>(), ...timestamps,
 }, (table) => [index("automation_jobs_due_idx").on(table.enabled, table.nextRunAt)]);
 
 export const modelSources = pgTable("model_sources", {
-  id: uuid("id").primaryKey().defaultRandom(), name: text("name").notNull(), type: sourceType("type").notNull(), providerId: uuid("provider_id").references(() => providers.id, { onDelete: "set null" }), url: text("url"), enabled: boolean("enabled").notNull().default(true), priority: integer("priority").notNull().default(100), credentialReference: text("credential_reference"), adapterReference: text("adapter_reference"), lastSyncAt: timestamp("last_sync_at", { withTimezone: true }), status: text("status").notNull().default("UNKNOWN"), discoveredModelCount: integer("discovered_model_count").notNull().default(0), ...timestamps,
+  id: uuid("id").primaryKey().defaultRandom(), name: text("name").notNull(), type: sourceType("type").notNull(), providerId: uuid("provider_id").references(() => providers.id, { onDelete: "set null" }), url: text("url"), enabled: boolean("enabled").notNull().default(true), priority: integer("priority").notNull().default(100), credentialReference: text("credential_reference"), adapterReference: text("adapter_reference"), lastSyncAt: timestamp("last_sync_at", { withTimezone: true }), status: text("status").notNull().default("UNKNOWN"), discoveredModelCount: integer("discovered_model_count").notNull().default(0),
+  lastError: text("last_error"), lastSuccessAt: timestamp("last_success_at", { withTimezone: true }), ...timestamps,
 });
+
+export const sourceChecks = pgTable("source_checks", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  sourceId: uuid("source_id").notNull().references(() => modelSources.id, { onDelete: "cascade" }),
+  providerId: uuid("provider_id").references(() => providers.id, { onDelete: "set null" }),
+  status: text("status").notNull(),
+  httpStatus: integer("http_status"),
+  error: text("error"),
+  discoveredCount: integer("discovered_count"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [index("source_checks_source_created_idx").on(table.sourceId, table.createdAt)]);
+
+/** What a source says about a provider's free offer (docs/DISCOVERY-PIPELINE.md §5). Text fields are the source's own
+ *  wording, kept verbatim: a quoted limit cannot be wrong, a parsed one can. One row per (provider, source). */
+export const providerOffers = pgTable("provider_offers", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  providerId: uuid("provider_id").notNull().references(() => providers.id, { onDelete: "cascade" }),
+  source: text("source").notNull(),
+  freeType: freeType("free_type").notNull().default("UNKNOWN"),
+  freeTierText: text("free_tier_text"),
+  rateLimitsText: text("rate_limits_text"),
+  notes: text("notes"),
+  expiresAt: text("expires_at"),
+  cardRequired: boolean("card_required"),
+  phoneRequired: boolean("phone_required"),
+  commercialOk: boolean("commercial_ok"),
+  openaiBaseUrl: text("openai_base_url"),
+  docsUrl: text("docs_url"),
+  sourceVerified: boolean("source_verified"),
+  sourceLastVerified: text("source_last_verified"),
+  observedAt: timestamp("observed_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [uniqueIndex("provider_offer_uidx").on(table.providerId, table.source)]);
 
 export const providersRelations = relations(providers, ({ many }) => ({ deployments: many(modelDeployments), credentials: many(providerCredentialReferences) }));
 export const modelsRelations = relations(canonicalModels, ({ many }) => ({ deployments: many(modelDeployments), capabilities: many(modelCapabilities) }));

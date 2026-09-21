@@ -60,6 +60,8 @@ describe("syncLiteLLM inventory reconciliation", () => {
 });
 
 describe("provider attribution for RatLLM-managed deployments", () => {
+  // A source-provider name that resolves to nothing in the catalog, so attribution genuinely has to fall back to the route prefix.
+  const UNLISTED_PROVIDER = "Some Unlisted Gateway";
   const managedItem = (id: string, candidateId: string, sourceProvider: string) =>
     ({ model_name: "smart-summary", litellm_params: { model: "openai/qwen-flash" }, model_info: { id, managed_by: "ratllm-curator", source_provider: sourceProvider, source_candidate_id: candidateId } });
 
@@ -86,7 +88,7 @@ describe("provider attribution for RatLLM-managed deployments", () => {
   it("corrects a deployment that an earlier sync had filed under the catch-all provider", async () => {
     // First sync happens before the discovery record exists → falls back to the route prefix ("Openai").
     const missing = "00000000-0000-4000-8000-0000000000aa";
-    await syncLiteLLM({}, inventory(managedItem("q1", missing, "Alibaba Cloud Model Studio")));
+    await syncLiteLLM({}, inventory(managedItem("q1", missing, UNLISTED_PROVIDER)));
     expect(await providerNameOf("q1")).toBe("Openai");
     const { candidate } = await candidateFor("Alibaba Model Studio");
     await syncLiteLLM({}, inventory(managedItem("q1", candidate.id, "Alibaba Cloud Model Studio")));
@@ -94,9 +96,16 @@ describe("provider attribution for RatLLM-managed deployments", () => {
   });
 
   it("falls back to name/prefix matching when the candidate id is unknown or malformed", async () => {
-    await syncLiteLLM({}, inventory(managedItem("q1", "not-a-uuid", "Alibaba Cloud Model Studio"), managedItem("q2", "00000000-0000-4000-8000-0000000000bb", "Alibaba Cloud Model Studio")));
+    await syncLiteLLM({}, inventory(managedItem("q1", "not-a-uuid", UNLISTED_PROVIDER), managedItem("q2", "00000000-0000-4000-8000-0000000000bb", UNLISTED_PROVIDER)));
     expect(await providerNameOf("q1")).toBe("Openai");
     expect(await providerNameOf("q2")).toBe("Openai");
+  });
+
+  it("resolves a catalogued provider by its display name when there is no usable candidate id", async () => {
+    // "Alibaba Cloud Model Studio" is the catalog's own name for the provider, so it must not fall to the catch-all
+    // just because its route prefix says "openai" and its name isn't spelled like its slug.
+    await syncLiteLLM({}, inventory(managedItem("q1", "not-a-uuid", "Alibaba Cloud Model Studio")));
+    expect(await providerNameOf("q1")).toBe("Alibaba Cloud Model Studio");
   });
 
   it("does not let an unmanaged deployment pick a provider from a candidate id it happens to carry", async () => {

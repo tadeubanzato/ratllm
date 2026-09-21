@@ -81,6 +81,7 @@ export const providerWiring: Readonly<Record<string, ProviderWiring>> = {
   // available. Its free lane (kilo-auto/free and named free models) also genuinely needs no credential at all.
   kilo: { completions: "https://api.kilo.ai/api/gateway/chat/completions", credentialOptional: true },
 
+  "chutes": { check: { url: "https://api.chutes.ai/v1/models", auth: "bearer" }, completions: "https://api.chutes.ai/v1/chat/completions", credentialOptional: true },
   "cloudflare-workers-ai": { check: { url: "https://api.cloudflare.com/client/v4/user/tokens/verify", auth: "bearer" } }, // completions needs the account-scoped Base URL set on the provider page
 
   // Added 2026-09-11: had zero wiring (portal link only). Sarvam's own docs confirm both its native
@@ -120,6 +121,13 @@ export const providerWiring: Readonly<Record<string, ProviderWiring>> = {
   // Russian government CA chain Node doesn't trust by default — both handled in providers/gigachat.ts, which
   // discovery/verify.ts and providers/verify.ts swap in ahead of the generic bearer-token path below.
   gigachat: { check: { url: "https://gigachat.devices.sberbank.ru/api/v1/models", auth: "bearer" }, completions: "https://gigachat.devices.sberbank.ru/api/v1/chat/completions" },
+  // Added 2026-09-19: additional providers with free tiers per freellm.net + community audits.
+  // GitHub Models: requires X-GitHub-Api-Version: 2025-01-01 header; free tier 10 RPM/50 RPD for personal accounts.
+  "github-models": { check: { url: "https://api.github.com/models", auth: "bearer" }, completions: "https://api.github.com/chat/completions" },
+  // OVHcloud: European provider, 2 RPM anonymous/free tier, no credit card required.
+  "ovhcloud": { check: { url: "https://api.ovhcloud.ai/v1/models", auth: "bearer" }, completions: "https://api.ovhcloud.ai/v1/chat/completions" },
+  // Aion Labs: Israeli provider, 15 RPM / 20K TPD free tier.
+  "aion-labs": { check: { url: "https://api.aionlabs.ai/v1/models", auth: "bearer" }, completions: "https://api.aionlabs.ai/v1/chat/completions" },
 };
 
 /** Providers this app expects to be automatable (catalog adapterCapability AUTOMATED/PARTIAL) that are
@@ -132,6 +140,10 @@ export const WIRING_PENDING: Readonly<Record<string, string>> = {
   // across third-party integration configs, but platform.01.ai / platform.lingyiwanwu.com's own docs are
   // JS-rendered and couldn't be independently confirmed, and no free tier/trial credit was found anywhere
   // (billing reads as prepay-only) — still not enough to wire a check/completions pair with confidence.
+  // Added with the discovery-pipeline refactor: catalogued, but no completions endpoint has been confirmed with a real key.
+  nebius: "Its model list is read from api.tokenfactory.nebius.com/v1/models (needs an API key), but its chat-completions endpoint has not been confirmed with a real key — set the Base URL on the provider page once you have one",
+  "btl-runtime": "No completions endpoint has been confirmed for this provider yet — set the Base URL on the provider page",
+  cline: "No completions endpoint has been confirmed for this provider yet — set the Base URL on the provider page",
   yi: "OpenAI-compatible surface plausible (api.lingyiwanwu.com/v1 per third-party integrations) but unconfirmed from 01.AI's own docs, and no free tier found — needs further research before wiring",
 };
 
@@ -167,8 +179,26 @@ export function resolveCheck(slug: string, baseUrl?: string | null): ProviderChe
 /** The chat-completions URL a provider is reachable at — an explicit Base URL always wins (account-scoped or
  *  self-hosted providers), falling back to the wired default for everyone else. */
 export function resolveCompletionsEndpoint(slug: string, baseUrl: string | null): string | null {
+  // A complete completions URL (see endpointBaseHint) is used exactly as given.
+  if (baseUrl && /\/chat\/completions\/?$/.test(baseUrl)) return baseUrl.replace(/\/$/, "");
   if (baseUrl) return `${baseUrl.replace(/\/$/, "").replace(/\/v1$/, "")}/v1/chat/completions`;
   return providerWiring[slug]?.completions ?? null;
+}
+
+/** SDK-style base URLs are what providers and datasets publish ("https://api.z.ai/api/paas/v4"): the OpenAI SDK appends
+ *  `/chat/completions` to whatever it is given, with no assumption about a `/v1`. That is different from the Base URL a person
+ *  types on the provider page, which resolveCompletionsEndpoint treats as a host. */
+export function completionsUrlFromSdkBase(base: string): string {
+  return `${base.trim().replace(/\/+$/, "")}/chat/completions`;
+}
+
+/** The value to pass as `baseUrl` to resolveCompletionsEndpoint for a provider, given what is known about it. Precedence: an
+ *  explicit Base URL a person set; then the catalog's own wiring (nothing to pass); then the OpenAI-compatible base URL a
+ *  source published for it, as a complete completions URL. Null when nothing is known, which is "no endpoint" (I3). */
+export function endpointBaseHint(slug: string, baseUrl: string | null, offerBaseUrl: string | null): string | null {
+  if (baseUrl) return baseUrl;
+  if (providerWiring[slug]?.completions) return null;
+  return offerBaseUrl ? completionsUrlFromSdkBase(offerBaseUrl) : null;
 }
 
 /**
@@ -193,9 +223,10 @@ export const integrationStatusTone: Readonly<Record<IntegrationStatus, "good" | 
  * Workspace ID is the first case: DashScope's newer workspace-scoped endpoints require it in the hostname, and
  * some workspace-scoped API keys are rejected on the shared compatible-mode host without it declared explicitly.
  */
-export interface ExtraCredentialField { key: string; label: string; placeholder?: string; header: string }
+export interface ExtraCredentialField { key: string; label: string; placeholder?: string; header: string; defaultValue?: string }
 export const EXTRA_CREDENTIAL_FIELDS: Readonly<Record<string, readonly ExtraCredentialField[]>> = {
   "alibaba-model-studio": [{key: "workspaceId", label: "Workspace ID (optional)", placeholder: "llm-xxxxxxxxxxxxxxxx", header: "X-DashScope-WorkSpace"}],
+  "github-models": [{key: "apiVersion", label: "API Version", header: "X-GitHub-Api-Version", defaultValue: "2025-01-01"}],
 };
 
 /** Turns a credential's stored config values into the extra HTTP headers this provider's requests need — applied
@@ -204,7 +235,10 @@ export function buildExtraHeaders(slug: string, config: Record<string, string> |
   const fields = EXTRA_CREDENTIAL_FIELDS[slug];
   if (!fields || !config) return {};
   const headers: Record<string, string> = {};
-  for (const field of fields) { const value = config[field.key]; if (value) headers[field.header] = value; }
+  for (const field of fields) {
+    const value = config[field.key] ?? field.defaultValue;
+    if (value) headers[field.header] = value;
+  }
   return headers;
 }
 

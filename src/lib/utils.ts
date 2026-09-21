@@ -40,3 +40,18 @@ function formatSummaryValue(value: unknown): string {
 export function formatSummary(summary: Record<string, unknown>): string {
   return Object.entries(summary).map(([key, value]) => `${key} ${formatSummaryValue(value)}`).join(" · ");
 }
+
+/** Coerces a timestamp column from a raw `db.execute()` into a Date.
+ *
+ *  Drizzle's query builder runs the driver's type parsers, so `select()` hands back real Dates; `execute()` does not,
+ *  and postgres-js surfaces a timestamptz as its wire text ("2026-09-20 13:20:13.099062+00"). That string is not
+ *  ISO-8601 — the space separator makes `new Date()` fall back to implementation-defined parsing, which V8 happens to
+ *  get right and the spec does not require anyone to. Normalising it first keeps these history queries correct on
+ *  their own terms instead of on V8's goodwill. */
+export function historyTimestamp(value: Date | string): Date {
+  if (value instanceof Date) return value;
+  // "YYYY-MM-DD HH:MM:SS.ffffff+00" -> "YYYY-MM-DDTHH:MM:SS.ffffff+00:00", which every engine parses per spec.
+  const iso = value.replace(" ", "T").replace(/([+-]\d{2})$/, "$1:00");
+  const parsed = new Date(iso);
+  return Number.isNaN(parsed.getTime()) ? new Date(value) : parsed;
+}

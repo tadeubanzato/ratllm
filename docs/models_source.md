@@ -2,7 +2,7 @@
 
 **File:** `models_source.md`  
 **Verified:** 2026-09-11  
-**Purpose:** Build and maintain a high-quality registry of free / free-tier AI models, model providers, hosting providers, capabilities, pricing, and availability for routing projects such as LiteLLM, n8n, custom gateways, model curators, and automatic fallback systems.
+**Purpose:** Build and maintain a high-quality registry of free / free-tier AI models, model providers, hosting providers, capabilities, pricing, and availability for routing projects such as LiteLLM, custom gateways, model curators, and automatic fallback systems.
 
 ---
 

@@ -58,6 +58,15 @@ describe("lane capacity counts live members, not ghosts", () => {
     expect(await laneHasCapacity("smart-vision")).toBe(false);      // 8 live of 8
   });
 
+  it("takes no new members once the lane is disabled, however empty it is", async () => {
+    const vision = await lane("smart-vision");
+    expect(await laneHasCapacity("smart-vision")).toBe(true);
+    await getDb().update(lanes).set({ enabled: false }).where(eq(lanes.id, vision.id));
+    expect(await laneHasCapacity("smart-vision")).toBe(false);
+    await getDb().update(lanes).set({ enabled: true }).where(eq(lanes.id, vision.id));
+    expect(await laneHasCapacity("smart-vision")).toBe(true);
+  });
+
   it("is one short of full at cap - 1", async () => {
     const vision = await lane("smart-vision");
     await fill("smart-vision", vision.id, CAP - 1, "v");

@@ -36,3 +36,23 @@ describe("resolveProvider", () => {
     expect(resolveProvider("GreenPT", "qwen-max")?.slug).toBe("alibaba-model-studio");
   });
 });
+
+describe("resolving a provider by its own catalog display name", () => {
+  // Discovery stores the provider's display name as providerName once it has matched a record. "W&B Inference"
+  // normalizes to "w-b-inference", which is neither the slug nor an alias — it used to fall through to unresolved,
+  // which the page showed as "Set base URL" and the verifier recorded as a grey "provider unresolved" bar.
+  it.each([
+    ["W&B Inference", "ibm-granite/granite-4.1-8b", "wandb"],
+    ["Chutes AI", "some/model", "chutes"],
+    ["Novita AI", "some/model", "novita"],
+    ["Scaleway Generative APIs", "some/model", "scaleway"],
+    ["Typhoon (SCB 10X)", "some/model", "typhoon"],
+  ])("%s -> %s", (name, ref, slug) => {
+    expect(resolveProvider(name, ref)?.slug).toBe(slug);
+  });
+
+  it("still leaves an uncatalogued aggregator bucket unresolved", () => {
+    expect(resolveProvider("Eden AI", "deepinfra/ByteDance/Seed-2.0-mini")).toBeNull();
+    expect(resolveProvider("NanoGPT", "openai/gpt-4o")).toBeNull();
+  });
+});

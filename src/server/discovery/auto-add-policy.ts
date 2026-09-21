@@ -21,6 +21,18 @@ export function removalHistoryOf(evidence: Record<string, unknown>): RemovalReco
   return Array.isArray(value) ? value as RemovalRecord[] : [];
 }
 
+/** Removals of one candidate this close together are one event. A model deployed in several lanes has several deployments failing for
+ *  the same reason, and each one's removal used to add its own entry, so a model in three lanes hit the flap limit (3) with a single
+ *  incident and was never auto-re-added. The cooldown is hours long, so two genuine removals cannot fall this close. */
+export const SAME_REMOVAL_EVENT_MS = 30 * 60_000;
+
+/** The history with `record` added, unless it is the same event as the most recent entry. */
+export function withRemoval(history: readonly RemovalRecord[], record: RemovalRecord): RemovalRecord[] {
+  const last = history.at(-1);
+  if (last && Math.abs(new Date(record.at).getTime() - new Date(last.at).getTime()) < SAME_REMOVAL_EVENT_MS) return [...history];
+  return [...history, record];
+}
+
 export function inRemovalCooldown(history: readonly RemovalRecord[], now = Date.now()): boolean {
   const last = history.at(-1);
   return Boolean(last) && now - new Date(last!.at).getTime() < REMOVE_COOLDOWN_MS;
@@ -35,21 +47,6 @@ export function isFlapLimited(history: readonly RemovalRecord[], now = Date.now(
 export function isAutoReAddBlocked(evidence: Record<string, unknown>, now = Date.now()): boolean {
   const history = removalHistoryOf(evidence);
   return inRemovalCooldown(history, now) || isFlapLimited(history, now);
-}
-
-/** A candidate whose most recent direct check wasn't a clean pass (or has never been checked at all) has zero
- *  chance of surviving `promoteCandidate`'s live re-verify — offering the manual "Add to LiteLLM" button for it
- *  just invites a click that fails immediately. This only ever narrows the *first-time* promotion path: a
- *  candidate that's already been live before (flap-limited "needs review", or manually deleted) reaches this
- *  same `lastStatus` value through its own recheck cycle, and by construction keeps passing directly (that
- *  disagreement with LiteLLM is exactly what makes it flap-limited) — so this never hides the human-override
- *  button those cases are supposed to keep. See docs/FREE-MODEL-LIFECYCLE.md §3/§6: automation (fast-track ramp
- *  + 5-in-a-row) is the intended path to promotion; the manual button is only ever a shortcut once there's
- *  actual evidence the candidate works. */
-export function unprovenCheckReason(evidence: Record<string, unknown>): string | null {
-  const lastStatus = typeof evidence.lastStatus === "string" ? evidence.lastStatus : null;
-  if (lastStatus === "available") return null;
-  return lastStatus ? "Last check did not pass yet" : "Not checked yet";
 }
 
 /** After a deferral (lanes full, credential not ready) auto-add waits this long before trying the same candidate again. */
