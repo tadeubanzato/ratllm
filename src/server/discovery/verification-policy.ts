@@ -86,3 +86,17 @@ export function promotionGateReason(input: { consecutivePasses: number; lastChec
   if (!input.lastCheckStatus) return "Not tested yet";
   return `${input.consecutivePasses} of ${PROMOTION_PASSES} passes in a row`;
 }
+
+/** What one real completions call says about the provider's CREDENTIAL, as opposed to about that one model.
+ *  - `invalidate`: a 401 from a provider that has no account-level credential check to ask instead.
+ *  - `recheck`: any auth error (401 or 403) from a provider that has one. Providers answer these for ONE model while the key works
+ *    for every other: Alibaba trial credits (403 "free quota exhausted"), OpenCode Zen (401 "no payment method" / "model not
+ *    supported"), public-ai (403 "key not allowed to access model"). Only the provider's own account-level check can say whether the
+ *    key is bad, so ask it instead of condemning the key on one model's word.
+ *  - `restore`: a real pass proves the key works, so a stale "invalid" is cleared rather than left to defer auto-add for hours.
+ *  - `keep`: nothing to learn about the credential. */
+export function credentialVerdict(input: { outcome: CheckOutcome; httpStatus: number | null; credentialValid: boolean | null; hasAccountCheck: boolean }): "invalidate" | "recheck" | "restore" | "keep" {
+  if (input.outcome === "auth_error") return !input.hasAccountCheck && input.httpStatus === 401 ? "invalidate" : "recheck";
+  if (input.outcome === "available" && input.credentialValid !== true) return "restore";
+  return "keep";
+}

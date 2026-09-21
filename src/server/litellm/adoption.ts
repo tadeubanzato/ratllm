@@ -32,10 +32,13 @@ export function adoptionFields(previousOwner: string | null, now = new Date()): 
 /**
  * Did the router keep everything it had and record the new manager? An update call that REPLACES model_info instead of merging
  * would silently drop every other field (lane, tier, rate limits, the previous tool's own bookkeeping), so any key that was
- * present before and is missing after counts as loss.
+ * present before and is missing after counts as loss. A key that only held an empty value (null, [] or {}) is not loss: the router leaves
+ * empty fields out of what it returns after an update, and nothing is gone when there was nothing in it.
  */
+const hasValue = (value: unknown) => value !== null && value !== undefined && !(Array.isArray(value) && value.length === 0) && !(typeof value === "object" && !Array.isArray(value) && Object.keys(value as object).length === 0);
+
 export function verifyAdoption(before: Record<string, unknown>, after: Record<string, unknown>): { ok: boolean; managedNow: boolean; lostKeys: string[] } {
-  const lostKeys = Object.keys(before).filter(key => !(key in after));
+  const lostKeys = Object.keys(before).filter(key => hasValue(before[key]) && !(key in after));
   const managedNow = after.managed_by === CURATOR_MANAGED_BY;
   return { ok: managedNow && lostKeys.length === 0, managedNow, lostKeys };
 }
@@ -66,7 +69,7 @@ export async function adoptDeployment(router: AdoptionRouter, id: string, previo
   try {
     await router.patchModelInfo(id, before);
     const again = (await router.getModelInfo(id)) ?? {};
-    restored = Object.keys(before).every(key => key in again) && again.managed_by === before.managed_by;
+    restored = Object.keys(before).every(key => !hasValue(before[key]) || key in again) && again.managed_by === before.managed_by;
   } catch { restored = false; }
   const detail = check.lostKeys.length ? `it dropped existing metadata (${check.lostKeys.slice(0, 5).join(", ")}${check.lostKeys.length > 5 ? ", …" : ""})` : "it did not record the new manager";
   return { ok: false, stage: "verification_failed", lostKeys: check.lostKeys, restored, message: `LiteLLM accepted the update but ${detail}. ${restored ? "The original metadata was restored." : "Restoring the original metadata FAILED — check this deployment in LiteLLM."}` };

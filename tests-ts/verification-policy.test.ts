@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyCheckOutcome, effectiveFreeKind, freeKindOf, isMetered, promotionGateReason, PROMOTION_PASSES, recheckDelayMs, type CheckState } from "../src/server/discovery/verification-policy";
+import { applyCheckOutcome, credentialVerdict, effectiveFreeKind, freeKindOf, isMetered, promotionGateReason, PROMOTION_PASSES, recheckDelayMs, type CheckState } from "../src/server/discovery/verification-policy";
 
 const HOUR = 3_600_000;
 const fresh: CheckState = { consecutivePasses: 0, everFailed: false, lastPassedAt: null };
@@ -85,5 +85,26 @@ describe("promotion gate (I8)", () => {
   it("keeps the human-override path for a model that was in LiteLLM and removed: its latest check merely has to pass", () => {
     expect(promotionGateReason({ consecutivePasses: 1, lastCheckStatus: "available", previouslyInLiteLLM: true })).toBeNull();
     expect(promotionGateReason({ consecutivePasses: 0, lastCheckStatus: "unavailable", previouslyInLiteLLM: true })).toBe("0 of 5 passes in a row");
+  });
+});
+
+describe("credentialVerdict", () => {
+  const base = { httpStatus: 403, credentialValid: true as boolean | null, hasAccountCheck: true };
+  it("asks the provider's account-level check instead of trusting one model's 403 (exhausted free quota, no access)", () => {
+    expect(credentialVerdict({ ...base, outcome: "auth_error" })).toBe("recheck");
+    expect(credentialVerdict({ ...base, outcome: "auth_error", httpStatus: null, credentialValid: null })).toBe("recheck");
+  });
+  it("does the same for a 401, which some providers answer for one model (payment method, model not supported)", () => {
+    expect(credentialVerdict({ ...base, outcome: "auth_error", httpStatus: 401 })).toBe("recheck");
+  });
+  it("condemns the key on a 401 only when there is no account-level check to ask", () => {
+    expect(credentialVerdict({ ...base, outcome: "auth_error", httpStatus: 401, hasAccountCheck: false })).toBe("invalidate");
+    expect(credentialVerdict({ ...base, outcome: "auth_error", httpStatus: 403, hasAccountCheck: false })).toBe("recheck");
+  });
+  it("restores a stale invalid flag when a real call passes, and otherwise leaves it alone", () => {
+    expect(credentialVerdict({ ...base, outcome: "available", httpStatus: 200, credentialValid: false })).toBe("restore");
+    expect(credentialVerdict({ ...base, outcome: "available", httpStatus: 200, credentialValid: null })).toBe("restore");
+    expect(credentialVerdict({ ...base, outcome: "available", httpStatus: 200, credentialValid: true })).toBe("keep");
+    expect(credentialVerdict({ ...base, outcome: "rate_limited", httpStatus: 429, credentialValid: false })).toBe("keep");
   });
 });

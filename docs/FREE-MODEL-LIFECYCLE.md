@@ -229,3 +229,18 @@ known-bad and sitting on the standard cadence.
   (that disagreement with LiteLLM is what makes it flap-limited in the first place) — so the
   human-override button those cases are supposed to keep stays intact. The only route into LiteLLM for
   an unproven or non-chat candidate now is the automatic 5-consecutive-pass path (§6), same as BAU.
+
+- **2026-09-21** — Autopilot audit, end to end (discover → verify → add → monitor → remove) against the live router. Found and fixed:
+  a single model's 401/403 was invalidating the provider's whole credential, which deferred every model of that provider for hours
+  (I13); RatLLM's own probes were spending free tiers (803 OpenRouter calls in a day against a 50/day cap) with no ceiling (I14);
+  a deferred candidate waited up to a day for its next check before auto-add tried again (I15); reasoning models were judged
+  unavailable at a 128-token reply budget (I16); the LiteLLM page, overview count and benchmarks counted removed deployments as
+  live and could not tell when they were out of step with the router (I17); adoption rejected valid deployments whose metadata
+  held empty fields (`null`, `[]`, `{}`) that the router leaves out after an update. Operational notes: lane caps live in
+  `LANE_RULES` (code), not in the database; auto-add defers a model whose recommended lanes are full (`smart-general` is fed by five
+  self-hosted models), which is by design; RatLLM runs all of its own schedules, so no external scheduler is needed.
+- **2026-09-21 (end-to-end suite)** — Added the simulated-world E2E suite (docs/DISCOVERY-PIPELINE.md, "Testing end to end"). It found and
+  fixed: concurrent auto-adds racing on the inventory sync (I18); one incident writing one removal per lane, so a model in three lanes was
+  flap-limited by a single failure (I19); the "Needs setup" list staying stale for up to an hour after an operator added a key (I20); and
+  a regression in the deferred-retry step that stopped a removed model from ever being auto-re-added.
+

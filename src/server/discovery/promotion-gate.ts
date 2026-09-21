@@ -1,6 +1,6 @@
 import { sourceRegistry } from "./registry";
 
-const candidateOnlySources = new Set(sourceRegistry.filter(source => source.candidateOnly).map(source => source.id));
+export const candidateOnlySources = new Set(sourceRegistry.filter(source => source.candidateOnly).map(source => source.id));
 
 /**
  * Source-authority gate for adding a candidate to LiteLLM. Tier B/C sources (community lists, third-party

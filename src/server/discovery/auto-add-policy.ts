@@ -21,6 +21,18 @@ export function removalHistoryOf(evidence: Record<string, unknown>): RemovalReco
   return Array.isArray(value) ? value as RemovalRecord[] : [];
 }
 
+/** Removals of one candidate this close together are one event. A model deployed in several lanes has several deployments failing for
+ *  the same reason, and each one's removal used to add its own entry, so a model in three lanes hit the flap limit (3) with a single
+ *  incident and was never auto-re-added. The cooldown is hours long, so two genuine removals cannot fall this close. */
+export const SAME_REMOVAL_EVENT_MS = 30 * 60_000;
+
+/** The history with `record` added, unless it is the same event as the most recent entry. */
+export function withRemoval(history: readonly RemovalRecord[], record: RemovalRecord): RemovalRecord[] {
+  const last = history.at(-1);
+  if (last && Math.abs(new Date(record.at).getTime() - new Date(last.at).getTime()) < SAME_REMOVAL_EVENT_MS) return [...history];
+  return [...history, record];
+}
+
 export function inRemovalCooldown(history: readonly RemovalRecord[], now = Date.now()): boolean {
   const last = history.at(-1);
   return Boolean(last) && now - new Date(last!.at).getTime() < REMOVE_COOLDOWN_MS;

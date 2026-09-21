@@ -7,12 +7,14 @@ import { endpointBaseHint } from "@/server/providers/wiring";
 import { PromotionDeferred, promoteCandidate } from "@/server/lanes/promote";
 import { getLiteLLMManagementSettings } from "@/server/settings/litellm-management";
 import { log } from "@/server/logging";
+import { CALLS_LAST_24H_SQL, CANDIDATE_CHECK_SHARE, DEFAULT_DAILY_CALL_BUDGET, PROVIDER_DAILY_CALL_BUDGET } from "@/server/providers/call-budget-policy";
 import { autoAddDeferredUntil, isAutoAddDeferred, isAutoReAddBlocked } from "./auto-add-policy";
 import { candidateOnlyBlockReason } from "./promotion-gate";
 import { bareModelKey } from "./model-key";
 import { reconcileCheckBlockers, type CheckBlocker } from "./blockers";
 import { verifyCandidateDirectly, type CandidateVerificationStatus } from "./verify";
-import { applyCheckOutcome, effectiveFreeKind, PROMOTION_PASSES, type CheckOutcome } from "./verification-policy";
+import { supportsCredentialTest, verifyProvider } from "@/server/providers/verify";
+import { applyCheckOutcome, credentialVerdict, effectiveFreeKind, PROMOTION_PASSES, type CheckOutcome } from "./verification-policy";
 
 type Candidate = typeof modelCandidates.$inferSelect;
 type ProviderRow = typeof providers.$inferSelect;
@@ -26,6 +28,8 @@ interface Context {
   credentials: Map<string, CredentialRow>;
   offerBaseUrls: Map<string, string>;
   offerFreeTypes: Map<string, string[]>;
+  /** Providers whose credential was already re-checked at the account level during this pass (once is enough). */
+  credentialRechecked: Set<string>;
   /** (provider, model key) of every model that is live in LiteLLM right now. */
   live: Set<string>;
 }
@@ -47,7 +51,7 @@ async function loadContext(db: ReturnType<typeof getDb>): Promise<Context> {
     offerFreeTypes.set(offer.providerId, [...(offerFreeTypes.get(offer.providerId) ?? []), offer.freeType]);
   }
   return {
-    providers: new Map(providerRows.map(row => [row.id, row])), credentials, offerBaseUrls, offerFreeTypes,
+    providers: new Map(providerRows.map(row => [row.id, row])), credentials, offerBaseUrls, offerFreeTypes, credentialRechecked: new Set(),
     live: new Set(deploymentRows.map(row => liveKey(row.providerId, bareModelKey(row.providerModelId)))),
   };
 }
@@ -95,7 +99,7 @@ const BLOCKER_OF_NON_CALL: Partial<Record<CandidateVerificationStatus, CheckBloc
  *  state (latest result, latest pass, streak, next check). When `providerBackoff` is a Map, a provider that answered 429
  *  earlier in the batch is not called again: the candidate is only rescheduled, and no check is recorded, because no call was
  *  made. Pass `null` to force a real request for every candidate regardless. */
-async function checkCandidate(db: ReturnType<typeof getDb>, row: Candidate, context: Context, providerBackoff: Map<string, string> | null, autoAdd: boolean): Promise<VerificationRow | null> {
+async function checkCandidate(db: ReturnType<typeof getDb>, row: Candidate, context: Context, providerBackoff: Map<string, string> | null): Promise<VerificationRow | null> {
   const provider = row.providerId ? context.providers.get(row.providerId) : undefined;
   if (!provider) return null; // no provider means a blocker, which reconcileCheckBlockers owns
   const base = {id: row.id, model: row.modelRef, provider: provider.slug};
@@ -117,10 +121,17 @@ async function checkCandidate(db: ReturnType<typeof getDb>, row: Candidate, cont
     return {...base, status: result.status, httpStatus: null, error: result.error, nextCheckAt: null};
   }
   const outcome = result.status as CheckOutcome;
-  // A real completions call failing with 401/403 is stronger, more current evidence than whatever set `valid` true earlier (a
-  // manual "Test credential" from before the key was revoked or rotated) — invalidate it now rather than leave the provider
-  // page showing VERIFIED until someone happens to click "Test credential" again.
-  if (outcome === "auth_error" && credential) await db.update(providerCredentialReferences).set({valid: false, lastValidatedAt: new Date(), updatedAt: new Date()}).where(eq(providerCredentialReferences.id, credential.id));
+  // What one real call says about the credential (see credentialVerdict): only a 401 condemns the key on its own. A 403 is
+  // often one model's exhausted free quota or missing access, so the provider's own account-level check decides, once per pass.
+  if (credential) {
+    const verdict = credentialVerdict({outcome, httpStatus: result.httpStatus, credentialValid: credential.valid, hasAccountCheck: supportsCredentialTest(provider.slug)});
+    if (verdict === "invalidate") await db.update(providerCredentialReferences).set({valid: false, lastValidatedAt: new Date(), updatedAt: new Date()}).where(eq(providerCredentialReferences.id, credential.id));
+    else if (verdict === "restore") { await db.update(providerCredentialReferences).set({valid: true, lastValidatedAt: new Date(), updatedAt: new Date()}).where(eq(providerCredentialReferences.id, credential.id)); credential.valid = true; }
+    else if (verdict === "recheck" && !context.credentialRechecked.has(provider.id)) {
+      context.credentialRechecked.add(provider.id);
+      await verifyProvider(provider.id).catch(error => log("warn", "Credential re-check failed", {provider: provider.slug, error: error instanceof Error ? error.message : String(error)}));
+    }
+  }
 
   const kind = effectiveFreeKind(row.freeType, context.offerFreeTypes.get(provider.id));
   const transition = applyCheckOutcome(
@@ -133,7 +144,6 @@ async function checkCandidate(db: ReturnType<typeof getDb>, row: Candidate, cont
   }).where(eq(modelCandidates.id, row.id));
   await db.insert(candidateChecks).values({candidateId: row.id, status: outcome, httpStatus: result.httpStatus, error: result.error?.slice(0, 500) ?? null});
   if ((outcome === "rate_limited") && providerBackoff) providerBackoff.set(provider.slug, transition.nextCheckAt.toISOString());
-  if (autoAdd && outcome === "available") await autoAddIfEligible(db, {...row, consecutivePasses: transition.consecutivePasses}, transition.consecutivePasses, context);
   return {...base, status: outcome, httpStatus: result.httpStatus, error: result.error, nextCheckAt: transition.nextCheckAt.toISOString()};
 }
 
@@ -147,17 +157,49 @@ async function runAll(rows: Candidate[], concurrency: number, work: (row: Candid
   return results;
 }
 
+/** SQL expression for a provider row aliased `p`: its daily call budget (providers/call-budget-policy.ts). */
+const providerBudgetSql = () => sql`case p.slug ${sql.join(Object.entries(PROVIDER_DAILY_CALL_BUDGET).map(([slug, calls]) => sql`when ${slug} then ${calls}::bigint`), sql` `)} else ${DEFAULT_DAILY_CALL_BUDGET}::bigint end`;
+
 /** Candidates that are due, chosen in SQL: testable (no blocker), at a provider that has not been switched off, and past their
  *  next-check time. Ranked within each provider and then interleaved, so a provider with thousands of models cannot crowd every
- *  other provider out of a run, and a 429 from one is felt by one. Never loads more than `limit` rows. */
+ *  other provider out of a run, and a 429 from one is felt by one. Never loads more than `limit` rows.
+ *
+ *  Each provider also has a daily call budget (providers/call-budget-policy.ts) shared with health probes: once a provider has
+ *  spent its candidate-check share of the last 24 hours it gets no more checks until calls age out of the window. Within that
+ *  allowance, candidates already on a pass streak go first, since they are the ones closest to being added. */
 async function selectDue(db: ReturnType<typeof getDb>, limit: number): Promise<Candidate[]> {
+  const budget = providerBudgetSql();
   const ids = await db.execute(sql`
+    with used as (${sql.raw(CALLS_LAST_24H_SQL)})
     select id from (
       select c.id, c.next_check_at,
-        row_number() over (partition by c.provider_id order by coalesce(c.next_check_at, 'epoch'::timestamptz), c.id) as rn
-      from model_candidates c join providers p on p.id = c.provider_id and p.enabled
+        row_number() over (partition by c.provider_id order by (c.consecutive_passes > 0) desc, coalesce(c.next_check_at, 'epoch'::timestamptz), c.id) as rn,
+        greatest(0, floor((${budget}) * ${CANDIDATE_CHECK_SHARE}::numeric)::bigint - coalesce(u.n, 0)) as remaining
+      from model_candidates c join providers p on p.id = c.provider_id and p.enabled left join used u on u.provider_id = c.provider_id
       where c.check_blocker is null and (c.next_check_at is null or c.next_check_at <= now())
-    ) due order by rn, coalesce(next_check_at, 'epoch'::timestamptz), id limit ${limit}
+    ) due where rn <= remaining order by rn, coalesce(next_check_at, 'epoch'::timestamptz), id limit ${limit}
+  `) as unknown as Array<{id: string}>;
+  return loadInOrder(db, ids.map(row => row.id));
+}
+
+/** Candidates that have already earned their way into LiteLLM (PROMOTION_PASSES real passes, latest one recent) but are not there yet
+ *  and are no longer waiting out a deferral. Auto-add is otherwise only attempted at the moment a candidate is re-checked, and a
+ *  trial or recurring-quota provider is re-checked once a day, so a model deferred because the lanes were full or a credential was
+ *  briefly invalid would sit for up to a day after the reason was gone.
+ *
+ *  Deliberately NOT limited by the provider's daily call budget: an attempt is one call, at most `limit` per run, and it is the best
+ *  use of a provider's allowance there is, so it must not be starved by the discovery checks that already spent the day's share.
+ *  A model that was added and later removed IS selected (it has an "added" stamp but no live deployment): coming back after its cooldown
+ *  is the point of auto-re-add. The caller drops what is already live, matched by provider and model, since older additions carry no
+ *  link back to their candidate. */
+export async function selectAutoAddRetryable(db: ReturnType<typeof getDb>, limit = 200): Promise<Candidate[]> {
+  const ids = await db.execute(sql`
+    select c.id from model_candidates c join providers p on p.id = c.provider_id and p.enabled
+    where c.consecutive_passes >= ${PROMOTION_PASSES} and c.check_blocker is null
+      and not exists (select 1 from model_deployments d where d.lifecycle = 'ACTIVE' and d.raw_metadata->'model_info'->>'source_candidate_id' = c.id::text)
+      and c.last_check_status = 'available' and c.last_passed_at > now() - interval '48 hours'
+      and (c.evidence->>'autoAddDeferredUntil' is null or (c.evidence->>'autoAddDeferredUntil')::timestamptz <= now())
+    order by c.consecutive_passes desc, c.last_passed_at desc, c.id limit ${limit}
   `) as unknown as Array<{id: string}>;
   return loadInOrder(db, ids.map(row => row.id));
 }
@@ -169,15 +211,30 @@ async function loadInOrder(db: ReturnType<typeof getDb>, ids: string[]): Promise
   return ids.map(id => byId.get(id)).filter((row): row is Candidate => Boolean(row));
 }
 
+/** Adds to LiteLLM, one after another, every candidate that has earned it and is not waiting out a deferral. Sequential on purpose:
+ *  each promotion registers deployments and then runs a full inventory sync, and two running at once insert the same rows, so one
+ *  fails and a model that WAS added can come back without its "Added" stamp. The checks themselves run concurrently; only this
+ *  step, which changes the router, does not. Returns how many attempts it made. */
+async function autoAddWaiting(db: ReturnType<typeof getDb>, context: Context): Promise<number> {
+  const waiting = (await selectAutoAddRetryable(db)).filter(row => row.providerId && !context.live.has(liveKey(row.providerId, row.modelKey))).slice(0, AUTO_ADD_RETRIES_PER_RUN);
+  for (const row of waiting) await autoAddIfEligible(db, row, row.consecutivePasses, context);
+  return waiting.length;
+}
+
 /** Tests candidates directly; a 429 backs off only that provider, never the whole batch. limit/concurrency default high
  *  enough to cycle through the whole testable population within a reasonable number of cron firings. */
+/** Most deferred candidates one verification run will try to add; each attempt re-verifies the model live before touching the router. */
+const AUTO_ADD_RETRIES_PER_RUN = 20;
+
 export async function verifyDueCandidates(limit = 300, concurrency = 8) {
   const db = getDb();
   await reconcileCheckBlockers(db);
   const [context, {autoAdd}, due] = await Promise.all([loadContext(db), getLiteLLMManagementSettings(), selectDue(db, limit)]);
   const providerBackoff = new Map<string, string>();
-  const results = await runAll(due, concurrency, row => checkCandidate(db, row, context, providerBackoff, autoAdd));
-  return {processed: results.length, results, nextEligibleAt: results.find(item => item.status === "rate_limited")?.nextCheckAt ?? null};
+  const results = await runAll(due, concurrency, row => checkCandidate(db, row, context, providerBackoff));
+  // Everything that has earned promotion — freshly, or after a deferral — is added now, one at a time, not at its next scheduled check.
+  const retried = autoAdd ? await autoAddWaiting(db, context) : 0;
+  return {processed: results.length, retriedAutoAdds: retried, results, nextEligibleAt: results.find(item => item.status === "rate_limited")?.nextCheckAt ?? null};
 }
 
 /** Manual "test my models now": every testable candidate gets a real request, ignoring the recheck schedule and per-provider
@@ -191,7 +248,8 @@ export async function verifyConnectedCandidates(limit = 5000, concurrency = 10) 
     where c.check_blocker is null order by c.last_checked_at asc nulls first, c.id limit ${limit}
   `) as unknown as Array<{id: string}>;
   const [context, {autoAdd}, targets] = await Promise.all([loadContext(db), getLiteLLMManagementSettings(), loadInOrder(db, ids.map(row => row.id))]);
-  const results = await runAll(targets, concurrency, row => checkCandidate(db, row, context, null, autoAdd));
+  const results = await runAll(targets, concurrency, row => checkCandidate(db, row, context, null));
+  if (autoAdd) await autoAddWaiting(db, context);
   const count = (status: string) => results.filter(item => item.status === status).length;
   return {processed: results.length, targeted: targets.length, available: count("available"), rateLimited: count("rate_limited"), outOfCredits: count("out_of_credits"), unavailable: count("unavailable") + count("auth_error")};
 }

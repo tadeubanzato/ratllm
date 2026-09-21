@@ -134,7 +134,7 @@ An authorized—or currently unauthenticated—caller can probe loopback, LAN se
 **Evidence**
 
 - The server uses a trivial PostgreSQL password and exposes PostgreSQL on the LAN.
-- Live LiteLLM, N8N, internal API, database, and encryption secrets were shared during troubleshooting.
+- Live LiteLLM, internal API, database, and encryption secrets were shared during troubleshooting.
 - Provider credentials are encrypted with one application-wide AES-GCM key (`src/server/credentials/crypto.ts`).
 - There is no key identifier, keyring, re-encryption job, or rotation procedure.
 
@@ -695,7 +695,7 @@ Define and test legal transitions for:
 
 1. Rotate exposed secrets; plan encryption-key rotation separately.
 2. Put the app behind enforced authentication immediately.
-3. Restrict PostgreSQL/LiteLLM/N8N network exposure.
+3. Restrict PostgreSQL/LiteLLM network exposure.
 4. Disable or restrict arbitrary outbound URL configuration until SSRF defenses exist.
 5. Correct health/status language so green means what it says.
 6. Fix lint and make the existing checks required.

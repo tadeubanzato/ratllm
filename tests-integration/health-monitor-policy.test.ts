@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
-import { auditEvents, modelDeployments, smokeTests } from "@/server/db/schema";
+import { auditEvents, candidateChecks, modelCandidates, modelDeployments, smokeTests } from "@/server/db/schema";
 import { runHealthMonitor, type HealthAdapter } from "@/server/health/monitor";
 import { syncLiteLLM } from "@/server/litellm/sync";
 import { setLiteLLMManagementSettings } from "@/server/settings/litellm-management";
@@ -134,5 +134,29 @@ describe("the incident shield expires, so a provider that retires everything is 
     router.set(ids("groq", 3), FAIL_500);
     await runs(router, 5);
     expect(router.removed.sort()).toEqual(ids("groq", 3));
+  });
+});
+
+describe("provider call budget", () => {
+  it("is never starved by what discovery spent: candidate checks alone do not stop health probes", async () => {
+    await seedFleet({ groq: 2, cerebras: 2 });
+    const candidate = (await getDb().insert(modelCandidates).values({ source: "groq", modelRef: "m", displayName: "m", sourceUrl: "u", providerId: (await getDb().select().from(modelDeployments))[0].providerId }).returning())[0];
+    // far more than the whole daily budget already spent on candidate checks at every provider
+    await getDb().insert(candidateChecks).values(Array.from({ length: 500 }, () => ({ candidateId: candidate.id, status: "available" as const, httpStatus: 200 })));
+    const probed: string[] = [];
+    const adapter: HealthAdapter = { smokeTest: async (id: string) => { probed.push(id); return { ok: true, status: 200, latencyMs: 100, content: "OK" } as never; }, removeDeployment: async () => undefined };
+    await runHealthMonitor({ limit: 100, adapter });
+    expect(probed.length).toBe(4);
+  });
+
+  it("does not probe a provider whose daily budget is already spent, and keeps probing the rest", async () => {
+    await seedFleet({ groq: 2, cerebras: 2 });
+    const groqDeployment = (await getDb().select().from(modelDeployments).where(eq(modelDeployments.litellmDeploymentId, "groq-1")))[0];
+    // groq's budget is 200 calls a day; 200 real probes in the last 24 hours use all of it
+    await getDb().insert(smokeTests).values(Array.from({ length: 200 }, () => ({ deploymentId: groqDeployment.id, correlationId: "budget-test", status: "PASSED" as const, latencyMs: 100, httpStatus: 200 })));
+    const probed: string[] = [];
+    const adapter: HealthAdapter = { smokeTest: async (id: string) => { probed.push(id); return { ok: true, status: 200, latencyMs: 100, content: "OK" } as never; }, removeDeployment: async () => undefined };
+    await runHealthMonitor({ limit: 100, adapter });
+    expect(probed.sort()).toEqual(["cerebras-1", "cerebras-2"]);
   });
 });

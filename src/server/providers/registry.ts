@@ -1,4 +1,5 @@
 import "server-only";
+import { reconcileCheckBlockers } from "@/server/discovery/blockers";
 import { eq, sql } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
 import { modelDeployments, providerCredentialReferences, providers } from "@/server/db/schema";
@@ -52,6 +53,7 @@ export async function setProviderBaseUrl(id: string, baseUrl: string | null) {
   const [row] = await db.update(providers).set({baseUrl, updatedAt: new Date()}).where(eq(providers.id, id)).returning({id: providers.id, baseUrl: providers.baseUrl});
   if (!row) throw new ProviderNotFoundError("Provider not found");
   await db.update(providerCredentialReferences).set({valid: null, lastValidatedAt: null, updatedAt: new Date()}).where(eq(providerCredentialReferences.providerId, id));
+  await reconcileCheckBlockers(db);
   return row;
 }
 

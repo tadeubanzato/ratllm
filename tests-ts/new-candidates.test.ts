@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { newlyDiscoveredIds, NEW_CANDIDATE_WINDOW_MS, SOURCE_BASELINE_MS, type NewnessInput } from "../src/server/discovery/new-candidates";
+import { newlyDiscoveredIds, SOURCE_BASELINE_MS, type NewnessInput } from "../src/server/discovery/new-candidates";
 
 const NOW = Date.parse("2026-09-20T18:00:00Z");
 const hoursAgo = (h: number) => new Date(NOW - h * 3_600_000);
@@ -10,7 +10,7 @@ const row = (over: Partial<NewnessInput> = {}): NewnessInput => ({
 });
 // Every source needs an older row, otherwise all of its rows are its own first ingest.
 const anchor = (source = "models_dev") => row({ source, providerId: "p9", modelRef: `anchor-${source}-1b`, firstSeenAt: hoursAgo(24 * 30) });
-const idsFor = (rows: NewnessInput[]) => newlyDiscoveredIds(rows, NOW);
+const idsFor = (rows: NewnessInput[]) => newlyDiscoveredIds(rows);
 
 describe("newlyDiscoveredIds", () => {
   it("flags a model a later run found for a tracked provider", () => {
@@ -61,12 +61,26 @@ describe("newlyDiscoveredIds", () => {
     expect(result.has(a.id) && result.has(b.id)).toBe(true);
   });
 
-  it("expires exactly at the window edge", () => {
-    const inside = row({ firstSeenAt: new Date(NOW - NEW_CANDIDATE_WINDOW_MS + 1) });
-    const outside = row({ firstSeenAt: new Date(NOW - NEW_CANDIDATE_WINDOW_MS) });
-    const result = idsFor([anchor(), inside, outside]);
-    expect(result.has(inside.id)).toBe(true);
-    expect(result.has(outside.id)).toBe(false);
+  it("does not flag a model that can never be added (not a chat model), but keeps waiting ones", () => {
+    const classifier = row({ checkBlocker: "NOT_CHAT_MODEL" });
+    const classifierByEvidence = row({ evidence: { nonChatReason: "Embedding model" } });
+    const waitingOnKey = row({ checkBlocker: "CREDENTIAL_MISSING" });
+    const noEndpoint = row({ checkBlocker: "NO_ENDPOINT" });
+    const result = idsFor([anchor(), classifier, classifierByEvidence, waitingOnKey, noEndpoint]);
+    expect(result.has(classifier.id)).toBe(false);
+    expect(result.has(classifierByEvidence.id)).toBe(false);
+    expect(result.has(waitingOnKey.id)).toBe(true);
+    expect(result.has(noEndpoint.id)).toBe(true);
+  });
+
+  it("keeps the badge however long ago the model was found, until it is in LiteLLM", () => {
+    const yesterday = row({ firstSeenAt: hoursAgo(25) });
+    const lastMonth = row({ firstSeenAt: hoursAgo(24 * 20) });
+    const addedSince = row({ firstSeenAt: hoursAgo(24 * 20), liteLLMLifecycle: "ACTIVE", liteLLMDeploymentId: "d-1" });
+    const result = idsFor([anchor(), yesterday, lastMonth, addedSince]);
+    expect(result.has(yesterday.id)).toBe(true);
+    expect(result.has(lastMonth.id)).toBe(true);
+    expect(result.has(addedSince.id)).toBe(false);
   });
 });
 
@@ -77,7 +91,7 @@ describe("newlyDiscoveredIds — the identity epoch", () => {
     const firstRunSinceEpoch = row({ source: "models_dev", firstSeenAt: hoursAgo(19) });
     const sameRun = row({ source: "models_dev", firstSeenAt: new Date(hoursAgo(19).getTime() + SOURCE_BASELINE_MS - 1) });
     const laterRun = row({ source: "models_dev", firstSeenAt: hoursAgo(2) });
-    const result = newlyDiscoveredIds([old, firstRunSinceEpoch, sameRun, laterRun], NOW, epoch);
+    const result = newlyDiscoveredIds([old, firstRunSinceEpoch, sameRun, laterRun], epoch);
     expect(result.has(firstRunSinceEpoch.id)).toBe(false);
     expect(result.has(sameRun.id)).toBe(false);
     expect(result.has(laterRun.id)).toBe(true);
@@ -86,12 +100,12 @@ describe("newlyDiscoveredIds — the identity epoch", () => {
   it("without an epoch it is exactly the original rule, so the first post-change run would have flooded", () => {
     const old = row({ source: "models_dev", firstSeenAt: hoursAgo(24 * 30) });
     const firstRun = row({ source: "models_dev", firstSeenAt: hoursAgo(19) });
-    expect(newlyDiscoveredIds([old, firstRun], NOW, null).has(firstRun.id)).toBe(true);
+    expect(newlyDiscoveredIds([old, firstRun], null).has(firstRun.id)).toBe(true);
   });
 
   it("falls back to the source's first-ever ingest when nothing was ingested since the epoch", () => {
     const old = row({ source: "groq", firstSeenAt: hoursAgo(24 * 30) });
     const recentButBeforeEpoch = row({ source: "groq", firstSeenAt: hoursAgo(22) });
-    expect(newlyDiscoveredIds([old, recentButBeforeEpoch], NOW, epoch).has(recentButBeforeEpoch.id)).toBe(true);
+    expect(newlyDiscoveredIds([old, recentButBeforeEpoch], epoch).has(recentButBeforeEpoch.id)).toBe(true);
   });
 });

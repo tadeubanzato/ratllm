@@ -1,4 +1,5 @@
 import "server-only";
+import { PROBE_MAX_TOKENS } from "@/lib/constants";
 import { decryptCredential } from "@/server/credentials/crypto";
 import type { ProviderDefinition } from "@/server/providers/catalog";
 import { buildExtraHeaders, providerWiring, resolveCompletionsEndpoint, supportsCredentialTest } from "@/server/providers/wiring";
@@ -63,7 +64,7 @@ export async function verifyCandidateDirectly(input: CandidateVerificationInput)
   if(isGigaChat){const tokenResult=await getGigaChatAccessToken(secret??"");if("error" in tokenResult)return{status:tokenResult.httpStatus===401||tokenResult.httpStatus===403?"auth_error":"unavailable",httpStatus:tokenResult.httpStatus,error:tokenResult.error};apiKey=tokenResult.token;}
   const doFetch=isGigaChat?gigachatFetch:fetch;
   try {
-    const send=(model:string)=>doFetch(url,{method:"POST",headers:{...(apiKey?{authorization:`Bearer ${apiKey}`}:{}),"content-type":"application/json",...buildExtraHeaders(input.provider!.slug,input.credential?.config??null)},body:JSON.stringify({model,messages:[{role:"user",content:"Reply with exactly: OK"}],max_tokens:128,temperature:0}),signal:AbortSignal.timeout(30_000),cache:"no-store"});
+    const send=(model:string)=>doFetch(url,{method:"POST",headers:{...(apiKey?{authorization:`Bearer ${apiKey}`}:{}),"content-type":"application/json",...buildExtraHeaders(input.provider!.slug,input.credential?.config??null)},body:JSON.stringify({model,messages:[{role:"user",content:"Reply with exactly: OK"}],max_tokens:PROBE_MAX_TOKENS,temperature:0}),signal:AbortSignal.timeout(30_000),cache:"no-store"});
     // Stripping a leading provider prefix is a heuristic ("groq/llama-3" -> "llama-3"), and it is wrong for ids where the
     // prefix is part of the real name (Groq's own "groq/compound"). A model that answers "unknown" only under the stripped id
     // is not proof it is unavailable, so retry once with the id exactly as discovered before recording a failure.

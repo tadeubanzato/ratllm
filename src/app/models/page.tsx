@@ -112,7 +112,7 @@ export default async function ModelsPage({ searchParams }: { searchParams: Searc
             return <tr key={row.id}>
               <td style={wrap}>
                 <div style={{display:"flex",alignItems:"flex-start",gap:8}}>
-                  {row.isNew?<Tooltip label={`New from discovery — first found ${timeAgo(row.firstSeenAt)}. Shown for 24 hours, and only for models not already in LiteLLM.`}><span className="status-pill status-pill-xs status-info" style={{marginTop:2}}>New</span></Tooltip>:null}
+                  {row.isNew?<Tooltip label={`New from discovery — first found ${timeAgo(row.firstSeenAt)}. Stays until the model is added to LiteLLM, unless it can never be added (then its blocker is shown instead).`}><span className="status-pill status-pill-xs status-info" style={{marginTop:2}}>New</span></Tooltip>:null}
                   <div style={{minWidth:0}}>
                     <div style={{display:"flex",alignItems:"center",gap:5,flexWrap:"wrap"}}>
                       <strong style={{overflowWrap:"anywhere"}}>{row.displayName}</strong>

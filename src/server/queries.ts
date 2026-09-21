@@ -1,7 +1,7 @@
 import "server-only";
-import { candidateOnlyBlockReason } from "@/server/discovery/promotion-gate";
+import { candidateOnlyBlockReason, candidateOnlySources } from "@/server/discovery/promotion-gate";
 import { liveLaneMember } from "@/server/lanes/membership";
-import { desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import { desc, eq, inArray, isNotNull, ne, sql } from "drizzle-orm";
 import { getDb } from "./db/client";
 import { canonicalModels, laneAssignments, lanes, modelCandidates, modelDeployments, providerOffers, providers, providerCredentialReferences, rateLimitProfiles, smokeTests, syncRuns, systemSettings } from "./db/schema";
 import { bareModelKey, matchDeployment, matchDeployments } from "./discovery/model-key";
@@ -107,6 +107,8 @@ export async function getProvider(id: string) {
 // slow/fast outlier without the number going stale for minutes given the health monitor's cadence (hourly by default).
 const LATENCY_SAMPLE_SIZE = 10;
 
+/** Deployments still in LiteLLM (live or deactivated). One that was removed is history: it is only returned when asked for by its own id, so
+ *  the detail page of a removed model still works while every list and count reflects what is actually in the router. */
 export async function getDeployments(onlyId?: string): Promise<DeploymentRow[]> {
   const rows = await getDb().select({
     id: modelDeployments.id, slug: canonicalModels.slug, modelName: canonicalModels.name, providerModelId: modelDeployments.providerModelId,
@@ -126,7 +128,7 @@ export async function getDeployments(onlyId?: string): Promise<DeploymentRow[]> 
     avgFirstTokenMs: sql<number | null>`(select round(avg(recent.first_token_ms))::int from (select first_token_ms from smoke_tests where smoke_tests.deployment_id = ${modelDeployments.id} and status = 'PASSED' order by created_at desc limit ${LATENCY_SAMPLE_SIZE}) recent)`,
     latencySampleCount: sql<number>`(select count(*)::int from (select 1 from smoke_tests where smoke_tests.deployment_id = ${modelDeployments.id} and status = 'PASSED' order by created_at desc limit ${LATENCY_SAMPLE_SIZE}) recent)`,
     apiBase:modelDeployments.apiBase,rawMetadata:modelDeployments.rawMetadata,
-  }).from(modelDeployments).innerJoin(canonicalModels, eq(modelDeployments.canonicalModelId, canonicalModels.id)).innerJoin(providers, eq(modelDeployments.providerId, providers.id)).leftJoin(rateLimitProfiles, eq(modelDeployments.id, rateLimitProfiles.deploymentId)).where(onlyId ? eq(modelDeployments.id, onlyId) : undefined).orderBy(desc(modelDeployments.managed), providers.name, canonicalModels.name);
+  }).from(modelDeployments).innerJoin(canonicalModels, eq(modelDeployments.canonicalModelId, canonicalModels.id)).innerJoin(providers, eq(modelDeployments.providerId, providers.id)).leftJoin(rateLimitProfiles, eq(modelDeployments.id, rateLimitProfiles.deploymentId)).where(onlyId ? eq(modelDeployments.id, onlyId) : ne(modelDeployments.lifecycle, "REMOVED")).orderBy(desc(modelDeployments.managed), providers.name, canonicalModels.name);
   return rows.map(({rawMetadata,...row}) => {const info=rawMetadata&&typeof rawMetadata.model_info==="object"?rawMetadata.model_info as Record<string,unknown>:{};return {...row,confidence:row.confidence??"UNKNOWN",backend:typeof info.backend==="string"?info.backend:null,host:typeof info.host==="string"?info.host:null,owner:typeof info.managed_by==="string"?info.managed_by:null,credentialFingerprint:typeof info.ratllm_credential_fingerprint==="string"?info.ratllm_credential_fingerprint:null};});
 }
 
@@ -184,7 +186,7 @@ export async function getSourceRunHistory(limit = 30): Promise<Map<string, Sourc
 export type CandidateView = "all" | "new" | "ready" | "added" | "passing" | "setup";
 export const CANDIDATE_VIEWS: ReadonlyArray<{ id: CandidateView; label: string; hint: string }> = [
   { id: "all", label: "All", hint: "Every discovered model" },
-  { id: "new", label: "New", hint: "First found by discovery in the last 24 hours, not already in LiteLLM" },
+  { id: "new", label: "New", hint: "Found by discovery, not in LiteLLM yet and still addable — the badge stays until it is added" },
   { id: "ready", label: "Ready to add", hint: `${PROMOTION_PASSES} passes in a row and not in LiteLLM yet` },
   { id: "added", label: "In LiteLLM", hint: "Live in LiteLLM right now" },
   { id: "passing", label: "Passing", hint: "Its latest test passed" },
@@ -192,7 +194,6 @@ export const CANDIDATE_VIEWS: ReadonlyArray<{ id: CandidateView; label: string; 
 ];
 export interface CandidateQuery { view?: CandidateView; q?: string; provider?: string; page?: number; pageSize?: number }
 export const DEFAULT_PAGE_SIZE = 100;
-const NEW_WINDOW_HOURS = 24;
 /** system_settings key holding the moment candidate identity changed to (source, model id, provider). Written by migration 0017. */
 export const BASELINE_EPOCH_KEY = "discovery.baseline_epoch";
 const SOURCE_BASELINE_MINUTES = 30;
@@ -225,9 +226,16 @@ export async function getCandidatePage(query: CandidateQuery = {}) {
   const inLive = livePairs ? sql`(c.provider_id, c.model_key) in (${livePairs})` : sql`false`;
   // The specification of "New" is newlyDiscoveredIds in discovery/new-candidates.ts; tests-integration/discovery-pipeline.test.ts
   // checks this SQL against it. Written once here so the badge and the "New" filter can never disagree.
-  const isNew = sql`(c.provider_id is not null and c.first_seen_at > now() - (${NEW_WINDOW_HOURS} * interval '1 hour')
+  // Not a chat model, or reported only by a community list: permanently blocked, so it is not waiting for anything (see newlyDiscoveredIds).
+  const communityList = candidateOnlySources.size ? sql.join([...candidateOnlySources].map(id => sql`${id}`), sql`, `) : null;
+  const communityOnly = communityList
+    ? sql`not (c.source in (${communityList}) and not exists (select 1 from jsonb_array_elements(case when jsonb_typeof(c.evidence->'corroboratingSources') = 'array' then c.evidence->'corroboratingSources' else '[]'::jsonb end) e where e->>'source' not in (${communityList})))`
+    : sql`true`;
+  const isNew = sql`(c.provider_id is not null
     and c.first_seen_at - src.first_ingest >= (${SOURCE_BASELINE_MINUTES} * interval '1 minute')
     and not exists (select 1 from model_candidates o where o.provider_id = c.provider_id and o.model_key = c.model_key and o.first_seen_at < c.first_seen_at)
+    and coalesce(c.check_blocker, '') <> 'NOT_CHAT_MODEL' and (c.evidence->>'nonChatReason') is null
+    and ${communityOnly}
     and not ${inAny})`;
   const viewFilter = { all: sql`true`, new: isNew, ready: sql`(c.consecutive_passes >= ${PROMOTION_PASSES} and not ${inLive})`, added: inLive,
     passing: sql`c.last_check_status = 'available'`, setup: sql`c.check_blocker in ('CREDENTIAL_MISSING', 'CREDENTIAL_UNVERIFIED', 'NO_ENDPOINT')` }[view];

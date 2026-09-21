@@ -6,7 +6,7 @@ import { runDiscovery, persistProviderOffers, persistDiscoveredItems } from "@/s
 import { consolidateModelCandidates, RETIRE_AFTER_MS } from "@/server/discovery/consolidate";
 import { reconcileCheckBlockers } from "@/server/discovery/blockers";
 import { ensureModelSources } from "@/server/discovery/model-sources";
-import { verifyConnectedCandidates, verifyDueCandidates } from "@/server/discovery/verify-due";
+import { selectAutoAddRetryable, verifyConnectedCandidates, verifyDueCandidates } from "@/server/discovery/verify-due";
 import { BASELINE_EPOCH_KEY, getCandidatePage } from "@/server/queries";
 import { newlyDiscoveredIds } from "@/server/discovery/new-candidates";
 import { bareModelKey } from "@/server/discovery/model-key";
@@ -440,6 +440,59 @@ describe("I7 — the streak counts consecutive real passes", () => {
     expect((await row(t1.id)).lastCheckStatus).toBe("available");
   });
 
+  it("stops checking a provider once its share of the daily call budget is spent, and lets it resume as calls age out", async () => {
+    const orp = await provider("openrouter", "OpenRouter"); await credential(orp.id, true, "K1");
+    const cands = [] as Awaited<ReturnType<typeof candidate>>[];
+    for (let i = 0; i < 20; i++) cands.push(await candidate({ modelRef: `m-${i}-7b`, providerId: orp.id }));
+    // 14 calls already spent in the last 24h: OpenRouter's budget is 24, of which candidate checks may use 14
+    await db().insert(candidateChecks).values(Array.from({ length: 14 }, () => ({ candidateId: cands[19].id, status: "available" as const, httpStatus: 200 })));
+    const calls = stubProvider(ok);
+    await verifyDueCandidates();
+    expect(calls).toHaveLength(0);
+    // the same calls, but 25 hours old, no longer count
+    await db().update(candidateChecks).set({ createdAt: new Date(Date.now() - 25 * HOUR) }).where(eq(candidateChecks.candidateId, cands[19].id));
+    await verifyDueCandidates();
+    expect(calls).toHaveLength(14);
+  });
+
+  it("within the allowance, candidates already on a pass streak are checked before untested ones", async () => {
+    const orp = await provider("openrouter", "OpenRouter"); await credential(orp.id, true, "K1");
+    const cold = [] as Awaited<ReturnType<typeof candidate>>[];
+    for (let i = 0; i < 6; i++) cold.push(await candidate({ modelRef: `cold-${i}-7b`, providerId: orp.id }));
+    await candidate({ modelRef: "streak-a-7b", providerId: orp.id, consecutivePasses: 3, lastCheckStatus: "available", nextCheckAt: new Date(Date.now() - HOUR) });
+    await candidate({ modelRef: "streak-b-7b", providerId: orp.id, consecutivePasses: 2, lastCheckStatus: "available", nextCheckAt: new Date(Date.now() - HOUR) });
+    // 10 of the 14 candidate-check calls are spent, leaving room for exactly 4
+    await db().insert(candidateChecks).values(Array.from({ length: 10 }, () => ({ candidateId: cold[0].id, status: "available" as const, httpStatus: 200 })));
+    const calls = stubProvider(ok);
+    await verifyDueCandidates();
+    expect(calls).toHaveLength(4);
+    expect(calls).toEqual(expect.arrayContaining(["streak-a-7b", "streak-b-7b"]));
+  });
+
+  it("retries auto-add for candidates that earned promotion but were deferred, without waiting for their next scheduled check", async () => {
+    const groq = await provider("groq", "Groq"); const orp = await provider("openrouter", "OpenRouter");
+    const passed = { consecutivePasses: 6, lastCheckStatus: "available" as const, lastPassedAt: new Date(Date.now() - HOUR), nextCheckAt: new Date(Date.now() + 20 * HOUR) };
+    const ready = await candidate({ modelRef: "ready-7b", providerId: groq.id, ...passed });
+    const deferralOver = await candidate({ modelRef: "deferral-over-7b", providerId: groq.id, ...passed, evidence: { autoAddDeferredUntil: new Date(Date.now() - HOUR).toISOString() } });
+    await candidate({ modelRef: "still-waiting-7b", providerId: groq.id, ...passed, evidence: { autoAddDeferredUntil: new Date(Date.now() + HOUR).toISOString() } });
+    // added by RatLLM and live now (its deployment points back at it): nothing to do; added and later removed: eligible again
+    const liveOne = await candidate({ modelRef: "live-7b", providerId: groq.id, ...passed, addedToLitellmAt: new Date() });
+    const liveDeployment = await deployment(groq.id, "openai/live-7b");
+    await db().update(modelDeployments).set({ rawMetadata: { model_info: { source_candidate_id: liveOne.id } } }).where(eq(modelDeployments.id, liveDeployment.id));
+    const wasRemoved = await candidate({ modelRef: "was-removed-7b", providerId: groq.id, ...passed, addedToLitellmAt: new Date() });
+    const removedDeployment = await deployment(groq.id, "openai/was-removed-7b", "REMOVED");
+    await db().update(modelDeployments).set({ rawMetadata: { model_info: { source_candidate_id: wasRemoved.id } } }).where(eq(modelDeployments.id, removedDeployment.id));
+    await candidate({ modelRef: "blocked-7b", providerId: groq.id, ...passed, checkBlocker: "NOT_CHAT_MODEL" });
+    await candidate({ modelRef: "four-passes-7b", providerId: groq.id, ...passed, consecutivePasses: 4 });
+    await candidate({ modelRef: "stale-pass-7b", providerId: groq.id, ...passed, lastPassedAt: new Date(Date.now() - 5 * 24 * HOUR) });
+    await candidate({ modelRef: "failed-lately-7b", providerId: groq.id, ...passed, lastCheckStatus: "unavailable" });
+    // a provider that has spent its whole discovery allowance is still retried: an add is one call and the best use of it
+    const overBudget = await candidate({ modelRef: "over-budget-7b", providerId: orp.id, ...passed });
+    await db().insert(candidateChecks).values(Array.from({ length: 14 }, () => ({ candidateId: overBudget.id, status: "available" as const, httpStatus: 200 })));
+    const picked = (await selectAutoAddRetryable(db())).map(r => r.modelRef).sort();
+    expect(picked).toEqual([deferralOver.modelRef, overBudget.modelRef, ready.modelRef, wasRemoved.modelRef].sort());
+  });
+
   it("does not test a candidate before it is due, and tests it once it is", async () => {
     const { cand } = await setup({ nextCheckAt: new Date(Date.now() + 3 * HOUR) });
     const calls = stubProvider(ok);
@@ -671,7 +724,7 @@ describe("'New' — the SQL the page runs equals the pure specification", () => 
     await candidate({ modelRef: "anchor-a-7b", providerId: groq.id, source: "groq", firstSeenAt: ago(24 * 30) });
     await candidate({ modelRef: "anchor-b-7b", providerId: cerebras.id, source: "cerebras", firstSeenAt: ago(24 * 30) });
     await candidate({ modelRef: "fresh-7b", providerId: groq.id, source: "groq", firstSeenAt: ago(2) });                        // new
-    await candidate({ modelRef: "old-7b", providerId: groq.id, source: "groq", firstSeenAt: ago(30) });                          // outside the window
+    await candidate({ modelRef: "old-7b", providerId: groq.id, source: "groq", firstSeenAt: ago(30) });                          // found over a day ago and still not in LiteLLM: still new
     await candidate({ modelRef: "live-7b", providerId: groq.id, source: "groq", firstSeenAt: ago(2) });                          // in LiteLLM
     await candidate({ modelRef: "removed-7b", providerId: groq.id, source: "groq", firstSeenAt: ago(2) });                       // was in LiteLLM
     await candidate({ modelRef: "nobody-7b", providerId: null, source: "groq", firstSeenAt: ago(2) });                           // no provider
@@ -682,6 +735,8 @@ describe("'New' — the SQL the page runs equals the pure specification", () => 
     await candidate({ modelRef: "boot-7b", providerId: cerebras.id, source: "fireworks_ai", firstSeenAt: ago(20) });             // first ingest of its source
     await candidate({ modelRef: "boot-8b", providerId: cerebras.id, source: "fireworks_ai", firstSeenAt: ago(20) });
     await candidate({ modelRef: "after-7b", providerId: cerebras.id, source: "fireworks_ai", firstSeenAt: ago(1) });             // a later run of that source: new
+    await candidate({ modelRef: "embed-7b", providerId: groq.id, source: "groq", firstSeenAt: ago(2), checkBlocker: "NOT_CHAT_MODEL", evidence: { nonChatReason: "Embedding model" } }); // can never be added: not new
+    await candidate({ modelRef: "nokey-7b", providerId: groq.id, source: "groq", firstSeenAt: ago(2), checkBlocker: "CREDENTIAL_MISSING" });                                          // only waiting on a key: still new
     await deployment(groq.id, "openai/live-7b"); await deployment(groq.id, "openai/removed-7b", "REMOVED");
 
     const page = await getCandidatePage({ view: "new", pageSize: 500 });
@@ -690,12 +745,13 @@ describe("'New' — the SQL the page runs equals the pure specification", () => 
     const expected = newlyDiscoveredIds((await db().select().from(modelCandidates)).map(r => ({
       id: r.id, source: r.source, providerId: r.providerId, modelRef: r.modelRef, firstSeenAt: r.firstSeenAt,
       liteLLMLifecycle: deployments.find(d => d.providerId === r.providerId && bareModelKey(d.providerModelId) === r.modelKey)?.lifecycle ?? null, liteLLMDeploymentId: null,
+      checkBlocker: r.checkBlocker, evidence: r.evidence,
     })));
     expect(new Set(page.rows.map(r => r.id))).toEqual(expected);
     expect(page.counts.new).toBe(expected.size);
     // the badge on each row agrees with the filter
     expect(new Set(everything.rows.filter(r => r.isNew).map(r => r.id))).toEqual(expected);
-    expect(page.rows.map(r => r.modelRef).sort()).toEqual(["after-7b", "edge-7b", "fresh-7b", "known-7b"]);
+    expect(page.rows.map(r => r.modelRef).sort()).toEqual(["after-7b", "edge-7b", "fresh-7b", "known-7b", "known-7b", "nokey-7b", "old-7b"]);   // both "known-7b" rows: the 10-day-old groq one is still not in LiteLLM, so it keeps its badge
   });
 });
 
@@ -714,7 +770,7 @@ describe("'New' — the identity epoch: the first run after the change is a base
 
     const page = await getCandidatePage({ view: "new", pageSize: 500 });
     const rows = await db().select().from(modelCandidates);
-    const expected = newlyDiscoveredIds(rows.map(r => ({ id: r.id, source: r.source, providerId: r.providerId, modelRef: r.modelRef, firstSeenAt: r.firstSeenAt, liteLLMLifecycle: null, liteLLMDeploymentId: null })), Date.now(), epoch);
+    const expected = newlyDiscoveredIds(rows.map(r => ({ id: r.id, source: r.source, providerId: r.providerId, modelRef: r.modelRef, firstSeenAt: r.firstSeenAt, liteLLMLifecycle: null, liteLLMDeploymentId: null, checkBlocker: r.checkBlocker, evidence: r.evidence })), epoch);
     expect(new Set(page.rows.map(r => r.id))).toEqual(expected);
     expect(page.rows.map(r => r.modelRef).sort()).toEqual(["quiet-new-7b", "really-new-7b"]);
   });

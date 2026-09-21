@@ -57,6 +57,14 @@ Each is enforced by code and covered by a test named for it (`tests-ts/*`, `test
 | I10 | **Identity.** A candidate is one model at one provider as one source lists it: unique on `(source, model_ref, provider)`, and rows from different sources that are the same model at the same provider (`provider_id` + `model_key`) merge into one, keeping every source as corroboration. The same model at two providers is two rows and two deployments and never merges across providers, *including when a single source lists it under both* (models.dev lists `gemini-flash-latest` under Google and Vertex). A source cannot corroborate itself. |
 | I11 | **Added.** A successful promotion stamps `added_to_litellm_at` and `added_by` (`auto` or `manual`) on the candidate. |
 | I12 | **Scale.** No request path loads the whole candidates table. The Discovered Models page is paginated and filtered in SQL, and every hot query is indexed. |
+| I13 | **A model's auth error is not the key's verdict.** A 401 or 403 from one model says nothing about the credential (Alibaba trial credits answer 403 "free quota exhausted", OpenCode Zen 401 "no payment method", public-ai 403 "key not allowed to access model"). It triggers the provider's own account-level check, once per pass; only a provider with no such check is invalidated directly on a 401. A real passing call clears a stale "invalid". (`credentialVerdict`) |
+| I14 | **Provider call budget.** RatLLM's own calls to one provider (candidate checks and health probes together) are capped per rolling 24 hours (`providers/call-budget-policy.ts`): OpenRouter 24 (its free models share 50 a day with real traffic), self-hosted unlimited, others 200. Candidate checks stop at 60% of the total (checks and probes together); health probes are limited only by their own usage against the whole budget, so discovery can never leave live models unmonitored. Candidates already on a pass streak are checked first. |
+| I15 | **Deferred promotions are retried.** A candidate with 5 passes that is not in LiteLLM is retried each verification run once its deferral has expired (up to 20 a run, not limited by the budget, skipping what is already live), instead of waiting for its next scheduled check, which for trial and recurring-quota providers is a day away. |
+| I16 | **Checks give reasoning models room to answer.** Every availability test, direct and through LiteLLM, allows `PROBE_MAX_TOKENS` (256) reply tokens; at 128 reasoning models spent it all thinking and were judged unavailable while answering normally. |
+| I17 | **The LiteLLM page is the router.** Lists and counts hold only deployments still in LiteLLM (a removed one is found by its own id). The page compares itself with the live router on every load and says so when they differ (`litellm/parity.ts`). A disabled lane takes no new members. |
+| I18 | **Promotions run one at a time.** Candidate checks run concurrently, but adding to LiteLLM does not: each promotion registers deployments and runs a full inventory sync, and two at once insert the same rows, so one fails and a model that was added can lose its "Added" stamp. All auto-adds happen in one sequential step after the checks (`autoAddWaiting`), for the hourly job and the manual "test now" alike. |
+| I19 | **One incident is one removal.** Deployments of the same candidate removed within 30 minutes count as a single event in its removal history (`withRemoval`). A model in several lanes has several deployments failing for one reason; counting each would flap-limit it (3) after one incident. A model that was added and later removed is retried after its cooldown; a model with a live deployment is not. |
+| I20 | **Setup changes take effect at once.** Saving, deleting or disabling a credential, verifying a provider, or changing its base URL recomputes every candidate's blocker immediately, so "Needs setup" and what gets tested never lag the operator by an hour. |
 
 ## 4. Sources
 
@@ -125,6 +133,9 @@ Everything above was checked against a restored copy of the production database 
 - **Identity changes need a "New" baseline.** Correcting identity surfaces thousands of previously hidden (provider, model) pairs in
   the first run. Migration 0017 stores `discovery.baseline_epoch`; each source's first run since then is a baseline, so deploying
   does not put "New" on 4,000 models for a day.
+- **"New" has no expiry.** A discovered model keeps the badge until it has been in LiteLLM (live, deactivated or removed), so a model that
+  auto-add keeps deferring is not forgotten after a day. Models that can never be added (not a chat model, or reported only by a community
+  list) do not carry it; they show their blocker instead. Waiting on a key, an endpoint or free lane capacity keeps the badge.
 - **Providers that need no key were untestable.** The verifier demanded a credential row even for Pollinations, LLM7, Kilo's free
   models and Chutes, which serve anonymous requests.
 - **Non-chat models were being sent chat calls** (Whisper, TTS, embeddings, image and rerank models): a fifth of all 400s. Sources'
@@ -144,3 +155,16 @@ Everything above was checked against a restored copy of the production database 
 - **Known limits.** "Free" is only what a source states. The free-offer text is quoted, never parsed into limits. The 5-pass gate,
   the Added stamp and automatic promotion are verified against a stand-in for LiteLLM, and the promotion path has not been exercised
   against a live router in this refactor.
+
+## Testing end to end
+
+`tests-integration/e2e-autopilot.test.ts` runs RatLLM's real code through the whole loop — provider list, discovery, monitoring, add to
+LiteLLM, remove from LiteLLM — against a simulated outside world (`tests-integration/support/fake-world.ts`): free-model providers
+(real hostnames for Groq and OpenRouter, invented ones for "Fakecloud" and "Nimbus AI"), sources publishing catalogs, and a LiteLLM
+router that speaks the real HTTP protocol (`/model/new`, `/model/delete`, `/model/{id}/update`, `/v1/model/info`, `/fallback`, streaming
+chat). Any request to an unregistered host throws, so it can never reach the internet or the live router. Run it with
+`pnpm test:integration` (a disposable Postgres on port 55432). It covers: the golden path; new models and providers appearing on later
+runs and the "New" badge; a failing source; a provider without a key; a model's auth error versus a revoked key; the daily call
+budget and 429 back-off; removal, cooldown, re-add and the flap limit; changes made outside RatLLM, adoption and parity; the auto-add
+and auto-remove switches and lane caps; dead versus busy models; and a LiteLLM outage.
+
