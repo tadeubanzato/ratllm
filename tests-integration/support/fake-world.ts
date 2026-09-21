@@ -9,10 +9,12 @@ import { vi } from "vitest";
  * test can never reach the real internet or the real router by accident.
  */
 
-export type Behavior = { kind: "ok" } | { kind: "fail"; status: number; message: string } | { kind: "empty" };
+export type Behavior = { kind: "ok" } | { kind: "fail"; status: number; message: string } | { kind: "empty" } | { kind: "noStream" };
 export const OK: Behavior = { kind: "ok" };
 export const failWith = (status: number, message = `HTTP ${status}`): Behavior => ({ kind: "fail", status, message });
 export const EMPTY: Behavior = { kind: "empty" };
+/** Answers ordinary requests, but refuses to stream (like Groq's text-classification models: HTTP 400 "do not support streaming"). */
+export const NO_STREAM: Behavior = { kind: "noStream" };
 
 const json = (status: number, body: unknown, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
 const errorBody = (message: string) => ({ error: { message } });
@@ -48,6 +50,7 @@ export class FakeProvider {
     const behavior = this.behaviors.get(model);
     if (!behavior) return json(404, errorBody("The model does not exist"));
     if (behavior.kind === "fail") return json(behavior.status, errorBody(behavior.message));
+    if (behavior.kind === "noStream" && request.stream) return json(400, errorBody("text classification models do not support streaming"));
     if (behavior.kind === "empty") return request.stream ? sse("") : json(200, { choices: [{ message: { content: "" } }] });
     return request.stream ? sse("OK") : json(200, { choices: [{ message: { content: "OK" } }] });
   }

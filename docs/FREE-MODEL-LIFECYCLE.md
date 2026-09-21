@@ -243,4 +243,9 @@ known-bad and sitting on the standard cadence.
   fixed: concurrent auto-adds racing on the inventory sync (I18); one incident writing one removal per lane, so a model in three lanes was
   flap-limited by a single failure (I19); the "Needs setup" list staying stale for up to an hour after an operator added a key (I20); and
   a regression in the deferred-retry step that stopped a removed model from ever being auto-re-added.
+- **2026-09-21 (after merge)** — Two reports from the Discovered Models page. (1) `qwen-flash`, `qwen-max`, `qwen-plus-latest` showed "Add to LiteLLM"
+  while live, and a click added extra lane copies: candidate/deployment matching kept the `openai/` routing prefix for names without a digit
+  (I21). (2) Groq's Prompt Guard 2 models showed "R" and "Will retry" after being auto-removed: the removal came from the health probe
+  streaming a model that cannot stream (I22), and the page read the removed deployment's "managed" flag. A manual direct-alias-only override
+  now exists for classifiers that answer chat (I23).
 
